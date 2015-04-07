@@ -76,7 +76,10 @@ int __mcfgpio_direction_output(unsigned gpio, int value)
 
 	local_irq_save(flags);
 	data = mcfgpio_read(__mcfgpio_pddr(gpio));
-	data |= mcfgpio_bit(gpio);
+	if (value)
+		data |= mcfgpio_bit(gpio);
+	else
+		data &= mcfgpio_bit(gpio);
 	mcfgpio_write(data, __mcfgpio_pddr(gpio));
 
 	/* now set the data to output */
@@ -114,51 +117,37 @@ EXPORT_SYMBOL(__mcfgpio_free);
 
 #ifdef CONFIG_GPIOLIB
 
-static int mcfgpio_direction_input(struct gpio_chip *chip, unsigned offset)
+int mcfgpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
 	return __mcfgpio_direction_input(offset);
 }
 
-static int mcfgpio_get_value(struct gpio_chip *chip, unsigned offset)
+int mcfgpio_get_value(struct gpio_chip *chip, unsigned offset)
 {
 	return __mcfgpio_get_value(offset);
 }
 
-static int mcfgpio_direction_output(struct gpio_chip *chip, unsigned offset,
-				    int value)
+int mcfgpio_direction_output(struct gpio_chip *chip, unsigned offset, int value)
 {
 	return __mcfgpio_direction_output(offset, value);
 }
 
-static void mcfgpio_set_value(struct gpio_chip *chip, unsigned offset,
-			      int value)
+void mcfgpio_set_value(struct gpio_chip *chip, unsigned offset, int value)
 {
 	__mcfgpio_set_value(offset, value);
 }
 
-static int mcfgpio_request(struct gpio_chip *chip, unsigned offset)
+int mcfgpio_request(struct gpio_chip *chip, unsigned offset)
 {
 	return __mcfgpio_request(offset);
 }
 
-static void mcfgpio_free(struct gpio_chip *chip, unsigned offset)
+void mcfgpio_free(struct gpio_chip *chip, unsigned offset)
 {
 	__mcfgpio_free(offset);
 }
 
-static int mcfgpio_to_irq(struct gpio_chip *chip, unsigned offset)
-{
-#if defined(MCFGPIO_IRQ_MIN)
-	if ((offset >= MCFGPIO_IRQ_MIN) && (offset < MCFGPIO_IRQ_MAX))
-#else
-	if (offset < MCFGPIO_IRQ_MAX)
-#endif
-		return MCFGPIO_IRQ_VECBASE + offset;
-	else
-		return -EINVAL;
-}
-
-static struct bus_type mcfgpio_subsys = {
+struct bus_type mcfgpio_subsys = {
 	.name		= "gpio",
 	.dev_name	= "gpio",
 };
@@ -171,7 +160,6 @@ static struct gpio_chip mcfgpio_chip = {
 	.direction_output	= mcfgpio_direction_output,
 	.get			= mcfgpio_get_value,
 	.set			= mcfgpio_set_value,
-	.to_irq			= mcfgpio_to_irq,
 	.base			= 0,
 	.ngpio			= MCFGPIO_PIN_MAX,
 };

@@ -330,6 +330,9 @@ static void nvt_cir_wake_ldev_init(struct nvt_dev *nvt)
 	/* Enable CIR Wake via PSOUT# (Pin60) */
 	nvt_set_reg_bit(nvt, CIR_WAKE_ENABLE_BIT, CR_ACPI_CIR_WAKE);
 
+	/* enable cir interrupt of mouse/keyboard IRQ event */
+	nvt_set_reg_bit(nvt, CIR_INTR_MOUSE_IRQ_BIT, CR_ACPI_IRQ_EVENTS);
+
 	/* enable pme interrupt of cir wakeup event */
 	nvt_set_reg_bit(nvt, PME_INTR_CIR_PASS_BIT, CR_ACPI_IRQ_EVENTS2);
 
@@ -453,6 +456,7 @@ static void nvt_enable_wake(struct nvt_dev *nvt)
 
 	nvt_select_logical_dev(nvt, LOGICAL_DEV_ACPI);
 	nvt_set_reg_bit(nvt, CIR_WAKE_ENABLE_BIT, CR_ACPI_CIR_WAKE);
+	nvt_set_reg_bit(nvt, CIR_INTR_MOUSE_IRQ_BIT, CR_ACPI_IRQ_EVENTS);
 	nvt_set_reg_bit(nvt, PME_INTR_CIR_PASS_BIT, CR_ACPI_IRQ_EVENTS2);
 
 	nvt_select_logical_dev(nvt, LOGICAL_DEV_CIR_WAKE);
@@ -982,31 +986,25 @@ static int nvt_probe(struct pnp_dev *pdev, const struct pnp_device_id *dev_id)
 	/* input device for IR remote (and tx) */
 	rdev = rc_allocate_device();
 	if (!rdev)
-		goto exit_free_dev_rdev;
+		goto failure;
 
 	ret = -ENODEV;
-	/* activate pnp device */
-	if (pnp_activate_dev(pdev) < 0) {
-		dev_err(&pdev->dev, "Could not activate PNP device!\n");
-		goto exit_free_dev_rdev;
-	}
-
 	/* validate pnp resources */
 	if (!pnp_port_valid(pdev, 0) ||
 	    pnp_port_len(pdev, 0) < CIR_IOREG_LENGTH) {
 		dev_err(&pdev->dev, "IR PNP Port not valid!\n");
-		goto exit_free_dev_rdev;
+		goto failure;
 	}
 
 	if (!pnp_irq_valid(pdev, 0)) {
 		dev_err(&pdev->dev, "PNP IRQ not valid!\n");
-		goto exit_free_dev_rdev;
+		goto failure;
 	}
 
 	if (!pnp_port_valid(pdev, 1) ||
 	    pnp_port_len(pdev, 1) < CIR_IOREG_LENGTH) {
 		dev_err(&pdev->dev, "Wake PNP Port not valid!\n");
-		goto exit_free_dev_rdev;
+		goto failure;
 	}
 
 	nvt->cir_addr = pnp_port_start(pdev, 0);
@@ -1029,7 +1027,7 @@ static int nvt_probe(struct pnp_dev *pdev, const struct pnp_device_id *dev_id)
 
 	ret = nvt_hw_detect(nvt);
 	if (ret)
-		goto exit_free_dev_rdev;
+		goto failure;
 
 	/* Initialize CIR & CIR Wake Logical Devices */
 	nvt_efm_enable(nvt);
@@ -1044,7 +1042,7 @@ static int nvt_probe(struct pnp_dev *pdev, const struct pnp_device_id *dev_id)
 	/* Set up the rc device */
 	rdev->priv = nvt;
 	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protocols = RC_BIT_ALL;
+	rdev->allowed_protos = RC_BIT_ALL;
 	rdev->open = nvt_open;
 	rdev->close = nvt_close;
 	rdev->tx_ir = nvt_tx_ir;
@@ -1067,32 +1065,31 @@ static int nvt_probe(struct pnp_dev *pdev, const struct pnp_device_id *dev_id)
 	/* tx bits */
 	rdev->tx_resolution = XYZ;
 #endif
-	nvt->rdev = rdev;
-
-	ret = rc_register_device(rdev);
-	if (ret)
-		goto exit_free_dev_rdev;
 
 	ret = -EBUSY;
 	/* now claim resources */
 	if (!request_region(nvt->cir_addr,
 			    CIR_IOREG_LENGTH, NVT_DRIVER_NAME))
-		goto exit_unregister_device;
+		goto failure;
 
 	if (request_irq(nvt->cir_irq, nvt_cir_isr, IRQF_SHARED,
 			NVT_DRIVER_NAME, (void *)nvt))
-		goto exit_release_cir_addr;
+		goto failure2;
 
 	if (!request_region(nvt->cir_wake_addr,
 			    CIR_IOREG_LENGTH, NVT_DRIVER_NAME))
-		goto exit_free_irq;
+		goto failure3;
 
 	if (request_irq(nvt->cir_wake_irq, nvt_cir_wake_isr, IRQF_SHARED,
 			NVT_DRIVER_NAME, (void *)nvt))
-		goto exit_release_cir_wake_addr;
+		goto failure4;
+
+	ret = rc_register_device(rdev);
+	if (ret)
+		goto failure5;
 
 	device_init_wakeup(&pdev->dev, true);
-
+	nvt->rdev = rdev;
 	nvt_pr(KERN_NOTICE, "driver has been successfully loaded\n");
 	if (debug) {
 		cir_dump_regs(nvt);
@@ -1101,16 +1098,15 @@ static int nvt_probe(struct pnp_dev *pdev, const struct pnp_device_id *dev_id)
 
 	return 0;
 
-exit_release_cir_wake_addr:
+failure5:
+	free_irq(nvt->cir_wake_irq, nvt);
+failure4:
 	release_region(nvt->cir_wake_addr, CIR_IOREG_LENGTH);
-exit_free_irq:
+failure3:
 	free_irq(nvt->cir_irq, nvt);
-exit_release_cir_addr:
+failure2:
 	release_region(nvt->cir_addr, CIR_IOREG_LENGTH);
-exit_unregister_device:
-	rc_unregister_device(rdev);
-	rdev = NULL;
-exit_free_dev_rdev:
+failure:
 	rc_free_device(rdev);
 	kfree(nvt);
 
@@ -1221,12 +1217,12 @@ static struct pnp_driver nvt_driver = {
 	.shutdown	= nvt_shutdown,
 };
 
-static int __init nvt_init(void)
+static int nvt_init(void)
 {
 	return pnp_register_driver(&nvt_driver);
 }
 
-static void __exit nvt_exit(void)
+static void nvt_exit(void)
 {
 	pnp_unregister_driver(&nvt_driver);
 }

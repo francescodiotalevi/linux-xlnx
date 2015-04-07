@@ -73,7 +73,7 @@ static const struct soc_mbus_lookup mbus_fmt[] = {
 		.name			= "RGB555X",
 		.bits_per_sample	= 8,
 		.packing		= SOC_MBUS_PACKING_2X8_PADHI,
-		.order			= SOC_MBUS_ORDER_BE,
+		.order			= SOC_MBUS_ORDER_LE,
 		.layout			= SOC_MBUS_LAYOUT_PACKED,
 	},
 }, {
@@ -93,44 +93,8 @@ static const struct soc_mbus_lookup mbus_fmt[] = {
 		.name			= "RGB565X",
 		.bits_per_sample	= 8,
 		.packing		= SOC_MBUS_PACKING_2X8_PADHI,
-		.order			= SOC_MBUS_ORDER_BE,
+		.order			= SOC_MBUS_ORDER_LE,
 		.layout			= SOC_MBUS_LAYOUT_PACKED,
-	},
-}, {
-	.code = V4L2_MBUS_FMT_RGB666_1X18,
-	.fmt = {
-		.fourcc			= V4L2_PIX_FMT_RGB32,
-		.name			= "RGB666/32bpp",
-		.bits_per_sample	= 18,
-		.packing		= SOC_MBUS_PACKING_EXTEND32,
-		.order			= SOC_MBUS_ORDER_LE,
-	},
-}, {
-	.code = V4L2_MBUS_FMT_RGB888_1X24,
-	.fmt = {
-		.fourcc			= V4L2_PIX_FMT_RGB32,
-		.name			= "RGB888/32bpp",
-		.bits_per_sample	= 24,
-		.packing		= SOC_MBUS_PACKING_EXTEND32,
-		.order			= SOC_MBUS_ORDER_LE,
-	},
-}, {
-	.code = V4L2_MBUS_FMT_RGB888_2X12_BE,
-	.fmt = {
-		.fourcc			= V4L2_PIX_FMT_RGB32,
-		.name			= "RGB888/32bpp",
-		.bits_per_sample	= 12,
-		.packing		= SOC_MBUS_PACKING_EXTEND32,
-		.order			= SOC_MBUS_ORDER_BE,
-	},
-}, {
-	.code = V4L2_MBUS_FMT_RGB888_2X12_LE,
-	.fmt = {
-		.fourcc			= V4L2_PIX_FMT_RGB32,
-		.name			= "RGB888/32bpp",
-		.bits_per_sample	= 12,
-		.packing		= SOC_MBUS_PACKING_EXTEND32,
-		.order			= SOC_MBUS_ORDER_LE,
 	},
 }, {
 	.code = V4L2_MBUS_FMT_SBGGR8_1X8,
@@ -394,10 +358,6 @@ int soc_mbus_samples_per_pixel(const struct soc_mbus_pixelfmt *mf,
 		*numerator = 1;
 		*denominator = 1;
 		return 0;
-	case SOC_MBUS_PACKING_EXTEND32:
-		*numerator = 1;
-		*denominator = 1;
-		return 0;
 	case SOC_MBUS_PACKING_2X8_PADHI:
 	case SOC_MBUS_PACKING_2X8_PADLO:
 		*numerator = 2;
@@ -418,6 +378,9 @@ EXPORT_SYMBOL(soc_mbus_samples_per_pixel);
 
 s32 soc_mbus_bytes_per_line(u32 width, const struct soc_mbus_pixelfmt *mf)
 {
+	if (mf->fourcc == V4L2_PIX_FMT_JPEG)
+		return 0;
+
 	if (mf->layout != SOC_MBUS_LAYOUT_PACKED)
 		return width * mf->bits_per_sample / 8;
 
@@ -432,8 +395,6 @@ s32 soc_mbus_bytes_per_line(u32 width, const struct soc_mbus_pixelfmt *mf)
 		return width * 3 / 2;
 	case SOC_MBUS_PACKING_VARIABLE:
 		return 0;
-	case SOC_MBUS_PACKING_EXTEND32:
-		return width * 4;
 	}
 	return -EINVAL;
 }
@@ -442,6 +403,9 @@ EXPORT_SYMBOL(soc_mbus_bytes_per_line);
 s32 soc_mbus_image_size(const struct soc_mbus_pixelfmt *mf,
 			u32 bytes_per_line, u32 height)
 {
+	if (mf->fourcc == V4L2_PIX_FMT_JPEG)
+		return 0;
+
 	if (mf->layout == SOC_MBUS_LAYOUT_PACKED)
 		return bytes_per_line * height;
 

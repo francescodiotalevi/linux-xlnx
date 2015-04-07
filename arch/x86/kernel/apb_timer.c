@@ -40,7 +40,7 @@
 
 #include <asm/fixmap.h>
 #include <asm/apb_timer.h>
-#include <asm/intel-mid.h>
+#include <asm/mrst.h>
 #include <asm/time.h>
 
 #define APBT_CLOCKEVENT_RATING		110
@@ -157,13 +157,13 @@ static int __init apbt_clockevent_register(void)
 
 	adev->num = smp_processor_id();
 	adev->timer = dw_apb_clockevent_init(smp_processor_id(), "apbt0",
-		intel_mid_timer_options == INTEL_MID_TIMER_LAPIC_APBT ?
+		mrst_timer_options == MRST_TIMER_LAPIC_APBT ?
 		APBT_CLOCKEVENT_RATING - 100 : APBT_CLOCKEVENT_RATING,
 		adev_virt_addr(adev), 0, apbt_freq);
 	/* Firmware does EOI handling for us. */
 	adev->timer->eoi = NULL;
 
-	if (intel_mid_timer_options == INTEL_MID_TIMER_LAPIC_APBT) {
+	if (mrst_timer_options == MRST_TIMER_LAPIC_APBT) {
 		global_clock_event = &adev->timer->ced;
 		printk(KERN_DEBUG "%s clockevent registered as global\n",
 		       global_clock_event->name);
@@ -240,7 +240,7 @@ static int apbt_cpuhp_notify(struct notifier_block *n,
 		dw_apb_clockevent_pause(adev->timer);
 		if (system_state == SYSTEM_RUNNING) {
 			pr_debug("skipping APBT CPU %lu offline\n", cpu);
-		} else {
+		} else if (adev) {
 			pr_debug("APBT clockevent for cpu %lu offline\n", cpu);
 			dw_apb_clockevent_stop(adev->timer);
 		}
@@ -253,7 +253,7 @@ static int apbt_cpuhp_notify(struct notifier_block *n,
 
 static __init int apbt_late_init(void)
 {
-	if (intel_mid_timer_options == INTEL_MID_TIMER_LAPIC_APBT ||
+	if (mrst_timer_options == MRST_TIMER_LAPIC_APBT ||
 		!apb_timer_block_enabled)
 		return 0;
 	/* This notifier should be called after workqueue is ready */
@@ -311,6 +311,7 @@ void __init apbt_time_init(void)
 #ifdef CONFIG_SMP
 	int i;
 	struct sfi_timer_table_entry *p_mtmr;
+	unsigned int percpu_timer;
 	struct apbt_dev *adev;
 #endif
 
@@ -340,15 +341,18 @@ void __init apbt_time_init(void)
 	}
 #ifdef CONFIG_SMP
 	/* kernel cmdline disable apb timer, so we will use lapic timers */
-	if (intel_mid_timer_options == INTEL_MID_TIMER_LAPIC_APBT) {
+	if (mrst_timer_options == MRST_TIMER_LAPIC_APBT) {
 		printk(KERN_INFO "apbt: disabled per cpu timer\n");
 		return;
 	}
 	pr_debug("%s: %d CPUs online\n", __func__, num_online_cpus());
-	if (num_possible_cpus() <= sfi_mtimer_num)
+	if (num_possible_cpus() <= sfi_mtimer_num) {
+		percpu_timer = 1;
 		apbt_num_timers_used = num_possible_cpus();
-	else
+	} else {
+		percpu_timer = 0;
 		apbt_num_timers_used = 1;
+	}
 	pr_debug("%s: %d APB timers used\n", __func__, apbt_num_timers_used);
 
 	/* here we set up per CPU timer data structure */

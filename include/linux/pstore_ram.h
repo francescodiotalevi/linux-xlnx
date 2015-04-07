@@ -26,13 +26,6 @@
 struct persistent_ram_buffer;
 struct rs_control;
 
-struct persistent_ram_ecc_info {
-	int block_size;
-	int ecc_size;
-	int symsize;
-	int poly;
-};
-
 struct persistent_ram_zone {
 	phys_addr_t paddr;
 	size_t size;
@@ -46,14 +39,15 @@ struct persistent_ram_zone {
 	struct rs_control *rs_decoder;
 	int corrected_bytes;
 	int bad_blocks;
-	struct persistent_ram_ecc_info ecc_info;
+	int ecc_block_size;
+	int ecc_size;
 
 	char *old_log;
 	size_t old_log_size;
 };
 
 struct persistent_ram_zone *persistent_ram_new(phys_addr_t start, size_t size,
-			u32 sig, struct persistent_ram_ecc_info *ecc_info);
+					       u32 sig, int ecc_size);
 void persistent_ram_free(struct persistent_ram_zone *prz);
 void persistent_ram_zap(struct persistent_ram_zone *prz);
 
@@ -80,7 +74,7 @@ struct ramoops_platform_data {
 	unsigned long	console_size;
 	unsigned long	ftrace_size;
 	int		dump_oops;
-	struct persistent_ram_ecc_info ecc_info;
+	int		ecc_size;
 };
 
 #endif

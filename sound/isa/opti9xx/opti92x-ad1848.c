@@ -173,7 +173,11 @@ MODULE_DEVICE_TABLE(pnp_card, snd_opti9xx_pnpids);
 
 #endif	/* CONFIG_PNP */
 
-#define DEV_NAME KBUILD_MODNAME
+#ifdef OPTi93X
+#define DEV_NAME "opti93x"
+#else
+#define DEV_NAME "opti92x"
+#endif
 
 static char * snd_opti9xx_names[] = {
 	"unknown",
@@ -934,13 +938,13 @@ static int snd_opti9xx_probe(struct snd_card *card)
 	return snd_card_register(card);
 }
 
-static int snd_opti9xx_card_new(struct device *pdev, struct snd_card **cardp)
+static int snd_opti9xx_card_new(struct snd_card **cardp)
 {
 	struct snd_card *card;
 	int err;
 
-	err = snd_card_new(pdev, index, id, THIS_MODULE,
-			   sizeof(struct snd_opti9xx), &card);
+	err = snd_card_create(index, id, THIS_MODULE,
+			      sizeof(struct snd_opti9xx), &card);
 	if (err < 0)
 		return err;
 	card->private_free = snd_card_opti9xx_free;
@@ -1010,7 +1014,7 @@ static int snd_opti9xx_isa_probe(struct device *devptr,
 	}
 #endif
 
-	error = snd_opti9xx_card_new(devptr, &card);
+	error = snd_opti9xx_card_new(&card);
 	if (error < 0)
 		return error;
 
@@ -1018,6 +1022,7 @@ static int snd_opti9xx_isa_probe(struct device *devptr,
 		snd_card_free(card);
 		return error;
 	}
+	snd_card_set_dev(card, devptr);
 	if ((error = snd_opti9xx_probe(card)) < 0) {
 		snd_card_free(card);
 		return error;
@@ -1030,6 +1035,7 @@ static int snd_opti9xx_isa_remove(struct device *devptr,
 				  unsigned int dev)
 {
 	snd_card_free(dev_get_drvdata(devptr));
+	dev_set_drvdata(devptr, NULL);
 	return 0;
 }
 
@@ -1099,7 +1105,7 @@ static int snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 		return -EBUSY;
 	if (! isapnp)
 		return -ENODEV;
-	error = snd_opti9xx_card_new(&pcard->card->dev, &card);
+	error = snd_opti9xx_card_new(&card);
 	if (error < 0)
 		return error;
 	chip = card->private_data;
@@ -1130,6 +1136,7 @@ static int snd_opti9xx_pnp_probe(struct pnp_card_link *pcard,
 		snd_card_free(card);
 		return error;
 	}
+	snd_card_set_dev(card, &pcard->card->dev);
 	if ((error = snd_opti9xx_probe(card)) < 0) {
 		snd_card_free(card);
 		return error;
@@ -1161,7 +1168,7 @@ static int snd_opti9xx_pnp_resume(struct pnp_card_link *pcard)
 
 static struct pnp_card_driver opti9xx_pnpc_driver = {
 	.flags		= PNP_DRIVER_RES_DISABLE,
-	.name		= DEV_NAME,
+	.name		= "opti9xx",
 	.id_table	= snd_opti9xx_pnpids,
 	.probe		= snd_opti9xx_pnp_probe,
 	.remove		= snd_opti9xx_pnp_remove,

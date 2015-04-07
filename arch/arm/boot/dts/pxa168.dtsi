@@ -77,7 +77,7 @@
 			};
 
 			gpio@d4019000 {
-				compatible = "marvell,mmp-gpio";
+				compatible = "mrvl,mmp-gpio";
 				#address-cells = <1>;
 				#size-cells = <1>;
 				reg = <0xd4019000 0x1000>;

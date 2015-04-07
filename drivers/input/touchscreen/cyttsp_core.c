@@ -84,8 +84,7 @@ static int ttsp_read_block_data(struct cyttsp *ts, u8 command,
 	int tries;
 
 	for (tries = 0; tries < CY_NUM_RETRY; tries++) {
-		error = ts->bus_ops->read(ts->dev, ts->xfer_buf, command,
-				length, buf);
+		error = ts->bus_ops->read(ts, command, length, buf);
 		if (!error)
 			return 0;
 
@@ -102,8 +101,7 @@ static int ttsp_write_block_data(struct cyttsp *ts, u8 command,
 	int tries;
 
 	for (tries = 0; tries < CY_NUM_RETRY; tries++) {
-		error = ts->bus_ops->write(ts->dev, ts->xfer_buf, command,
-				length, buf);
+		error = ts->bus_ops->write(ts, command, length, buf);
 		if (!error)
 			return 0;
 
@@ -116,15 +114,6 @@ static int ttsp_write_block_data(struct cyttsp *ts, u8 command,
 static int ttsp_send_command(struct cyttsp *ts, u8 cmd)
 {
 	return ttsp_write_block_data(ts, CY_REG_BASE, sizeof(cmd), &cmd);
-}
-
-static int cyttsp_handshake(struct cyttsp *ts)
-{
-	if (ts->pdata->use_hndshk)
-		return ttsp_send_command(ts,
-				ts->xy_data.hst_mode ^ CY_HNDSHK_BIT);
-
-	return 0;
 }
 
 static int cyttsp_load_bl_regs(struct cyttsp *ts)
@@ -144,7 +133,7 @@ static int cyttsp_exit_bl_mode(struct cyttsp *ts)
 	memcpy(bl_cmd, bl_command, sizeof(bl_command));
 	if (ts->pdata->bl_keys)
 		memcpy(&bl_cmd[sizeof(bl_command) - CY_NUM_BL_KEYS],
-			ts->pdata->bl_keys, CY_NUM_BL_KEYS);
+			ts->pdata->bl_keys, sizeof(bl_command));
 
 	error = ttsp_write_block_data(ts, CY_REG_BASE,
 				      sizeof(bl_cmd), bl_cmd);
@@ -178,10 +167,6 @@ static int cyttsp_set_operational_mode(struct cyttsp *ts)
 	if (error)
 		return error;
 
-	error = cyttsp_handshake(ts);
-	if (error)
-		return error;
-
 	return ts->xy_data.act_dist == CY_ACT_DIST_DFLT ? -EIO : 0;
 }
 
@@ -200,10 +185,6 @@ static int cyttsp_set_sysinfo_mode(struct cyttsp *ts)
 	msleep(CY_DELAY_DFLT);
 	error = ttsp_read_block_data(ts, CY_REG_BASE, sizeof(ts->sysinfo_data),
 				      &ts->sysinfo_data);
-	if (error)
-		return error;
-
-	error = cyttsp_handshake(ts);
 	if (error)
 		return error;
 
@@ -242,7 +223,7 @@ static int cyttsp_soft_reset(struct cyttsp *ts)
 	int retval;
 
 	/* wait for interrupt to set ready completion */
-	reinit_completion(&ts->bl_ready);
+	INIT_COMPLETION(ts->bl_ready);
 	ts->state = CY_BL_STATE;
 
 	enable_irq(ts->irq);
@@ -363,9 +344,12 @@ static irqreturn_t cyttsp_irq(int irq, void *handle)
 		goto out;
 
 	/* provide flow control handshake */
-	error = cyttsp_handshake(ts);
-	if (error)
-		goto out;
+	if (ts->pdata->use_hndshk) {
+		error = ttsp_send_command(ts,
+				ts->xy_data.hst_mode ^ CY_HNDSHK_BIT);
+		if (error)
+			goto out;
+	}
 
 	if (unlikely(ts->state == CY_IDLE_STATE))
 		goto out;
@@ -534,7 +518,7 @@ static void cyttsp_close(struct input_dev *dev)
 struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 			    struct device *dev, int irq, size_t xfer_buf_size)
 {
-	const struct cyttsp_platform_data *pdata = dev_get_platdata(dev);
+	const struct cyttsp_platform_data *pdata = dev->platform_data;
 	struct cyttsp *ts;
 	struct input_dev *input_dev;
 	int error;
@@ -553,7 +537,7 @@ struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 
 	ts->dev = dev;
 	ts->input = input_dev;
-	ts->pdata = dev_get_platdata(dev);
+	ts->pdata = dev->platform_data;
 	ts->bus_ops = bus_ops;
 	ts->irq = irq;
 

@@ -27,14 +27,13 @@
 #include <linux/amba/mmci.h>
 #include <linux/amba/pl022.h>
 #include <linux/io.h>
-#include <linux/irqchip/arm-gic.h>
 #include <linux/platform_data/clk-realview.h>
-#include <linux/reboot.h>
 
 #include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 #include <asm/pgtable.h>
+#include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/smp_twd.h>
 
@@ -408,6 +407,7 @@ static void __init realview_eb_timer_init(void)
 	timer1_va_base = __io_address(REALVIEW_EB_TIMER0_1_BASE) + 0x20;
 	timer2_va_base = __io_address(REALVIEW_EB_TIMER2_3_BASE);
 	timer3_va_base = __io_address(REALVIEW_EB_TIMER2_3_BASE) + 0x20;
+	timer3_pa_base = REALVIEW_EB_TIMER2_3_BASE + 0x20;
 
 	if (core_tile_eb11mp() || core_tile_a9mp())
 		timer_irq = IRQ_EB11MP_TIMER0_1;
@@ -419,7 +419,11 @@ static void __init realview_eb_timer_init(void)
 	realview_eb_twd_init();
 }
 
-static void realview_eb_restart(enum reboot_mode mode, const char *cmd)
+static struct sys_timer realview_eb_timer = {
+	.init		= realview_eb_timer_init,
+};
+
+static void realview_eb_restart(char mode, const char *cmd)
 {
 	void __iomem *reset_ctrl = __io_address(REALVIEW_SYS_RESETCTL);
 	void __iomem *lock_ctrl = __io_address(REALVIEW_SYS_LOCK);
@@ -442,13 +446,8 @@ static void __init realview_eb_init(void)
 		realview_eb11mp_fixup();
 
 #ifdef CONFIG_CACHE_L2X0
-		/*
-		 * The PL220 needs to be manually configured as the hardware
-		 * doesn't report the correct sizes.
-		 * 1MB (128KB/way), 8-way associativity, event monitor and
-		 * parity enabled, ignore share bit, no force write allocate
-		 * Bits:  .... ...0 0111 1001 0000 .... .... ....
-		 */
+		/* 1MB (128KB/way), 8-way associativity, evmon/parity/share enabled
+		 * Bits:  .... ...0 0111 1001 0000 .... .... .... */
 		l2x0_init(__io_address(REALVIEW_EB11MP_L220_BASE), 0x00790000, 0xfe000fff);
 #endif
 		platform_device_register(&pmu_device);
@@ -457,7 +456,6 @@ static void __init realview_eb_init(void)
 	realview_flash_register(&realview_eb_flash_resource, 1);
 	platform_device_register(&realview_i2c_device);
 	platform_device_register(&char_lcd_device);
-	platform_device_register(&realview_leds_device);
 	eth_device_register();
 	realview_usb_register(realview_eb_isp1761_resources);
 
@@ -475,7 +473,8 @@ MACHINE_START(REALVIEW_EB, "ARM-RealView EB")
 	.map_io		= realview_eb_map_io,
 	.init_early	= realview_init_early,
 	.init_irq	= gic_init_irq,
-	.init_time	= realview_eb_timer_init,
+	.timer		= &realview_eb_timer,
+	.handle_irq	= gic_handle_irq,
 	.init_machine	= realview_eb_init,
 #ifdef CONFIG_ZONE_DMA
 	.dma_zone_size	= SZ_256M,

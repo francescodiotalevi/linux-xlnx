@@ -23,25 +23,6 @@
 static struct srcu_struct srcu;
 
 /*
- * This function allows mmu_notifier::release callback to delay a call to
- * a function that will free appropriate resources. The function must be
- * quick and must not block.
- */
-void mmu_notifier_call_srcu(struct rcu_head *rcu,
-			    void (*func)(struct rcu_head *rcu))
-{
-	call_srcu(&srcu, rcu, func);
-}
-EXPORT_SYMBOL_GPL(mmu_notifier_call_srcu);
-
-void mmu_notifier_synchronize(void)
-{
-	/* Wait for any running method to finish. */
-	srcu_barrier(&srcu);
-}
-EXPORT_SYMBOL_GPL(mmu_notifier_synchronize);
-
-/*
  * This function can't run concurrently against mmu_notifier_register
  * because mm->mm_users > 0 during mmu_notifier_register and exit_mmap
  * runs with mm_users == 0. Other tasks may still invoke mmu notifiers
@@ -56,6 +37,7 @@ EXPORT_SYMBOL_GPL(mmu_notifier_synchronize);
 void __mmu_notifier_release(struct mm_struct *mm)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int id;
 
 	/*
@@ -63,15 +45,17 @@ void __mmu_notifier_release(struct mm_struct *mm)
 	 * ->release returns.
 	 */
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist)
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist)
 		/*
-		 * If ->release runs before mmu_notifier_unregister it must be
-		 * handled, as it's the only way for the driver to flush all
-		 * existing sptes and stop the driver from establishing any more
-		 * sptes before all the pages in the mm are freed.
+		 * if ->release runs before mmu_notifier_unregister it
+		 * must be handled as it's the only way for the driver
+		 * to flush all existing sptes and stop the driver
+		 * from establishing any more sptes before all the
+		 * pages in the mm are freed.
 		 */
 		if (mn->ops->release)
 			mn->ops->release(mn, mm);
+	srcu_read_unlock(&srcu, id);
 
 	spin_lock(&mm->mmu_notifier_mm->lock);
 	while (unlikely(!hlist_empty(&mm->mmu_notifier_mm->list))) {
@@ -80,23 +64,22 @@ void __mmu_notifier_release(struct mm_struct *mm)
 				 hlist);
 		/*
 		 * We arrived before mmu_notifier_unregister so
-		 * mmu_notifier_unregister will do nothing other than to wait
-		 * for ->release to finish and for mmu_notifier_unregister to
-		 * return.
+		 * mmu_notifier_unregister will do nothing other than
+		 * to wait ->release to finish and
+		 * mmu_notifier_unregister to return.
 		 */
 		hlist_del_init_rcu(&mn->hlist);
 	}
 	spin_unlock(&mm->mmu_notifier_mm->lock);
-	srcu_read_unlock(&srcu, id);
 
 	/*
-	 * synchronize_srcu here prevents mmu_notifier_release from returning to
-	 * exit_mmap (which would proceed with freeing all pages in the mm)
-	 * until the ->release method returns, if it was invoked by
-	 * mmu_notifier_unregister.
+	 * synchronize_srcu here prevents mmu_notifier_release to
+	 * return to exit_mmap (which would proceed freeing all pages
+	 * in the mm) until the ->release method returns, if it was
+	 * invoked by mmu_notifier_unregister.
 	 *
-	 * The mmu_notifier_mm can't go away from under us because one mm_count
-	 * is held by exit_mmap.
+	 * The mmu_notifier_mm can't go away from under us because one
+	 * mm_count is hold by exit_mmap.
 	 */
 	synchronize_srcu(&srcu);
 }
@@ -110,10 +93,11 @@ int __mmu_notifier_clear_flush_young(struct mm_struct *mm,
 					unsigned long address)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int young = 0, id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->clear_flush_young)
 			young |= mn->ops->clear_flush_young(mn, mm, address);
 	}
@@ -126,10 +110,11 @@ int __mmu_notifier_test_young(struct mm_struct *mm,
 			      unsigned long address)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int young = 0, id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->test_young) {
 			young = mn->ops->test_young(mn, mm, address);
 			if (young)
@@ -145,10 +130,11 @@ void __mmu_notifier_change_pte(struct mm_struct *mm, unsigned long address,
 			       pte_t pte)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->change_pte)
 			mn->ops->change_pte(mn, mm, address, pte);
 	}
@@ -159,10 +145,11 @@ void __mmu_notifier_invalidate_page(struct mm_struct *mm,
 					  unsigned long address)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->invalidate_page)
 			mn->ops->invalidate_page(mn, mm, address);
 	}
@@ -173,31 +160,31 @@ void __mmu_notifier_invalidate_range_start(struct mm_struct *mm,
 				  unsigned long start, unsigned long end)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->invalidate_range_start)
 			mn->ops->invalidate_range_start(mn, mm, start, end);
 	}
 	srcu_read_unlock(&srcu, id);
 }
-EXPORT_SYMBOL_GPL(__mmu_notifier_invalidate_range_start);
 
 void __mmu_notifier_invalidate_range_end(struct mm_struct *mm,
 				  unsigned long start, unsigned long end)
 {
 	struct mmu_notifier *mn;
+	struct hlist_node *n;
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, n, &mm->mmu_notifier_mm->list, hlist) {
 		if (mn->ops->invalidate_range_end)
 			mn->ops->invalidate_range_end(mn, mm, start, end);
 	}
 	srcu_read_unlock(&srcu, id);
 }
-EXPORT_SYMBOL_GPL(__mmu_notifier_invalidate_range_end);
 
 static int do_mmu_notifier_register(struct mmu_notifier *mn,
 				    struct mm_struct *mm,
@@ -309,32 +296,29 @@ void mmu_notifier_unregister(struct mmu_notifier *mn, struct mm_struct *mm)
 
 	if (!hlist_unhashed(&mn->hlist)) {
 		/*
-		 * SRCU here will force exit_mmap to wait for ->release to
-		 * finish before freeing the pages.
+		 * SRCU here will force exit_mmap to wait ->release to finish
+		 * before freeing the pages.
 		 */
 		int id;
 
 		id = srcu_read_lock(&srcu);
 		/*
-		 * exit_mmap will block in mmu_notifier_release to guarantee
-		 * that ->release is called before freeing the pages.
+		 * exit_mmap will block in mmu_notifier_release to
+		 * guarantee ->release is called before freeing the
+		 * pages.
 		 */
 		if (mn->ops->release)
 			mn->ops->release(mn, mm);
 		srcu_read_unlock(&srcu, id);
 
 		spin_lock(&mm->mmu_notifier_mm->lock);
-		/*
-		 * Can not use list_del_rcu() since __mmu_notifier_release
-		 * can delete it before we hold the lock.
-		 */
-		hlist_del_init_rcu(&mn->hlist);
+		hlist_del_rcu(&mn->hlist);
 		spin_unlock(&mm->mmu_notifier_mm->lock);
 	}
 
 	/*
-	 * Wait for any running method to finish, of course including
-	 * ->release if it was run by mmu_notifier_release instead of us.
+	 * Wait any running method to finish, of course including
+	 * ->release if it was run by mmu_notifier_relase instead of us.
 	 */
 	synchronize_srcu(&srcu);
 
@@ -344,27 +328,9 @@ void mmu_notifier_unregister(struct mmu_notifier *mn, struct mm_struct *mm)
 }
 EXPORT_SYMBOL_GPL(mmu_notifier_unregister);
 
-/*
- * Same as mmu_notifier_unregister but no callback and no srcu synchronization.
- */
-void mmu_notifier_unregister_no_release(struct mmu_notifier *mn,
-					struct mm_struct *mm)
-{
-	spin_lock(&mm->mmu_notifier_mm->lock);
-	/*
-	 * Can not use list_del_rcu() since __mmu_notifier_release
-	 * can delete it before we hold the lock.
-	 */
-	hlist_del_init_rcu(&mn->hlist);
-	spin_unlock(&mm->mmu_notifier_mm->lock);
-
-	BUG_ON(atomic_read(&mm->mm_count) <= 0);
-	mmdrop(mm);
-}
-EXPORT_SYMBOL_GPL(mmu_notifier_unregister_no_release);
-
 static int __init mmu_notifier_init(void)
 {
 	return init_srcu_struct(&srcu);
 }
-subsys_initcall(mmu_notifier_init);
+
+module_init(mmu_notifier_init);

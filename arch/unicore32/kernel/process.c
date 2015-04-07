@@ -45,11 +45,41 @@ static const char * const processor_modes[] = {
 	"UK18", "UK19", "UK1A", "EXTN", "UK1C", "UK1D", "UK1E", "SUSR"
 };
 
-void arch_cpu_idle(void)
+/*
+ * The idle thread, has rather strange semantics for calling pm_idle,
+ * but this is what x86 does and we need to do the same, so that
+ * things like cpuidle get called in the same way.
+ */
+void cpu_idle(void)
 {
-	cpu_do_idle();
-	local_irq_enable();
+	/* endless idle loop with no priority at all */
+	while (1) {
+		tick_nohz_idle_enter();
+		rcu_idle_enter();
+		while (!need_resched()) {
+			local_irq_disable();
+			stop_critical_timings();
+			cpu_do_idle();
+			local_irq_enable();
+			start_critical_timings();
+		}
+		rcu_idle_exit();
+		tick_nohz_idle_exit();
+		preempt_enable_no_resched();
+		schedule();
+		preempt_disable();
+	}
 }
+
+static char reboot_mode = 'h';
+
+int __init reboot_setup(char *str)
+{
+	reboot_mode = str[0];
+	return 1;
+}
+
+__setup("reboot=", reboot_setup);
 
 void machine_halt(void)
 {
@@ -60,7 +90,6 @@ void machine_halt(void)
  * Function pointers to optional machine specific functions
  */
 void (*pm_power_off)(void) = NULL;
-EXPORT_SYMBOL(pm_power_off);
 
 void machine_power_off(void)
 {
@@ -79,7 +108,7 @@ void machine_restart(char *cmd)
 	 * we may need it to insert some 1:1 mappings so that
 	 * soft boot works.
 	 */
-	setup_mm_for_reboot();
+	setup_mm_for_reboot(reboot_mode);
 
 	/* Clean and invalidate caches */
 	flush_cache_all();
@@ -93,7 +122,7 @@ void machine_restart(char *cmd)
 	/*
 	 * Now handle reboot code.
 	 */
-	if (reboot_mode == REBOOT_SOFT) {
+	if (reboot_mode == 's') {
 		/* Jump into ROM at address 0xffff0000 */
 		cpu_reset(VECTORS_BASE);
 	} else {
@@ -135,7 +164,11 @@ void __show_regs(struct pt_regs *regs)
 	unsigned long flags;
 	char buf[64];
 
-	show_regs_print_info(KERN_DEFAULT);
+	printk(KERN_DEFAULT "CPU: %d    %s  (%s %.*s)\n",
+		raw_smp_processor_id(), print_tainted(),
+		init_utsname()->release,
+		(int)strcspn(init_utsname()->version, " "),
+		init_utsname()->version);
 	print_symbol("PC is at %s\n", instruction_pointer(regs));
 	print_symbol("LR is at %s\n", regs->UCreg_lr);
 	printk(KERN_DEFAULT "pc : [<%08lx>]    lr : [<%08lx>]    psr: %08lx\n"

@@ -44,7 +44,6 @@ ipt_mangle_out(struct sk_buff *skb, const struct net_device *out)
 	u_int8_t tos;
 	__be32 saddr, daddr;
 	u_int32_t mark;
-	int err;
 
 	/* root is playing with raw sockets. */
 	if (skb->len < sizeof(struct iphdr) ||
@@ -67,11 +66,9 @@ ipt_mangle_out(struct sk_buff *skb, const struct net_device *out)
 		if (iph->saddr != saddr ||
 		    iph->daddr != daddr ||
 		    skb->mark != mark ||
-		    iph->tos != tos) {
-			err = ip_route_me_harder(skb, RTN_UNSPEC);
-			if (err < 0)
-				ret = NF_DROP_ERR(err);
-		}
+		    iph->tos != tos)
+			if (ip_route_me_harder(skb, RTN_UNSPEC))
+				ret = NF_DROP;
 	}
 
 	return ret;
@@ -79,19 +76,19 @@ ipt_mangle_out(struct sk_buff *skb, const struct net_device *out)
 
 /* The work comes in here from netfilter.c. */
 static unsigned int
-iptable_mangle_hook(const struct nf_hook_ops *ops,
+iptable_mangle_hook(unsigned int hook,
 		     struct sk_buff *skb,
 		     const struct net_device *in,
 		     const struct net_device *out,
 		     int (*okfn)(struct sk_buff *))
 {
-	if (ops->hooknum == NF_INET_LOCAL_OUT)
+	if (hook == NF_INET_LOCAL_OUT)
 		return ipt_mangle_out(skb, out);
-	if (ops->hooknum == NF_INET_POST_ROUTING)
-		return ipt_do_table(skb, ops->hooknum, in, out,
+	if (hook == NF_INET_POST_ROUTING)
+		return ipt_do_table(skb, hook, in, out,
 				    dev_net(out)->ipv4.iptable_mangle);
 	/* PREROUTING/INPUT/FORWARD: */
-	return ipt_do_table(skb, ops->hooknum, in, out,
+	return ipt_do_table(skb, hook, in, out,
 			    dev_net(in)->ipv4.iptable_mangle);
 }
 
@@ -107,7 +104,7 @@ static int __net_init iptable_mangle_net_init(struct net *net)
 	net->ipv4.iptable_mangle =
 		ipt_register_table(net, &packet_mangler, repl);
 	kfree(repl);
-	return PTR_ERR_OR_ZERO(net->ipv4.iptable_mangle);
+	return PTR_RET(net->ipv4.iptable_mangle);
 }
 
 static void __net_exit iptable_mangle_net_exit(struct net *net)

@@ -12,6 +12,7 @@
 
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/acpi.h>
 #include <linux/sfi_acpi.h>
 #include <linux/bitmap.h>
 #include <linux/dmi.h>
@@ -547,7 +548,8 @@ static int __init acpi_mcfg_check_entry(struct acpi_table_mcfg *mcfg,
 	if (cfg->address < 0xFFFFFFFF)
 		return 0;
 
-	if (!strncmp(mcfg->header.oem_id, "SGI", 3))
+	if (!strcmp(mcfg->header.oem_id, "SGI") ||
+			!strcmp(mcfg->header.oem_id, "SGI2"))
 		return 0;
 
 	if (mcfg->header.revision >= 1) {

@@ -55,7 +55,7 @@ static int caching_kthread(void *data)
 	key.type = BTRFS_INODE_ITEM_KEY;
 again:
 	/* need to make sure the commit_root doesn't disappear */
-	down_read(&fs_info->commit_root_sem);
+	mutex_lock(&root->fs_commit_mutex);
 
 	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
 	if (ret < 0)
@@ -78,8 +78,10 @@ again:
 			    btrfs_transaction_in_commit(fs_info)) {
 				leaf = path->nodes[0];
 
-				if (WARN_ON(btrfs_header_nritems(leaf) == 0))
+				if (btrfs_header_nritems(leaf) == 0) {
+					WARN_ON(1);
 					break;
+				}
 
 				/*
 				 * Save the key so we can advances forward
@@ -88,7 +90,7 @@ again:
 				btrfs_item_key_to_cpu(leaf, &key, 0);
 				btrfs_release_path(path);
 				root->cache_progress = last;
-				up_read(&fs_info->commit_root_sem);
+				mutex_unlock(&root->fs_commit_mutex);
 				schedule_timeout(1);
 				goto again;
 			} else
@@ -127,7 +129,7 @@ next:
 	btrfs_unpin_free_ino(root);
 out:
 	wake_up(&root->cache_wait);
-	up_read(&fs_info->commit_root_sem);
+	mutex_unlock(&root->fs_commit_mutex);
 
 	btrfs_free_path(path);
 
@@ -174,13 +176,9 @@ static void start_caching(struct btrfs_root *root)
 				       BTRFS_LAST_FREE_OBJECTID - objectid + 1);
 	}
 
-	tsk = kthread_run(caching_kthread, root, "btrfs-ino-cache-%llu",
+	tsk = kthread_run(caching_kthread, root, "btrfs-ino-cache-%llu\n",
 			  root->root_key.objectid);
-	if (IS_ERR(tsk)) {
-		btrfs_warn(root->fs_info, "failed to start inode caching task");
-		btrfs_clear_and_info(root, CHANGE_INODE_CACHE,
-				"disabling inode map caching");
-	}
+	BUG_ON(IS_ERR(tsk)); /* -ENOMEM */
 }
 
 int btrfs_find_free_ino(struct btrfs_root *root, u64 *objectid)
@@ -209,28 +207,42 @@ again:
 
 void btrfs_return_ino(struct btrfs_root *root, u64 objectid)
 {
+	struct btrfs_free_space_ctl *ctl = root->free_ino_ctl;
 	struct btrfs_free_space_ctl *pinned = root->free_ino_pinned;
 
 	if (!btrfs_test_opt(root, INODE_MAP_CACHE))
 		return;
+
 again:
 	if (root->cached == BTRFS_CACHE_FINISHED) {
-		__btrfs_add_free_space(pinned, objectid, 1);
+		__btrfs_add_free_space(ctl, objectid, 1);
 	} else {
-		down_write(&root->fs_info->commit_root_sem);
+		/*
+		 * If we are in the process of caching free ino chunks,
+		 * to avoid adding the same inode number to the free_ino
+		 * tree twice due to cross transaction, we'll leave it
+		 * in the pinned tree until a transaction is committed
+		 * or the caching work is done.
+		 */
+
+		mutex_lock(&root->fs_commit_mutex);
 		spin_lock(&root->cache_lock);
 		if (root->cached == BTRFS_CACHE_FINISHED) {
 			spin_unlock(&root->cache_lock);
-			up_write(&root->fs_info->commit_root_sem);
+			mutex_unlock(&root->fs_commit_mutex);
 			goto again;
 		}
 		spin_unlock(&root->cache_lock);
 
 		start_caching(root);
 
-		__btrfs_add_free_space(pinned, objectid, 1);
+		if (objectid <= root->cache_progress ||
+		    objectid > root->highest_objectid)
+			__btrfs_add_free_space(ctl, objectid, 1);
+		else
+			__btrfs_add_free_space(pinned, objectid, 1);
 
-		up_write(&root->fs_info->commit_root_sem);
+		mutex_unlock(&root->fs_commit_mutex);
 	}
 }
 
@@ -240,7 +252,7 @@ again:
  * and others will just be dropped, because the commit root we were
  * searching has changed.
  *
- * Must be called with root->fs_info->commit_root_sem held
+ * Must be called with root->fs_commit_mutex held
  */
 void btrfs_unpin_free_ino(struct btrfs_root *root)
 {
@@ -400,7 +412,8 @@ int btrfs_save_ino_cache(struct btrfs_root *root,
 		return 0;
 
 	/* Don't save inode cache if we are deleting this root */
-	if (btrfs_root_refs(&root->root_item) == 0)
+	if (btrfs_root_refs(&root->root_item) == 0 &&
+	    root != root->fs_info->tree_root)
 		return 0;
 
 	if (!btrfs_test_opt(root, INODE_MAP_CACHE))
@@ -416,12 +429,11 @@ int btrfs_save_ino_cache(struct btrfs_root *root,
 	num_bytes = trans->bytes_reserved;
 	/*
 	 * 1 item for inode item insertion if need
-	 * 4 items for inode item update (in the worst case)
-	 * 1 items for slack space if we need do truncation
+	 * 3 items for inode item update (in the worst case)
 	 * 1 item for free space object
 	 * 3 items for pre-allocation
 	 */
-	trans->bytes_reserved = btrfs_calc_trans_metadata_size(root, 10);
+	trans->bytes_reserved = btrfs_calc_trans_metadata_size(root, 8);
 	ret = btrfs_block_rsv_add(root, trans->block_rsv,
 				  trans->bytes_reserved,
 				  BTRFS_RESERVE_NO_FLUSH);
@@ -454,10 +466,9 @@ again:
 	}
 
 	if (i_size_read(inode) > 0) {
-		ret = btrfs_truncate_free_space_cache(root, trans, inode);
+		ret = btrfs_truncate_free_space_cache(root, trans, path, inode);
 		if (ret) {
-			if (ret != -ENOSPC)
-				btrfs_abort_transaction(trans, root, ret);
+			btrfs_abort_transaction(trans, root, ret);
 			goto out_put;
 		}
 	}
@@ -491,7 +502,7 @@ again:
 	}
 	btrfs_free_reserved_data_space(inode, prealloc);
 
-	ret = btrfs_write_out_ino_cache(root, trans, path, inode);
+	ret = btrfs_write_out_ino_cache(root, trans, path);
 out_put:
 	iput(inode);
 out_release:

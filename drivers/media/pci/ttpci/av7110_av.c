@@ -958,10 +958,8 @@ static unsigned int dvb_video_poll(struct file *file, poll_table *wait)
 		if (av7110->playing) {
 			if (FREE_COND)
 				mask |= (POLLOUT | POLLWRNORM);
-		} else {
-			/* if not playing: may play if asked for */
-			mask |= (POLLOUT | POLLWRNORM);
-		}
+			} else /* if not playing: may play if asked for */
+				mask |= (POLLOUT | POLLWRNORM);
 	}
 
 	return mask;
@@ -1110,9 +1108,6 @@ static int dvb_video_ioctl(struct file *file,
 			return -EPERM;
 		}
 	}
-
-	if (mutex_lock_interruptible(&av7110->ioctl_mutex))
-		return -ERESTARTSYS;
 
 	switch (cmd) {
 	case VIDEO_STOP:
@@ -1302,7 +1297,6 @@ static int dvb_video_ioctl(struct file *file,
 		break;
 	}
 
-	mutex_unlock(&av7110->ioctl_mutex);
 	return ret;
 }
 
@@ -1319,9 +1313,6 @@ static int dvb_audio_ioctl(struct file *file,
 	if (((file->f_flags & O_ACCMODE) == O_RDONLY) &&
 	    (cmd != AUDIO_GET_STATUS))
 		return -EPERM;
-
-	if (mutex_lock_interruptible(&av7110->ioctl_mutex))
-		return -ERESTARTSYS;
 
 	switch (cmd) {
 	case AUDIO_STOP:
@@ -1451,7 +1442,6 @@ static int dvb_audio_ioctl(struct file *file,
 		ret = -ENOIOCTLCMD;
 	}
 
-	mutex_unlock(&av7110->ioctl_mutex);
 	return ret;
 }
 

@@ -25,7 +25,6 @@
 #include <linux/mfd/core.h>
 #include <linux/regmap.h>
 #include <linux/mfd/tps65910.h>
-#include <linux/of.h>
 #include <linux/of_device.h>
 
 static struct resource rtc_resources[] = {
@@ -36,7 +35,7 @@ static struct resource rtc_resources[] = {
 	}
 };
 
-static const struct mfd_cell tps65910s[] = {
+static struct mfd_cell tps65910s[] = {
 	{
 		.name = "tps65910-gpio",
 	},
@@ -255,10 +254,8 @@ static int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 	ret = regmap_add_irq_chip(tps65910->regmap, tps65910->chip_irq,
 		IRQF_ONESHOT, pdata->irq_base,
 		tps6591x_irqs_chip, &tps65910->irq_data);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_warn(tps65910->dev, "Failed to add irq_chip %d\n", ret);
-		tps65910->chip_irq = 0;
-	}
 	return ret;
 }
 
@@ -379,7 +376,7 @@ err_sleep_init:
 }
 
 #ifdef CONFIG_OF
-static const struct of_device_id tps65910_of_match[] = {
+static struct of_device_id tps65910_of_match[] = {
 	{ .compatible = "ti,tps65910", .data = (void *)TPS65910},
 	{ .compatible = "ti,tps65911", .data = (void *)TPS65911},
 	{ },
@@ -387,7 +384,7 @@ static const struct of_device_id tps65910_of_match[] = {
 MODULE_DEVICE_TABLE(of, tps65910_of_match);
 
 static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
-						unsigned long *chip_id)
+						int *chip_id)
 {
 	struct device_node *np = client->dev.of_node;
 	struct tps65910_board *board_info;
@@ -401,7 +398,7 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 		return NULL;
 	}
 
-	*chip_id  = (unsigned long)match->data;
+	*chip_id  = (int)match->data;
 
 	board_info = devm_kzalloc(&client->dev, sizeof(*board_info),
 			GFP_KERNEL);
@@ -413,10 +410,14 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 	ret = of_property_read_u32(np, "ti,vmbch-threshold", &prop);
 	if (!ret)
 		board_info->vmbch_threshold = prop;
+	else if (*chip_id == TPS65911)
+		dev_warn(&client->dev, "VMBCH-Threshold not specified");
 
 	ret = of_property_read_u32(np, "ti,vmbch2-threshold", &prop);
 	if (!ret)
 		board_info->vmbch2_threshold = prop;
+	else if (*chip_id == TPS65911)
+		dev_warn(&client->dev, "VMBCH2-Threshold not specified");
 
 	prop = of_property_read_bool(np, "ti,en-ck32k-xtal");
 	board_info->en_ck32k_xtal = prop;
@@ -431,7 +432,7 @@ static struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
 #else
 static inline
 struct tps65910_board *tps65910_parse_dt(struct i2c_client *client,
-					 unsigned long *chip_id)
+					 int *chip_id)
 {
 	return NULL;
 }
@@ -453,14 +454,14 @@ static void tps65910_power_off(void)
 }
 
 static int tps65910_i2c_probe(struct i2c_client *i2c,
-			      const struct i2c_device_id *id)
+					const struct i2c_device_id *id)
 {
 	struct tps65910 *tps65910;
 	struct tps65910_board *pmic_plat_data;
 	struct tps65910_board *of_pmic_plat_data = NULL;
 	struct tps65910_platform_data *init_data;
-	unsigned long chip_id = id->driver_data;
 	int ret = 0;
+	int chip_id = id->driver_data;
 
 	pmic_plat_data = dev_get_platdata(&i2c->dev);
 
@@ -511,7 +512,6 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 			      regmap_irq_get_domain(tps65910->irq_data));
 	if (ret < 0) {
 		dev_err(&i2c->dev, "mfd_add_devices failed: %d\n", ret);
-		tps65910_irq_exit(tps65910);
 		return ret;
 	}
 

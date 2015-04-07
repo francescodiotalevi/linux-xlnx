@@ -87,6 +87,49 @@ struct ns2501_priv {
  * when switching the resolution.
  */
 
+static void enable_dvo(struct intel_dvo_device *dvo)
+{
+	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
+	struct i2c_adapter *adapter = dvo->i2c_bus;
+	struct intel_gmbus *bus = container_of(adapter,
+					       struct intel_gmbus,
+					       adapter);
+	struct drm_i915_private *dev_priv = bus->dev_priv;
+
+	DRM_DEBUG_KMS("%s: Trying to re-enable the DVO\n", __FUNCTION__);
+
+	ns->dvoc = I915_READ(DVO_C);
+	ns->pll_a = I915_READ(_DPLL_A);
+	ns->srcdim = I915_READ(DVOC_SRCDIM);
+	ns->fw_blc = I915_READ(FW_BLC);
+
+	I915_WRITE(DVOC, 0x10004084);
+	I915_WRITE(_DPLL_A, 0xd0820000);
+	I915_WRITE(DVOC_SRCDIM, 0x400300);	// 1024x768
+	I915_WRITE(FW_BLC, 0x1080304);
+
+	I915_WRITE(DVOC, 0x90004084);
+}
+
+/*
+ * Restore the I915 registers modified by the above
+ * trigger function.
+ */
+static void restore_dvo(struct intel_dvo_device *dvo)
+{
+	struct i2c_adapter *adapter = dvo->i2c_bus;
+	struct intel_gmbus *bus = container_of(adapter,
+					       struct intel_gmbus,
+					       adapter);
+	struct drm_i915_private *dev_priv = bus->dev_priv;
+	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
+
+	I915_WRITE(DVOC, ns->dvoc);
+	I915_WRITE(_DPLL_A, ns->pll_a);
+	I915_WRITE(DVOC_SRCDIM, ns->srcdim);
+	I915_WRITE(FW_BLC, ns->fw_blc);
+}
+
 /*
 ** Read a register from the ns2501.
 ** Returns true if successful, false otherwise.
@@ -121,7 +164,7 @@ static bool ns2501_readb(struct intel_dvo_device *dvo, int addr, uint8_t * ch)
 	if (i2c_transfer(adapter, msgs, 2) == 2) {
 		*ch = in_buf[0];
 		return true;
-	}
+	};
 
 	if (!ns->quiet) {
 		DRM_DEBUG_KMS
@@ -233,8 +276,9 @@ static enum drm_mode_status ns2501_mode_valid(struct intel_dvo_device *dvo,
 					      struct drm_display_mode *mode)
 {
 	DRM_DEBUG_KMS
-	    ("is mode valid (hdisplay=%d,htotal=%d,vdisplay=%d,vtotal=%d)\n",
-	     mode->hdisplay, mode->htotal, mode->vdisplay, mode->vtotal);
+	    ("%s: is mode valid (hdisplay=%d,htotal=%d,vdisplay=%d,vtotal=%d)\n",
+	     __FUNCTION__, mode->hdisplay, mode->htotal, mode->vdisplay,
+	     mode->vtotal);
 
 	/*
 	 * Currently, these are all the modes I have data from.
@@ -256,12 +300,13 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 			    struct drm_display_mode *adjusted_mode)
 {
 	bool ok;
-	int retries = 10;
+	bool restore = false;
 	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
 
 	DRM_DEBUG_KMS
-	    ("set mode (hdisplay=%d,htotal=%d,vdisplay=%d,vtotal=%d).\n",
-	     mode->hdisplay, mode->htotal, mode->vdisplay, mode->vtotal);
+	    ("%s: set mode (hdisplay=%d,htotal=%d,vdisplay=%d,vtotal=%d).\n",
+	     __FUNCTION__, mode->hdisplay, mode->htotal, mode->vdisplay,
+	     mode->vtotal);
 
 	/*
 	 * Where do I find the native resolution for which scaling is not required???
@@ -275,7 +320,8 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 		if (mode->hdisplay == 800 && mode->vdisplay == 600) {
 			/* mode 277 */
 			ns->reg_8_shadow &= ~NS2501_8_BPAS;
-			DRM_DEBUG_KMS("switching to 800x600\n");
+			DRM_DEBUG_KMS("%s: switching to 800x600\n",
+				      __FUNCTION__);
 
 			/*
 			 * No, I do not know where this data comes from.
@@ -338,7 +384,8 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 
 		} else if (mode->hdisplay == 640 && mode->vdisplay == 480) {
 			/* mode 274 */
-			DRM_DEBUG_KMS("switching to 640x480\n");
+			DRM_DEBUG_KMS("%s: switching to 640x480\n",
+				      __FUNCTION__);
 			/*
 			 * No, I do not know where this data comes from.
 			 * It is just what the video bios left in the DVO, so
@@ -402,7 +449,8 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 
 		} else if (mode->hdisplay == 1024 && mode->vdisplay == 768) {
 			/* mode 280 */
-			DRM_DEBUG_KMS("switching to 1024x768\n");
+			DRM_DEBUG_KMS("%s: switching to 1024x768\n",
+				      __FUNCTION__);
 			/*
 			 * This might or might not work, actually. I'm silently
 			 * assuming here that the native panel resolution is
@@ -428,7 +476,20 @@ static void ns2501_mode_set(struct intel_dvo_device *dvo,
 			ns->reg_8_shadow |= NS2501_8_BPAS;
 		}
 		ok &= ns2501_writeb(dvo, NS2501_REG8, ns->reg_8_shadow);
-	} while (!ok && retries--);
+
+		if (!ok) {
+			if (restore)
+				restore_dvo(dvo);
+			enable_dvo(dvo);
+			restore = true;
+		}
+	} while (!ok);
+	/*
+	 * Restore the old i915 registers before
+	 * forcing the ns2501 on.
+	 */
+	if (restore)
+		restore_dvo(dvo);
 }
 
 /* set the NS2501 power state */
@@ -449,11 +510,12 @@ static bool ns2501_get_hw_state(struct intel_dvo_device *dvo)
 static void ns2501_dpms(struct intel_dvo_device *dvo, bool enable)
 {
 	bool ok;
-	int retries = 10;
+	bool restore = false;
 	struct ns2501_priv *ns = (struct ns2501_priv *)(dvo->dev_priv);
 	unsigned char ch;
 
-	DRM_DEBUG_KMS("Trying set the dpms of the DVO to %i\n", enable);
+	DRM_DEBUG_KMS("%s: Trying set the dpms of the DVO to %i\n",
+		      __FUNCTION__, enable);
 
 	ch = ns->reg_8_shadow;
 
@@ -475,7 +537,16 @@ static void ns2501_dpms(struct intel_dvo_device *dvo, bool enable)
 			ok &=
 			    ns2501_writeb(dvo, 0x35,
 					  enable ? 0xff : 0x00);
-		} while (!ok && retries--);
+			if (!ok) {
+				if (restore)
+					restore_dvo(dvo);
+				enable_dvo(dvo);
+				restore = true;
+			}
+		} while (!ok);
+
+		if (restore)
+			restore_dvo(dvo);
 	}
 }
 
@@ -484,15 +555,15 @@ static void ns2501_dump_regs(struct intel_dvo_device *dvo)
 	uint8_t val;
 
 	ns2501_readb(dvo, NS2501_FREQ_LO, &val);
-	DRM_DEBUG_KMS("NS2501_FREQ_LO: 0x%02x\n", val);
+	DRM_LOG_KMS("NS2501_FREQ_LO: 0x%02x\n", val);
 	ns2501_readb(dvo, NS2501_FREQ_HI, &val);
-	DRM_DEBUG_KMS("NS2501_FREQ_HI: 0x%02x\n", val);
+	DRM_LOG_KMS("NS2501_FREQ_HI: 0x%02x\n", val);
 	ns2501_readb(dvo, NS2501_REG8, &val);
-	DRM_DEBUG_KMS("NS2501_REG8: 0x%02x\n", val);
+	DRM_LOG_KMS("NS2501_REG8: 0x%02x\n", val);
 	ns2501_readb(dvo, NS2501_REG9, &val);
-	DRM_DEBUG_KMS("NS2501_REG9: 0x%02x\n", val);
+	DRM_LOG_KMS("NS2501_REG9: 0x%02x\n", val);
 	ns2501_readb(dvo, NS2501_REGC, &val);
-	DRM_DEBUG_KMS("NS2501_REGC: 0x%02x\n", val);
+	DRM_LOG_KMS("NS2501_REGC: 0x%02x\n", val);
 }
 
 static void ns2501_destroy(struct intel_dvo_device *dvo)

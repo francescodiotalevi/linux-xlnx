@@ -913,12 +913,16 @@ static void moxa_board_deinit(struct moxa_board_conf *brd)
 
 	/* pci hot-un-plug support */
 	for (a = 0; a < brd->numPorts; a++)
-		if (brd->ports[a].port.flags & ASYNC_INITIALIZED)
-			tty_port_tty_hangup(&brd->ports[a].port, false);
-
+		if (brd->ports[a].port.flags & ASYNC_INITIALIZED) {
+			struct tty_struct *tty = tty_port_tty_get(
+						&brd->ports[a].port);
+			if (tty) {
+				tty_hangup(tty);
+				tty_kref_put(tty);
+			}
+		}
 	for (a = 0; a < MAX_PORTS_PER_BOARD; a++)
 		tty_port_destroy(&brd->ports[a].port);
-
 	while (1) {
 		opened = 0;
 		for (a = 0; a < brd->numPorts; a++)
@@ -1361,6 +1365,7 @@ static void moxa_hangup(struct tty_struct *tty)
 
 static void moxa_new_dcdstate(struct moxa_port *p, u8 dcd)
 {
+	struct tty_struct *tty;
 	unsigned long flags;
 	dcd = !!dcd;
 
@@ -1368,8 +1373,10 @@ static void moxa_new_dcdstate(struct moxa_port *p, u8 dcd)
 	if (dcd != p->DCDState) {
         	p->DCDState = dcd;
         	spin_unlock_irqrestore(&p->port.lock, flags);
-		if (!dcd)
-			tty_port_tty_hangup(&p->port, true);
+		tty = tty_port_tty_get(&p->port);
+		if (tty && !C_CLOCAL(tty) && !dcd)
+			tty_hangup(tty);
+		tty_kref_put(tty);
 	}
 	else
 		spin_unlock_irqrestore(&p->port.lock, flags);
@@ -1398,7 +1405,7 @@ static int moxa_poll_port(struct moxa_port *p, unsigned int handle,
 		if (inited && !test_bit(TTY_THROTTLED, &tty->flags) &&
 				MoxaPortRxQueue(p) > 0) { /* RX */
 			MoxaPortReadData(p);
-			tty_schedule_flip(&p->port);
+			tty_schedule_flip(tty);
 		}
 	} else {
 		clear_bit(EMPTYWAIT, &p->statusflags);
@@ -1422,8 +1429,8 @@ static int moxa_poll_port(struct moxa_port *p, unsigned int handle,
 		goto put;
 
 	if (tty && (intr & IntrBreak) && !I_IGNBRK(tty)) { /* BREAK */
-		tty_insert_flip_char(&p->port, 0, TTY_BREAK);
-		tty_schedule_flip(&p->port);
+		tty_insert_flip_char(tty, 0, TTY_BREAK);
+		tty_schedule_flip(tty);
 	}
 
 	if (intr & IntrLine)
@@ -1959,7 +1966,7 @@ static int MoxaPortReadData(struct moxa_port *port)
 			ofs = baseAddr + DynPage_addr + bufhead + head;
 			len = (tail >= head) ? (tail - head) :
 					(rx_mask + 1 - head);
-			len = tty_prepare_flip_string(&port->port, &dst,
+			len = tty_prepare_flip_string(tty, &dst,
 					min(len, count));
 			memcpy_fromio(dst, ofs, len);
 			head = (head + len) & rx_mask;
@@ -1971,7 +1978,7 @@ static int MoxaPortReadData(struct moxa_port *port)
 		while (count > 0) {
 			writew(pageno, baseAddr + Control_reg);
 			ofs = baseAddr + DynPage_addr + pageofs;
-			len = tty_prepare_flip_string(&port->port, &dst,
+			len = tty_prepare_flip_string(tty, &dst,
 					min(Page_size - pageofs, count));
 			memcpy_fromio(dst, ofs, len);
 

@@ -46,8 +46,6 @@
 #include <linux/suspend.h>
 #include <linux/cpu.h>
 #include <linux/compat.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
@@ -752,9 +750,8 @@ done_battery_state_smart(struct adb_request* req)
 				voltage = (req->reply[8] << 8) | req->reply[9];
 				break;
 			default:
-				pr_warn("pmu.c: unrecognized battery info, "
-					"len: %d, %4ph\n", req->reply_len,
-							   req->reply);
+				printk(KERN_WARNING "pmu.c : unrecognized battery info, len: %d, %02x %02x %02x %02x\n",
+					req->reply_len, req->reply[0], req->reply[1], req->reply[2], req->reply[3]);
 				break;
 		}
 	}
@@ -872,7 +869,7 @@ static int pmu_battery_proc_show(struct seq_file *m, void *v)
 
 static int pmu_battery_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, pmu_battery_proc_show, PDE_DATA(inode));
+	return single_open(file, pmu_battery_proc_show, PDE(inode)->data);
 }
 
 static const struct file_operations pmu_battery_proc_fops = {

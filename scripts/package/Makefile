@@ -27,44 +27,53 @@ RPM := $(shell if [ -x "/usr/bin/rpmbuild" ]; then echo rpmbuild; \
 
 # Remove hyphens since they have special meaning in RPM filenames
 KERNELPATH := kernel-$(subst -,_,$(KERNELRELEASE))
-# Include only those top-level files that are needed by make, plus the GPL copy
-TAR_CONTENT := $(KBUILD_ALLDIRS) kernel.spec .config .scmversion Makefile \
-               Kbuild Kconfig COPYING $(wildcard localversion*)
-TAR_CONTENT := $(addprefix $(KERNELPATH)/,$(TAR_CONTENT))
 MKSPEC     := $(srctree)/scripts/package/mkspec
+PREV       := set -e; cd -P ..;
 
 # rpm-pkg
 # ---------------------------------------------------------------------------
-rpm-pkg rpm: FORCE
-	@if test "$(objtree)" != "$(srctree)"; then \
+$(objtree)/kernel.spec: $(MKSPEC) $(srctree)/Makefile
+	$(CONFIG_SHELL) $(MKSPEC) > $@
+
+rpm-pkg rpm: $(objtree)/kernel.spec FORCE
+	@if test -n "$(KBUILD_OUTPUT)"; then \
 		echo "Building source + binary RPM is not possible outside the"; \
 		echo "kernel source tree. Don't set KBUILD_OUTPUT, or use the"; \
 		echo "binrpm-pkg target instead."; \
 		false; \
 	fi
 	$(MAKE) clean
-	ln -sf $(srctree) $(KERNELPATH)
-	$(CONFIG_SHELL) $(MKSPEC) >$(objtree)/kernel.spec
+	$(PREV) ln -sf $(srctree) $(KERNELPATH)
 	$(CONFIG_SHELL) $(srctree)/scripts/setlocalversion --save-scmversion
-	tar -cz $(RCS_TAR_IGNORE) -f $(KERNELPATH).tar.gz $(TAR_CONTENT)
-	rm $(KERNELPATH)
+	$(PREV) tar -cz $(RCS_TAR_IGNORE) -f $(KERNELPATH).tar.gz $(KERNELPATH)/.
+	$(PREV) rm $(KERNELPATH)
 	rm -f $(objtree)/.scmversion
+	set -e; \
 	$(CONFIG_SHELL) $(srctree)/scripts/mkversion > $(objtree)/.tmp_version
+	set -e; \
 	mv -f $(objtree)/.tmp_version $(objtree)/.version
-	$(RPM) $(RPMOPTS) --target $(UTS_MACHINE) -ta $(KERNELPATH).tar.gz
-	rm $(KERNELPATH).tar.gz kernel.spec
+
+	$(RPM) $(RPMOPTS) --target $(UTS_MACHINE) -ta ../$(KERNELPATH).tar.gz
+	rm ../$(KERNELPATH).tar.gz
+
+clean-files := $(objtree)/kernel.spec
 
 # binrpm-pkg
 # ---------------------------------------------------------------------------
-binrpm-pkg: FORCE
+$(objtree)/binkernel.spec: $(MKSPEC) $(srctree)/Makefile
+	$(CONFIG_SHELL) $(MKSPEC) prebuilt > $@
+
+binrpm-pkg: $(objtree)/binkernel.spec FORCE
 	$(MAKE) KBUILD_SRC=
-	$(CONFIG_SHELL) $(MKSPEC) prebuilt > $(objtree)/binkernel.spec
+	set -e; \
 	$(CONFIG_SHELL) $(srctree)/scripts/mkversion > $(objtree)/.tmp_version
+	set -e; \
 	mv -f $(objtree)/.tmp_version $(objtree)/.version
 
 	$(RPM) $(RPMOPTS) --define "_builddir $(objtree)" --target \
-		$(UTS_MACHINE) -bb $(objtree)/binkernel.spec
-	rm binkernel.spec
+		$(UTS_MACHINE) -bb $<
+
+clean-files += $(objtree)/binkernel.spec
 
 # Deb target
 # ---------------------------------------------------------------------------
@@ -115,9 +124,7 @@ git --git-dir=$(srctree)/.git archive --prefix=$(perf-tar)/         \
 	-o $(perf-tar).tar;                                         \
 mkdir -p $(perf-tar);                                               \
 git --git-dir=$(srctree)/.git rev-parse HEAD > $(perf-tar)/HEAD;    \
-(cd $(srctree)/tools/perf;                                          \
-util/PERF-VERSION-GEN ../../$(perf-tar)/ 2>/dev/null);              \
-tar rf $(perf-tar).tar $(perf-tar)/HEAD $(perf-tar)/PERF-VERSION-FILE; \
+tar rf $(perf-tar).tar $(perf-tar)/HEAD;                            \
 rm -r $(perf-tar);                                                  \
 $(if $(findstring tar-src,$@),,                                     \
 $(if $(findstring bz2,$@),bzip2,                                    \
@@ -143,3 +150,4 @@ help: FORCE
 	@echo '  perf-targz-src-pkg  - Build $(perf-tar).tar.gz source tarball'
 	@echo '  perf-tarbz2-src-pkg - Build $(perf-tar).tar.bz2 source tarball'
 	@echo '  perf-tarxz-src-pkg  - Build $(perf-tar).tar.xz source tarball'
+

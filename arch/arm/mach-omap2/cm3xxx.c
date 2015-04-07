@@ -18,6 +18,9 @@
 #include <linux/err.h>
 #include <linux/io.h>
 
+#include "soc.h"
+#include "iomap.h"
+#include "common.h"
 #include "prm2xxx_3xxx.h"
 #include "cm.h"
 #include "cm3xxx.h"
@@ -183,7 +186,7 @@ static int omap3xxx_clkdm_clear_all_sleepdeps(struct clockdomain *clkdm)
 			continue; /* only happens if data is erroneous */
 
 		mask |= 1 << cd->clkdm->dep_bit;
-		cd->sleepdep_usecount = 0;
+		atomic_set(&cd->sleepdep_usecount, 0);
 	}
 	omap2_cm_clear_mod_reg_bits(mask, clkdm->pwrdm.ptr->prcm_offs,
 				    OMAP3430_CM_SLEEPDEP);
@@ -206,8 +209,8 @@ static int omap3xxx_clkdm_wakeup(struct clockdomain *clkdm)
 
 static void omap3xxx_clkdm_allow_idle(struct clockdomain *clkdm)
 {
-	if (clkdm->usecount > 0)
-		clkdm_add_autodeps(clkdm);
+	if (atomic_read(&clkdm->usecount) > 0)
+		_clkdm_add_autodeps(clkdm);
 
 	omap3xxx_cm_clkdm_enable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 				       clkdm->clktrctrl_mask);
@@ -218,8 +221,8 @@ static void omap3xxx_clkdm_deny_idle(struct clockdomain *clkdm)
 	omap3xxx_cm_clkdm_disable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 					clkdm->clktrctrl_mask);
 
-	if (clkdm->usecount > 0)
-		clkdm_del_autodeps(clkdm);
+	if (atomic_read(&clkdm->usecount) > 0)
+		_clkdm_del_autodeps(clkdm);
 }
 
 static int omap3xxx_clkdm_clk_enable(struct clockdomain *clkdm)
@@ -247,7 +250,7 @@ static int omap3xxx_clkdm_clk_enable(struct clockdomain *clkdm)
 		/* Disable HW transitions when we are changing deps */
 		omap3xxx_cm_clkdm_disable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 						clkdm->clktrctrl_mask);
-		clkdm_add_autodeps(clkdm);
+		_clkdm_add_autodeps(clkdm);
 		omap3xxx_cm_clkdm_enable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 					       clkdm->clktrctrl_mask);
 	} else {
@@ -284,7 +287,7 @@ static int omap3xxx_clkdm_clk_disable(struct clockdomain *clkdm)
 		/* Disable HW transitions when we are changing deps */
 		omap3xxx_cm_clkdm_disable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 						clkdm->clktrctrl_mask);
-		clkdm_del_autodeps(clkdm);
+		_clkdm_del_autodeps(clkdm);
 		omap3xxx_cm_clkdm_enable_hwsup(clkdm->pwrdm.ptr->prcm_offs,
 					       clkdm->clktrctrl_mask);
 	} else {
@@ -385,8 +388,7 @@ void omap3_cm_save_context(void)
 		omap2_cm_read_mod_reg(OMAP3430_IVA2_MOD, CM_CLKSEL1);
 	cm_context.iva2_cm_clksel2 =
 		omap2_cm_read_mod_reg(OMAP3430_IVA2_MOD, CM_CLKSEL2);
-	cm_context.cm_sysconfig =
-		omap2_cm_read_mod_reg(OCP_MOD, OMAP3430_CM_SYSCONFIG);
+	cm_context.cm_sysconfig = __raw_readl(OMAP3430_CM_SYSCONFIG);
 	cm_context.sgx_cm_clksel =
 		omap2_cm_read_mod_reg(OMAP3430ES2_SGX_MOD, CM_CLKSEL);
 	cm_context.dss_cm_clksel =
@@ -416,8 +418,7 @@ void omap3_cm_save_context(void)
 		omap2_cm_read_mod_reg(PLL_MOD, OMAP3430ES2_CM_CLKSEL5);
 	cm_context.pll_cm_clken2 =
 		omap2_cm_read_mod_reg(PLL_MOD, OMAP3430ES2_CM_CLKEN2);
-	cm_context.cm_polctrl =
-		omap2_cm_read_mod_reg(OCP_MOD, OMAP3430_CM_POLCTRL);
+	cm_context.cm_polctrl = __raw_readl(OMAP3430_CM_POLCTRL);
 	cm_context.iva2_cm_fclken =
 		omap2_cm_read_mod_reg(OMAP3430_IVA2_MOD, CM_FCLKEN);
 	cm_context.iva2_cm_clken_pll =
@@ -518,8 +519,7 @@ void omap3_cm_restore_context(void)
 			       CM_CLKSEL1);
 	omap2_cm_write_mod_reg(cm_context.iva2_cm_clksel2, OMAP3430_IVA2_MOD,
 			       CM_CLKSEL2);
-	omap2_cm_write_mod_reg(cm_context.cm_sysconfig, OCP_MOD,
-			       OMAP3430_CM_SYSCONFIG);
+	__raw_writel(cm_context.cm_sysconfig, OMAP3430_CM_SYSCONFIG);
 	omap2_cm_write_mod_reg(cm_context.sgx_cm_clksel, OMAP3430ES2_SGX_MOD,
 			       CM_CLKSEL);
 	omap2_cm_write_mod_reg(cm_context.dss_cm_clksel, OMAP3430_DSS_MOD,
@@ -547,8 +547,7 @@ void omap3_cm_restore_context(void)
 			       OMAP3430ES2_CM_CLKSEL5);
 	omap2_cm_write_mod_reg(cm_context.pll_cm_clken2, PLL_MOD,
 			       OMAP3430ES2_CM_CLKEN2);
-	omap2_cm_write_mod_reg(cm_context.cm_polctrl, OCP_MOD,
-			       OMAP3430_CM_POLCTRL);
+	__raw_writel(cm_context.cm_polctrl, OMAP3430_CM_POLCTRL);
 	omap2_cm_write_mod_reg(cm_context.iva2_cm_fclken, OMAP3430_IVA2_MOD,
 			       CM_FCLKEN);
 	omap2_cm_write_mod_reg(cm_context.iva2_cm_clken_pll, OMAP3430_IVA2_MOD,
@@ -637,28 +636,6 @@ void omap3_cm_restore_context(void)
 			       OMAP3_CM_CLKOUT_CTRL_OFFSET);
 }
 
-void omap3_cm_save_scratchpad_contents(u32 *ptr)
-{
-	*ptr++ = omap2_cm_read_mod_reg(CORE_MOD, CM_CLKSEL);
-	*ptr++ = omap2_cm_read_mod_reg(WKUP_MOD, CM_CLKSEL);
-	*ptr++ = omap2_cm_read_mod_reg(PLL_MOD, CM_CLKEN);
-
-	/*
-	 * As per erratum i671, ROM code does not respect the PER DPLL
-	 * programming scheme if CM_AUTOIDLE_PLL..AUTO_PERIPH_DPLL == 1.
-	 * Then,  in anycase, clear these bits to avoid extra latencies.
-	 */
-	*ptr++ = omap2_cm_read_mod_reg(PLL_MOD, CM_AUTOIDLE) &
-		~OMAP3430_AUTO_PERIPH_DPLL_MASK;
-	*ptr++ = omap2_cm_read_mod_reg(PLL_MOD, OMAP3430_CM_CLKSEL1_PLL);
-	*ptr++ = omap2_cm_read_mod_reg(PLL_MOD, OMAP3430_CM_CLKSEL2_PLL);
-	*ptr++ = omap2_cm_read_mod_reg(PLL_MOD, OMAP3430_CM_CLKSEL3);
-	*ptr++ = omap2_cm_read_mod_reg(MPU_MOD, OMAP3430_CM_CLKEN_PLL);
-	*ptr++ = omap2_cm_read_mod_reg(MPU_MOD, OMAP3430_CM_AUTOIDLE_PLL);
-	*ptr++ = omap2_cm_read_mod_reg(MPU_MOD, OMAP3430_CM_CLKSEL1_PLL);
-	*ptr++ = omap2_cm_read_mod_reg(MPU_MOD, OMAP3430_CM_CLKSEL2_PLL);
-}
-
 /*
  *
  */
@@ -670,11 +647,19 @@ static struct cm_ll_data omap3xxx_cm_ll_data = {
 
 int __init omap3xxx_cm_init(void)
 {
+	if (!cpu_is_omap34xx())
+		return 0;
+
 	return cm_register(&omap3xxx_cm_ll_data);
 }
 
 static void __exit omap3xxx_cm_exit(void)
 {
-	cm_unregister(&omap3xxx_cm_ll_data);
+	if (!cpu_is_omap34xx())
+		return;
+
+	/* Should never happen */
+	WARN(cm_unregister(&omap3xxx_cm_ll_data),
+	     "%s: cm_ll_data function pointer mismatch\n", __func__);
 }
 __exitcall(omap3xxx_cm_exit);

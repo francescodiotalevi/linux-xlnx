@@ -28,7 +28,7 @@
 #include <linux/interrupt.h>
 #include <linux/of_irq.h>
 #include <linux/smp.h>
-#include <linux/irqchip/arm-gic.h>
+#include <asm/hardware/gic.h>
 #include <asm/outercache.h>
 #include <asm/cacheflush.h>
 #include <linux/slab.h>
@@ -93,7 +93,7 @@ static int zynq_rproc_start(struct rproc *rproc)
 	outer_flush_range(local->mem_start, local->mem_end);
 
 	remoteprocdev = pdev;
-	ret = zynq_cpun_start(rproc->bootaddr, 1);
+	ret = zynq_cpun_start(0, 1);
 
 	return ret;
 }
@@ -101,12 +101,12 @@ static int zynq_rproc_start(struct rproc *rproc)
 /* kick a firmware */
 static void zynq_rproc_kick(struct rproc *rproc, int vqid)
 {
-	struct device *dev = rproc->dev.parent;
+  	struct device *dev = rproc->dev.parent;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct zynq_rproc_pdata *local = platform_get_drvdata(pdev);
 
-	dev_dbg(dev, "KICK Firmware to start send messages vqid %d\n", vqid);
-
+	dev_dbg(dev, "KICK Firmware to start send messages vqid %d\n",
+									vqid);
 	/* Send swirq to firmware */
 	if (!vqid)
 		gic_raise_softirq(cpumask_of(1), local->vring0);
@@ -172,10 +172,11 @@ static void clear_irq(struct platform_device *pdev)
 static int zynq_remoteproc_probe(struct platform_device *pdev)
 {
 	const unsigned char *prop;
+	const void *of_prop;
 	struct resource *res; /* IO mem resources */
 	int ret = 0;
 	struct irq_list *tmp;
-	int count = 0;
+	int count;
 	struct zynq_rproc_pdata *local;
 
 	ret = cpu_down(1);
@@ -185,10 +186,11 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	local = devm_kzalloc(&pdev->dev, sizeof(struct zynq_rproc_pdata),
-			     GFP_KERNEL);
-	if (!local)
+	local = kzalloc(sizeof(struct zynq_rproc_pdata), GFP_KERNEL);
+	if (!local) {
+		dev_err(&pdev->dev, "Unable to alloc private data\n");
 		return -ENOMEM;
+	}
 
 	platform_set_drvdata(pdev, local);
 
@@ -208,27 +210,21 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 		DMA_MEMORY_IO);
 	if (!ret) {
 		dev_err(&pdev->dev, "dma_declare_coherent_memory failed\n");
-		ret = -ENOMEM;
 		goto dma_fault;
 	}
 
 	ret = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret) {
 		dev_err(&pdev->dev, "dma_set_coherent_mask: %d\n", ret);
-		goto dma_mask_fault;
+		goto dma_fault;
 	}
 
 	/* Init list for IRQs - it can be long list */
 	INIT_LIST_HEAD(&local->mylist.list);
 
+	count = of_irq_count(pdev->dev.of_node);
 	/* Alloc IRQ based on DTS to be sure that no other driver will use it */
-	while (1) {
-		int irq;
-
-		irq = platform_get_irq(pdev, count++);
-		if (irq == -ENXIO || irq == -EINVAL)
-			break;
-
+	while (count--) {
 		tmp = kzalloc(sizeof(struct irq_list), GFP_KERNEL);
 		if (!tmp) {
 			dev_err(&pdev->dev, "Unable to alloc irq list\n");
@@ -236,7 +232,7 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 			goto irq_fault;
 		}
 
-		tmp->irq = irq;
+		tmp->irq = irq_of_parse_and_map(pdev->dev.of_node, count);
 
 		dev_dbg(&pdev->dev, "%d: Alloc irq: %d\n", count, tmp->irq);
 
@@ -261,31 +257,34 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate free IPI number */
-	ret = of_property_read_u32(pdev->dev.of_node, "ipino", &local->ipino);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
-		goto irq_fault;
+	of_prop = of_get_property(pdev->dev.of_node, "ipino", NULL);
+	if (!of_prop) {
+		dev_err(&pdev->dev, "Please specify ipino node property\n");
+		goto ipi_fault;
 	}
 
+	local->ipino = be32_to_cpup(of_prop);
 	ret = set_ipi_handler(local->ipino, ipi_kick, "Firmware kick");
 	if (ret) {
 		dev_err(&pdev->dev, "IPI handler already registered\n");
-		goto irq_fault;
+		goto ipi_fault;
 	}
 
 	/* Read vring0 ipi number */
-	ret = of_property_read_u32(pdev->dev.of_node, "vring0", &local->vring0);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
+	of_prop = of_get_property(pdev->dev.of_node, "vring0", NULL);
+	if (!of_prop) {
+		dev_err(&pdev->dev, "Please specify vring0 node property\n");
 		goto ipi_fault;
 	}
+	local->vring0 = be32_to_cpup(of_prop);
 
 	/* Read vring1 ipi number */
-	ret = of_property_read_u32(pdev->dev.of_node, "vring1", &local->vring1);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
+	of_prop = of_get_property(pdev->dev.of_node, "vring1", NULL);
+	if (!of_prop) {
+		dev_err(&pdev->dev, "Please specify vring1 node property\n");
 		goto ipi_fault;
 	}
+	local->vring1 = be32_to_cpup(of_prop);
 
 	/* Module param firmware first */
 	if (firmware)
@@ -299,7 +298,7 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 				&zynq_rproc_ops, prop, sizeof(struct rproc));
 		if (!local->rproc) {
 			dev_err(&pdev->dev, "rproc allocation failed\n");
-			goto ipi_fault;
+			goto rproc_fault;
 		}
 
 		ret = rproc_add(local->rproc);
@@ -319,9 +318,6 @@ ipi_fault:
 
 irq_fault:
 	clear_irq(pdev);
-
-dma_mask_fault:
-	dma_release_declared_memory(&pdev->dev);
 
 dma_fault:
 	/* Cpu can't be power on - for example in nosmp mode */
@@ -356,7 +352,7 @@ static int zynq_remoteproc_remove(struct platform_device *pdev)
 }
 
 /* Match table for OF platform binding */
-static const struct of_device_id zynq_remoteproc_match[] = {
+static struct of_device_id zynq_remoteproc_match[] = {
 	{ .compatible = "xlnx,zynq_remoteproc", },
 	{ /* end of list */ },
 };

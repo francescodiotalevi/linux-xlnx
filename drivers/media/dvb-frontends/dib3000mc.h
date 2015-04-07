@@ -13,8 +13,6 @@
 #ifndef DIB3000MC_H
 #define DIB3000MC_H
 
-#include <linux/kconfig.h>
-
 #include "dibx000_common.h"
 
 struct dib3000mc_config {
@@ -41,7 +39,8 @@ struct dib3000mc_config {
 #define DEFAULT_DIB3000MC_I2C_ADDRESS 16
 #define DEFAULT_DIB3000P_I2C_ADDRESS  24
 
-#if IS_ENABLED(CONFIG_DVB_DIB3000MC)
+#if defined(CONFIG_DVB_DIB3000MC) || (defined(CONFIG_DVB_DIB3000MC_MODULE) && \
+				      defined(MODULE))
 extern struct dvb_frontend *dib3000mc_attach(struct i2c_adapter *i2c_adap,
 					     u8 i2c_addr,
 					     struct dib3000mc_config *cfg);

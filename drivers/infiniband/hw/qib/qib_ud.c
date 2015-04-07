@@ -57,20 +57,13 @@ static void qib_ud_loopback(struct qib_qp *sqp, struct qib_swqe *swqe)
 	struct qib_sge *sge;
 	struct ib_wc wc;
 	u32 length;
-	enum ib_qp_type sqptype, dqptype;
 
 	qp = qib_lookup_qpn(ibp, swqe->wr.wr.ud.remote_qpn);
 	if (!qp) {
 		ibp->n_pkt_drops++;
 		return;
 	}
-
-	sqptype = sqp->ibqp.qp_type == IB_QPT_GSI ?
-			IB_QPT_UD : sqp->ibqp.qp_type;
-	dqptype = qp->ibqp.qp_type == IB_QPT_GSI ?
-			IB_QPT_UD : qp->ibqp.qp_type;
-
-	if (dqptype != sqptype ||
+	if (qp->ibqp.qp_type != sqp->ibqp.qp_type ||
 	    !(ib_qib_state_ops[qp->state] & QIB_PROCESS_RECV_OK)) {
 		ibp->n_pkt_drops++;
 		goto drop;
@@ -280,11 +273,11 @@ int qib_make_ud_req(struct qib_qp *qp)
 	ah_attr = &to_iah(wqe->wr.wr.ud.ah)->attr;
 	if (ah_attr->dlid >= QIB_MULTICAST_LID_BASE) {
 		if (ah_attr->dlid != QIB_PERMISSIVE_LID)
-			this_cpu_inc(ibp->pmastats->n_multicast_xmit);
+			ibp->n_multicast_xmit++;
 		else
-			this_cpu_inc(ibp->pmastats->n_unicast_xmit);
+			ibp->n_unicast_xmit++;
 	} else {
-		this_cpu_inc(ibp->pmastats->n_unicast_xmit);
+		ibp->n_unicast_xmit++;
 		lid = ah_attr->dlid & ~((1 << ppd->lmc) - 1);
 		if (unlikely(lid == ppd->lid)) {
 			/*

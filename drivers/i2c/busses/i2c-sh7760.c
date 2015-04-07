@@ -11,6 +11,7 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
@@ -436,7 +437,7 @@ static int sh7760_i2c_probe(struct platform_device *pdev)
 	struct cami2c *id;
 	int ret;
 
-	pd = dev_get_platdata(&pdev->dev);
+	pd = pdev->dev.platform_data;
 	if (!pd) {
 		dev_err(&pdev->dev, "no platform_data!\n");
 		ret = -ENODEV;
@@ -545,6 +546,7 @@ static int sh7760_i2c_remove(struct platform_device *pdev)
 	release_resource(id->ioarea);
 	kfree(id->ioarea);
 	kfree(id);
+	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }

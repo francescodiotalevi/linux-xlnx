@@ -23,9 +23,7 @@
 #include <linux/mm.h>
 #include <linux/of_platform.h>
 #include <linux/spi/spi.h>
-#ifdef CONFIG_FSL_SOC
 #include <sysdev/fsl_soc.h>
-#endif
 
 #include "spi-fsl-lib.h"
 
@@ -61,7 +59,7 @@ struct mpc8xxx_spi_probe_info *to_of_pinfo(struct fsl_spi_platform_data *pdata)
 	return container_of(pdata, struct mpc8xxx_spi_probe_info, pdata);
 }
 
-static void mpc8xxx_spi_work(struct work_struct *work)
+void mpc8xxx_spi_work(struct work_struct *work)
 {
 	struct mpc8xxx_spi *mpc8xxx_spi = container_of(work, struct mpc8xxx_spi,
 						       work);
@@ -99,6 +97,11 @@ int mpc8xxx_spi_transfer(struct spi_device *spi,
 	return 0;
 }
 
+void mpc8xxx_spi_cleanup(struct spi_device *spi)
+{
+	kfree(spi->controller_state);
+}
+
 const char *mpc8xxx_spi_strmode(unsigned int flags)
 {
 	if (flags & SPI_QE_CPU_MODE) {
@@ -117,7 +120,7 @@ const char *mpc8xxx_spi_strmode(unsigned int flags)
 int mpc8xxx_spi_probe(struct device *dev, struct resource *mem,
 			unsigned int irq)
 {
-	struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
+	struct fsl_spi_platform_data *pdata = dev->platform_data;
 	struct spi_master *master;
 	struct mpc8xxx_spi *mpc8xxx_spi;
 	int ret = 0;
@@ -129,6 +132,7 @@ int mpc8xxx_spi_probe(struct device *dev, struct resource *mem,
 			| SPI_LSB_FIRST | SPI_LOOP;
 
 	master->transfer = mpc8xxx_spi_transfer;
+	master->cleanup = mpc8xxx_spi_cleanup;
 	master->dev.of_node = dev->of_node;
 
 	mpc8xxx_spi = spi_master_get_devdata(master);
@@ -194,9 +198,9 @@ int of_mpc8xxx_spi_probe(struct platform_device *ofdev)
 	const void *prop;
 	int ret = -ENOMEM;
 
-	pinfo = devm_kzalloc(&ofdev->dev, sizeof(*pinfo), GFP_KERNEL);
+	pinfo = kzalloc(sizeof(*pinfo), GFP_KERNEL);
 	if (!pinfo)
-		return ret;
+		return -ENOMEM;
 
 	pdata = &pinfo->pdata;
 	dev->platform_data = pdata;
@@ -204,19 +208,15 @@ int of_mpc8xxx_spi_probe(struct platform_device *ofdev)
 	/* Allocate bus num dynamically. */
 	pdata->bus_num = -1;
 
-#ifdef CONFIG_FSL_SOC
 	/* SPI controller is either clocked from QE or SoC clock. */
 	pdata->sysclk = get_brgfreq();
 	if (pdata->sysclk == -1) {
 		pdata->sysclk = fsl_get_sys_freq();
-		if (pdata->sysclk == -1)
-			return -ENODEV;
+		if (pdata->sysclk == -1) {
+			ret = -ENODEV;
+			goto err;
+		}
 	}
-#else
-	ret = of_property_read_u32(np, "clock-frequency", &pdata->sysclk);
-	if (ret)
-		return ret;
-#endif
 
 	prop = of_get_property(np, "mode", NULL);
 	if (prop && !strcmp(prop, "cpu-qe"))
@@ -229,4 +229,8 @@ int of_mpc8xxx_spi_probe(struct platform_device *ofdev)
 		pdata->flags = SPI_CPM_MODE | SPI_CPM1;
 
 	return 0;
+
+err:
+	kfree(pinfo);
+	return ret;
 }

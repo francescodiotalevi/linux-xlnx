@@ -21,6 +21,8 @@
 #include <linux/hid-debug.h>
 #include <linux/input.h>
 #include "hid-ids.h"
+#include "usbhid/usbhid.h"
+#include <linux/usb.h>
 
 #include <linux/fb.h>
 #include <linux/vmalloc.h>
@@ -53,7 +55,7 @@ void picolcd_leds_set(struct picolcd_data *data)
 	spin_lock_irqsave(&data->lock, flags);
 	hid_set_field(report->field[0], 0, data->led_state);
 	if (!(data->status & PICOLCD_FAILED))
-		hid_hw_request(data->hdev, report, HID_REQ_SET_REPORT);
+		usbhid_submit_report(data->hdev, report, USB_DIR_OUT);
 	spin_unlock_irqrestore(&data->lock, flags);
 }
 

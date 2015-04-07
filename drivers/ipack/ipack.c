@@ -180,28 +180,20 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 
 ipack_device_attr(id_format, "0x%hhu\n");
 
-static DEVICE_ATTR_RO(id);
-static DEVICE_ATTR_RO(id_device);
-static DEVICE_ATTR_RO(id_format);
-static DEVICE_ATTR_RO(id_vendor);
-static DEVICE_ATTR_RO(modalias);
-
-static struct attribute *ipack_attrs[] = {
-	&dev_attr_id.attr,
-	&dev_attr_id_device.attr,
-	&dev_attr_id_format.attr,
-	&dev_attr_id_vendor.attr,
-	&dev_attr_modalias.attr,
-	NULL,
+static struct device_attribute ipack_dev_attrs[] = {
+	__ATTR_RO(id),
+	__ATTR_RO(id_device),
+	__ATTR_RO(id_format),
+	__ATTR_RO(id_vendor),
+	__ATTR_RO(modalias),
 };
-ATTRIBUTE_GROUPS(ipack);
 
 static struct bus_type ipack_bus_type = {
 	.name      = "ipack",
 	.probe     = ipack_bus_probe,
 	.match     = ipack_bus_match,
 	.remove    = ipack_bus_remove,
-	.dev_groups = ipack_groups,
+	.dev_attrs = ipack_dev_attrs,
 	.uevent	   = ipack_uevent,
 };
 
@@ -235,7 +227,7 @@ static int ipack_unregister_bus_member(struct device *dev, void *data)
 	struct ipack_bus_device *bus = data;
 
 	if (idev->bus == bus)
-		ipack_device_del(idev);
+		ipack_device_unregister(idev);
 
 	return 1;
 }
@@ -427,7 +419,7 @@ out:
 	return ret;
 }
 
-int ipack_device_init(struct ipack_device *dev)
+int ipack_device_register(struct ipack_device *dev)
 {
 	int ret;
 
@@ -436,7 +428,6 @@ int ipack_device_init(struct ipack_device *dev)
 	dev->dev.parent = dev->bus->parent;
 	dev_set_name(&dev->dev,
 		     "ipack-dev.%u.%u", dev->bus->bus_nr, dev->slot);
-	device_initialize(&dev->dev);
 
 	if (dev->bus->ops->set_clockrate(dev, 8))
 		dev_warn(&dev->dev, "failed to switch to 8 MHz operation for reading of device ID.\n");
@@ -456,34 +447,19 @@ int ipack_device_init(struct ipack_device *dev)
 			dev_err(&dev->dev, "failed to switch to 32 MHz operation.\n");
 	}
 
-	return 0;
-}
-EXPORT_SYMBOL_GPL(ipack_device_init);
+	ret = device_register(&dev->dev);
+	if (ret < 0)
+		kfree(dev->id);
 
-int ipack_device_add(struct ipack_device *dev)
-{
-	return device_add(&dev->dev);
+	return ret;
 }
-EXPORT_SYMBOL_GPL(ipack_device_add);
+EXPORT_SYMBOL_GPL(ipack_device_register);
 
-void ipack_device_del(struct ipack_device *dev)
+void ipack_device_unregister(struct ipack_device *dev)
 {
-	device_del(&dev->dev);
-	ipack_put_device(dev);
+	device_unregister(&dev->dev);
 }
-EXPORT_SYMBOL_GPL(ipack_device_del);
-
-void ipack_get_device(struct ipack_device *dev)
-{
-	get_device(&dev->dev);
-}
-EXPORT_SYMBOL_GPL(ipack_get_device);
-
-void ipack_put_device(struct ipack_device *dev)
-{
-	put_device(&dev->dev);
-}
-EXPORT_SYMBOL_GPL(ipack_put_device);
+EXPORT_SYMBOL_GPL(ipack_device_unregister);
 
 static int __init ipack_init(void)
 {

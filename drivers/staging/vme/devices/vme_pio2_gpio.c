@@ -108,7 +108,7 @@ static int pio2_gpio_dir_in(struct gpio_chip *chip, unsigned offset)
 	if ((card->bank[PIO2_CHANNEL_BANK[offset]].config == OUTPUT) |
 		(card->bank[PIO2_CHANNEL_BANK[offset]].config == NOFIT)) {
 		dev_err(&card->vdev->dev,
-			"Channel directionality not configurable at runtime\n");
+			"Channel directionality not configurable at runtine\n");
 
 		data = -EINVAL;
 	} else {
@@ -127,7 +127,7 @@ static int pio2_gpio_dir_out(struct gpio_chip *chip, unsigned offset, int value)
 	if ((card->bank[PIO2_CHANNEL_BANK[offset]].config == INPUT) |
 		(card->bank[PIO2_CHANNEL_BANK[offset]].config == NOFIT)) {
 		dev_err(&card->vdev->dev,
-			"Channel directionality not configurable at runtime\n");
+			"Channel directionality not configurable at runtine\n");
 
 		data = -EINVAL;
 	} else {
@@ -192,8 +192,10 @@ int pio2_gpio_init(struct pio2_card *card)
 	char *label;
 
 	label = kmalloc(PIO2_NUM_CHANNELS, GFP_KERNEL);
-	if (label == NULL)
+	if (label == NULL) {
+		dev_err(&card->vdev->dev, "Unable to allocate GPIO label\n");
 		return -ENOMEM;
+	}
 
 	sprintf(label, "%s@%s", driver_name, dev_name(&card->vdev->dev));
 	card->gc.label = label;
@@ -222,7 +224,7 @@ void pio2_gpio_exit(struct pio2_card *card)
 	const char *label = card->gc.label;
 
 	if (gpiochip_remove(&(card->gc)))
-		dev_err(&card->vdev->dev, "Failed to remove GPIO\n");
+		dev_err(&card->vdev->dev, "Failed to remove GPIO");
 
 	kfree(label);
 }

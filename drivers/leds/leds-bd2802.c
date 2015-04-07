@@ -678,11 +678,13 @@ static int bd2802_probe(struct i2c_client *client,
 	int ret, i;
 
 	led = devm_kzalloc(&client->dev, sizeof(struct bd2802_led), GFP_KERNEL);
-	if (!led)
+	if (!led) {
+		dev_err(&client->dev, "failed to allocate driver data\n");
 		return -ENOMEM;
+	}
 
 	led->client = client;
-	pdata = led->pdata = dev_get_platdata(&client->dev);
+	pdata = led->pdata = client->dev.platform_data;
 	i2c_set_clientdata(client, led);
 
 	/* Configure RESET GPIO (L: RESET, H: RESET cancel) */
@@ -730,7 +732,7 @@ failed_unregister_dev_file:
 	return ret;
 }
 
-static int bd2802_remove(struct i2c_client *client)
+static int __exit bd2802_remove(struct i2c_client *client)
 {
 	struct bd2802_led *led = i2c_get_clientdata(client);
 	int i;
@@ -745,7 +747,8 @@ static int bd2802_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
+
 static void bd2802_restore_state(struct bd2802_led *led)
 {
 	int i;
@@ -782,9 +785,12 @@ static int bd2802_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(bd2802_pm, bd2802_suspend, bd2802_resume);
+#define BD2802_PM (&bd2802_pm)
+#else		/* CONFIG_PM */
+#define BD2802_PM NULL
+#endif
 
 static const struct i2c_device_id bd2802_id[] = {
 	{ "BD2802", 0 },
@@ -795,10 +801,10 @@ MODULE_DEVICE_TABLE(i2c, bd2802_id);
 static struct i2c_driver bd2802_i2c_driver = {
 	.driver	= {
 		.name	= "BD2802",
-		.pm	= &bd2802_pm,
+		.pm	= BD2802_PM,
 	},
 	.probe		= bd2802_probe,
-	.remove		= bd2802_remove,
+	.remove		= __exit_p(bd2802_remove),
 	.id_table	= bd2802_id,
 };
 

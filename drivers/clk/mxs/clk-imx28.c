@@ -10,19 +10,16 @@
  */
 
 #include <linux/clk.h>
-#include <linux/clk/mxs.h>
 #include <linux/clkdev.h>
-#include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
+#include <mach/common.h>
+#include <mach/mx28.h>
 #include "clk.h"
 
-static void __iomem *clkctrl;
-#define CLKCTRL clkctrl
-
+#define CLKCTRL			MX28_IO_ADDRESS(MX28_CLKCTRL_BASE_ADDR)
 #define PLL0CTRL0		(CLKCTRL + 0x0000)
 #define PLL1CTRL0		(CLKCTRL + 0x0020)
 #define PLL2CTRL0		(CLKCTRL + 0x0040)
@@ -56,8 +53,7 @@ static void __iomem *clkctrl;
 #define BP_FRAC0_IO1FRAC	16
 #define BP_FRAC0_IO0FRAC	24
 
-static void __iomem *digctrl;
-#define DIGCTRL digctrl
+#define DIGCTRL			MX28_IO_ADDRESS(MX28_DIGCTL_BASE_ADDR)
 #define BP_SAIF_CLKMUX		10
 
 /*
@@ -76,8 +72,8 @@ int mxs_saif_clkmux_select(unsigned int clkmux)
 	if (clkmux > 0x3)
 		return -EINVAL;
 
-	writel_relaxed(0x3 << BP_SAIF_CLKMUX, DIGCTRL + CLR);
-	writel_relaxed(clkmux << BP_SAIF_CLKMUX, DIGCTRL + SET);
+	__mxs_clrl(0x3 << BP_SAIF_CLKMUX, DIGCTRL);
+	__mxs_setl(clkmux << BP_SAIF_CLKMUX, DIGCTRL);
 
 	return 0;
 }
@@ -87,13 +83,13 @@ static void __init clk_misc_init(void)
 	u32 val;
 
 	/* Gate off cpu clock in WFI for power saving */
-	writel_relaxed(1 << BP_CPU_INTERRUPT_WAIT, CPU + SET);
+	__mxs_setl(1 << BP_CPU_INTERRUPT_WAIT, CPU);
 
 	/* 0 is a bad default value for a divider */
-	writel_relaxed(1 << BP_ENET_DIV_TIME, ENET + SET);
+	__mxs_setl(1 << BP_ENET_DIV_TIME, ENET);
 
 	/* Clear BYPASS for SAIF */
-	writel_relaxed(0x3 << BP_CLKSEQ_BYPASS_SAIF0, CLKSEQ + CLR);
+	__mxs_clrl(0x3 << BP_CLKSEQ_BYPASS_SAIF0, CLKSEQ);
 
 	/* SAIF has to use frac div for functional operation */
 	val = readl_relaxed(SAIF0);
@@ -113,7 +109,7 @@ static void __init clk_misc_init(void)
 	 * Source ssp clock from ref_io than ref_xtal,
 	 * as ref_xtal only provides 24 MHz as maximum.
 	 */
-	writel_relaxed(0xf << BP_CLKSEQ_BYPASS_SSP0, CLKSEQ + CLR);
+	__mxs_clrl(0xf << BP_CLKSEQ_BYPASS_SSP0, CLKSEQ);
 
 	/*
 	 * 480 MHz seems too high to be ssp clock source directly,
@@ -155,18 +151,10 @@ static enum imx28_clk clks_init_on[] __initdata = {
 	cpu, hbus, xbus, emi, uart,
 };
 
-static void __init mx28_clocks_init(struct device_node *np)
+int __init mx28_clocks_init(void)
 {
-	struct device_node *dcnp;
-	u32 i;
-
-	dcnp = of_find_compatible_node(NULL, NULL, "fsl,imx28-digctl");
-	digctrl = of_iomap(dcnp, 0);
-	WARN_ON(!digctrl);
-	of_node_put(dcnp);
-
-	clkctrl = of_iomap(np, 0);
-	WARN_ON(!clkctrl);
+	struct device_node *np;
+	int i;
 
 	clk_misc_init();
 
@@ -240,16 +228,27 @@ static void __init mx28_clocks_init(struct device_node *np)
 		if (IS_ERR(clks[i])) {
 			pr_err("i.MX28 clk %d: register failed with %ld\n",
 				i, PTR_ERR(clks[i]));
-			return;
+			return PTR_ERR(clks[i]);
 		}
 
-	clk_data.clks = clks;
-	clk_data.clk_num = ARRAY_SIZE(clks);
-	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx28-clkctrl");
+	if (np) {
+		clk_data.clks = clks;
+		clk_data.clk_num = ARRAY_SIZE(clks);
+		of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+	}
 
+#ifndef CONFIG_IPIPE
+	clk_register_clkdev(clks[clk32k], NULL, "timrot");
+#else /* CONFIG_IPIPE */
+	clk_register_clkdev(clks[xbus], NULL, "timrot");
+#endif /* CONFIG_IPIPE */
 	clk_register_clkdev(clks[enet_out], NULL, "enet_out");
 
 	for (i = 0; i < ARRAY_SIZE(clks_init_on); i++)
 		clk_prepare_enable(clks[clks_init_on[i]]);
+
+	mxs_timer_init();
+
+	return 0;
 }
-CLK_OF_DECLARE(imx28_clkctrl, "fsl,imx28-clkctrl", mx28_clocks_init);

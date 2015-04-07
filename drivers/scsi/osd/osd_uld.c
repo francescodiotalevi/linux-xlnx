@@ -107,7 +107,6 @@ static ssize_t osdname_show(struct device *dev, struct device_attribute *attr,
 						   class_dev);
 	return sprintf(buf, "%s\n", ould->odi.osdname);
 }
-static DEVICE_ATTR_RO(osdname);
 
 static ssize_t systemid_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
@@ -118,19 +117,17 @@ static ssize_t systemid_show(struct device *dev, struct device_attribute *attr,
 	memcpy(buf, ould->odi.systemid, ould->odi.systemid_len);
 	return ould->odi.systemid_len;
 }
-static DEVICE_ATTR_RO(systemid);
 
-static struct attribute *osd_uld_attrs[] = {
-	&dev_attr_osdname.attr,
-	&dev_attr_systemid.attr,
-	NULL,
+static struct device_attribute osd_uld_attrs[] = {
+	__ATTR(osdname, S_IRUGO, osdname_show, NULL),
+	__ATTR(systemid, S_IRUGO, systemid_show, NULL),
+	__ATTR_NULL,
 };
-ATTRIBUTE_GROUPS(osd_uld);
 
 static struct class osd_uld_class = {
 	.owner		= THIS_MODULE,
 	.name		= "scsi_osd",
-	.dev_groups	= osd_uld_groups,
+	.dev_attrs	= osd_uld_attrs,
 };
 
 /*
@@ -271,11 +268,18 @@ static inline bool _the_same_or_null(const u8 *a1, unsigned a1_len,
 	return 0 == memcmp(a1, a2, a1_len);
 }
 
-static int _match_odi(struct device *dev, const void *find_data)
+struct find_oud_t {
+	const struct osd_dev_info *odi;
+	struct device *dev;
+	struct osd_uld_device *oud;
+} ;
+
+int _mach_odi(struct device *dev, void *find_data)
 {
 	struct osd_uld_device *oud = container_of(dev, struct osd_uld_device,
 						  class_dev);
-	const struct osd_dev_info *odi = find_data;
+	struct find_oud_t *fot = find_data;
+	const struct osd_dev_info *odi = fot->odi;
 
 	if (_the_same_or_null(oud->odi.systemid, oud->odi.systemid_len,
 			      odi->systemid, odi->systemid_len) &&
@@ -283,6 +287,7 @@ static int _match_odi(struct device *dev, const void *find_data)
 			      odi->osdname, odi->osdname_len)) {
 		OSD_DEBUG("found device sysid_len=%d osdname=%d\n",
 			  odi->systemid_len, odi->osdname_len);
+		fot->oud = oud;
 		return 1;
 	} else {
 		return 0;
@@ -296,19 +301,19 @@ static int _match_odi(struct device *dev, const void *find_data)
  */
 struct osd_dev *osduld_info_lookup(const struct osd_dev_info *odi)
 {
-	struct device *dev = class_find_device(&osd_uld_class, NULL, odi, _match_odi);
-	if (likely(dev)) {
+	struct find_oud_t find = {.odi = odi};
+
+	find.dev = class_find_device(&osd_uld_class, NULL, &find, _mach_odi);
+	if (likely(find.dev)) {
 		struct osd_dev_handle *odh = kzalloc(sizeof(*odh), GFP_KERNEL);
-		struct osd_uld_device *oud = container_of(dev,
-			struct osd_uld_device, class_dev);
 
 		if (unlikely(!odh)) {
-			put_device(dev);
+			put_device(find.dev);
 			return ERR_PTR(-ENOMEM);
 		}
 
-		odh->od = oud->od;
-		odh->oud = oud;
+		odh->od = find.oud->od;
+		odh->oud = find.oud;
 
 		return &odh->od;
 	}
@@ -488,7 +493,7 @@ static int osd_probe(struct device *dev)
 	oud->class_dev.class = &osd_uld_class;
 	oud->class_dev.parent = dev;
 	oud->class_dev.release = __remove;
-	error = dev_set_name(&oud->class_dev, "%s", disk->disk_name);
+	error = dev_set_name(&oud->class_dev, disk->disk_name);
 	if (error) {
 		OSD_ERR("dev_set_name failed => %d\n", error);
 		goto err_put_cdev;

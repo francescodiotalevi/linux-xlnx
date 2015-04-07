@@ -266,11 +266,9 @@ static void m32r_sio_start_tx(struct uart_port *port)
 	if (!(up->ier & UART_IER_THRI)) {
 		up->ier |= UART_IER_THRI;
 		serial_out(up, UART_IER, up->ier);
-		if (!uart_circ_empty(xmit)) {
-			serial_out(up, UART_TX, xmit->buf[xmit->tail]);
-			xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-			up->port.icount.tx++;
-		}
+		serial_out(up, UART_TX, xmit->buf[xmit->tail]);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		up->port.icount.tx++;
 	}
 	while((serial_in(up, UART_LSR) & UART_EMPTY) != UART_EMPTY);
 #else
@@ -302,7 +300,7 @@ static void m32r_sio_enable_ms(struct uart_port *port)
 
 static void receive_chars(struct uart_sio_port *up, int *status)
 {
-	struct tty_port *port = &up->port.state->port;
+	struct tty_struct *tty = up->port.state->port.tty;
 	unsigned char ch;
 	unsigned char flag;
 	int max_count = 256;
@@ -357,7 +355,7 @@ static void receive_chars(struct uart_sio_port *up, int *status)
 		if (uart_handle_sysrq_char(&up->port, ch))
 			goto ignore_char;
 		if ((*status & up->port.ignore_status_mask) == 0)
-			tty_insert_flip_char(port, ch, flag);
+			tty_insert_flip_char(tty, ch, flag);
 
 		if (*status & UART_LSR_OE) {
 			/*
@@ -365,15 +363,12 @@ static void receive_chars(struct uart_sio_port *up, int *status)
 			 * immediately, and doesn't affect the current
 			 * character.
 			 */
-			tty_insert_flip_char(port, 0, TTY_OVERRUN);
+			tty_insert_flip_char(tty, 0, TTY_OVERRUN);
 		}
 	ignore_char:
 		*status = serial_in(up, UART_LSR);
 	} while ((*status & UART_LSR_DR) && (max_count-- > 0));
-
-	spin_unlock(&up->port.lock);
-	tty_flip_buffer_push(port);
-	spin_lock(&up->port.lock);
+	tty_flip_buffer_push(tty);
 }
 
 static void transmit_chars(struct uart_sio_port *up)
@@ -739,7 +734,7 @@ static void m32r_sio_set_termios(struct uart_port *port,
 	up->port.read_status_mask = UART_LSR_OE | UART_LSR_THRE | UART_LSR_DR;
 	if (termios->c_iflag & INPCK)
 		up->port.read_status_mask |= UART_LSR_FE | UART_LSR_PE;
-	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
+	if (termios->c_iflag & (BRKINT | PARMRK))
 		up->port.read_status_mask |= UART_LSR_BI;
 
 	/*

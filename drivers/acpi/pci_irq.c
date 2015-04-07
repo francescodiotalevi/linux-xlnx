@@ -37,6 +37,8 @@
 #include <linux/pci.h>
 #include <linux/acpi.h>
 #include <linux/slab.h>
+#include <acpi/acpi_bus.h>
+#include <acpi/acpi_drivers.h>
 
 #define PREFIX "ACPI: "
 
@@ -51,6 +53,9 @@ struct acpi_prt_entry {
 	u32			index;		/* GSI, or link _CRS index */
 };
 
+static LIST_HEAD(acpi_prt_list);
+static DEFINE_SPINLOCK(acpi_prt_lock);
+
 static inline char pin_name(int pin)
 {
 	return 'A' + pin - 1;
@@ -59,6 +64,28 @@ static inline char pin_name(int pin)
 /* --------------------------------------------------------------------------
                          PCI IRQ Routing Table (PRT) Support
    -------------------------------------------------------------------------- */
+
+static struct acpi_prt_entry *acpi_pci_irq_find_prt_entry(struct pci_dev *dev,
+							  int pin)
+{
+	struct acpi_prt_entry *entry;
+	int segment = pci_domain_nr(dev->bus);
+	int bus = dev->bus->number;
+	int device = PCI_SLOT(dev->devfn);
+
+	spin_lock(&acpi_prt_lock);
+	list_for_each_entry(entry, &acpi_prt_list, list) {
+		if ((segment == entry->id.segment)
+		    && (bus == entry->id.bus)
+		    && (device == entry->id.device)
+		    && (pin == entry->pin)) {
+			spin_unlock(&acpi_prt_lock);
+			return entry;
+		}
+	}
+	spin_unlock(&acpi_prt_lock);
+	return NULL;
+}
 
 /* http://bugzilla.kernel.org/show_bug.cgi?id=4773 */
 static const struct dmi_system_id medion_md9580[] = {
@@ -157,18 +184,10 @@ static void do_prt_fixups(struct acpi_prt_entry *entry,
 	}
 }
 
-static int acpi_pci_irq_check_entry(acpi_handle handle, struct pci_dev *dev,
-				  int pin, struct acpi_pci_routing_table *prt,
-				  struct acpi_prt_entry **entry_ptr)
+static int acpi_pci_irq_add_entry(acpi_handle handle, int segment, int bus,
+				  struct acpi_pci_routing_table *prt)
 {
-	int segment = pci_domain_nr(dev->bus);
-	int bus = dev->bus->number;
-	int device = PCI_SLOT(dev->devfn);
 	struct acpi_prt_entry *entry;
-
-	if (((prt->address >> 16) & 0xffff) != device ||
-	    prt->pin + 1 != pin)
-		return -ENODEV;
 
 	entry = kzalloc(sizeof(struct acpi_prt_entry), GFP_KERNEL);
 	if (!entry)
@@ -218,43 +237,66 @@ static int acpi_pci_irq_check_entry(acpi_handle handle, struct pci_dev *dev,
 			      entry->id.device, pin_name(entry->pin),
 			      prt->source, entry->index));
 
-	*entry_ptr = entry;
+	spin_lock(&acpi_prt_lock);
+	list_add_tail(&entry->list, &acpi_prt_list);
+	spin_unlock(&acpi_prt_lock);
 
 	return 0;
 }
 
-static int acpi_pci_irq_find_prt_entry(struct pci_dev *dev,
-			  int pin, struct acpi_prt_entry **entry_ptr)
+int acpi_pci_irq_add_prt(acpi_handle handle, int segment, int bus)
 {
 	acpi_status status;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct acpi_pci_routing_table *entry;
-	acpi_handle handle = NULL;
-
-	if (dev->bus->bridge)
-		handle = ACPI_HANDLE(dev->bus->bridge);
-
-	if (!handle)
-		return -ENODEV;
 
 	/* 'handle' is the _PRT's parent (root bridge or PCI-PCI bridge) */
+	status = acpi_get_name(handle, ACPI_FULL_PATHNAME, &buffer);
+	if (ACPI_FAILURE(status))
+		return -ENODEV;
+
+	printk(KERN_DEBUG "ACPI: PCI Interrupt Routing Table [%s._PRT]\n",
+	       (char *) buffer.pointer);
+
+	kfree(buffer.pointer);
+
+	buffer.length = ACPI_ALLOCATE_BUFFER;
+	buffer.pointer = NULL;
+
 	status = acpi_get_irq_routing_table(handle, &buffer);
 	if (ACPI_FAILURE(status)) {
+		ACPI_EXCEPTION((AE_INFO, status, "Evaluating _PRT [%s]",
+				acpi_format_exception(status)));
 		kfree(buffer.pointer);
 		return -ENODEV;
 	}
 
 	entry = buffer.pointer;
 	while (entry && (entry->length > 0)) {
-		if (!acpi_pci_irq_check_entry(handle, dev, pin,
-						 entry, entry_ptr))
-			break;
+		acpi_pci_irq_add_entry(handle, segment, bus, entry);
 		entry = (struct acpi_pci_routing_table *)
 		    ((unsigned long)entry + entry->length);
 	}
 
 	kfree(buffer.pointer);
 	return 0;
+}
+
+void acpi_pci_irq_del_prt(int segment, int bus)
+{
+	struct acpi_prt_entry *entry, *tmp;
+
+	printk(KERN_DEBUG
+	       "ACPI: Delete PCI Interrupt Routing Table for %04x:%02x\n",
+	       segment, bus);
+	spin_lock(&acpi_prt_lock);
+	list_for_each_entry_safe(entry, tmp, &acpi_prt_list, list) {
+		if (segment == entry->id.segment && bus == entry->id.bus) {
+			list_del(&entry->list);
+			kfree(entry);
+		}
+	}
+	spin_unlock(&acpi_prt_lock);
 }
 
 /* --------------------------------------------------------------------------
@@ -317,13 +359,12 @@ static int acpi_reroute_boot_interrupt(struct pci_dev *dev,
 
 static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 {
-	struct acpi_prt_entry *entry = NULL;
+	struct acpi_prt_entry *entry;
 	struct pci_dev *bridge;
 	u8 bridge_pin, orig_pin = pin;
-	int ret;
 
-	ret = acpi_pci_irq_find_prt_entry(dev, pin, &entry);
-	if (!ret && entry) {
+	entry = acpi_pci_irq_find_prt_entry(dev, pin);
+	if (entry) {
 #ifdef CONFIG_X86_IO_APIC
 		acpi_reroute_boot_interrupt(dev, entry);
 #endif /* CONFIG_X86_IO_APIC */
@@ -332,7 +373,7 @@ static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 		return entry;
 	}
 
-	/*
+	/* 
 	 * Attempt to derive an IRQ for this device from a parent bridge's
 	 * PCI interrupt routing entry (eg. yenta bridge and add-in card bridge).
 	 */
@@ -352,8 +393,8 @@ static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 			pin = bridge_pin;
 		}
 
-		ret = acpi_pci_irq_find_prt_entry(bridge, pin, &entry);
-		if (!ret && entry) {
+		entry = acpi_pci_irq_find_prt_entry(bridge, pin);
+		if (entry) {
 			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 					 "Derived GSI for %s INT %c from %s\n",
 					 pci_name(dev), pin_name(orig_pin),
@@ -369,30 +410,6 @@ static struct acpi_prt_entry *acpi_pci_irq_lookup(struct pci_dev *dev, int pin)
 		 pin_name(orig_pin));
 	return NULL;
 }
-
-#if IS_ENABLED(CONFIG_ISA) || IS_ENABLED(CONFIG_EISA)
-static int acpi_isa_register_gsi(struct pci_dev *dev)
-{
-	u32 dev_gsi;
-
-	/* Interrupt Line values above 0xF are forbidden */
-	if (dev->irq > 0 && (dev->irq <= 0xF) &&
-	    (acpi_isa_irq_to_gsi(dev->irq, &dev_gsi) == 0)) {
-		dev_warn(&dev->dev, "PCI INT %c: no GSI - using ISA IRQ %d\n",
-			 pin_name(dev->pin), dev->irq);
-		acpi_register_gsi(&dev->dev, dev_gsi,
-				  ACPI_LEVEL_SENSITIVE,
-				  ACPI_ACTIVE_LOW);
-		return 0;
-	}
-	return -EINVAL;
-}
-#else
-static inline int acpi_isa_register_gsi(struct pci_dev *dev)
-{
-	return -ENODEV;
-}
-#endif
 
 int acpi_pci_irq_enable(struct pci_dev *dev)
 {
@@ -440,11 +457,19 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 	 * driver reported one, then use it. Exit in any case.
 	 */
 	if (gsi < 0) {
-		if (acpi_isa_register_gsi(dev))
+		u32 dev_gsi;
+		/* Interrupt Line values above 0xF are forbidden */
+		if (dev->irq > 0 && (dev->irq <= 0xF) &&
+		    (acpi_isa_irq_to_gsi(dev->irq, &dev_gsi) == 0)) {
+			dev_warn(&dev->dev, "PCI INT %c: no GSI - using ISA IRQ %d\n",
+				 pin_name(pin), dev->irq);
+			acpi_register_gsi(&dev->dev, dev_gsi,
+					  ACPI_LEVEL_SENSITIVE,
+					  ACPI_ACTIVE_LOW);
+		} else {
 			dev_warn(&dev->dev, "PCI INT %c: no GSI\n",
 				 pin_name(pin));
-
-		kfree(entry);
+		}
 		return 0;
 	}
 
@@ -452,7 +477,6 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 	if (rc < 0) {
 		dev_warn(&dev->dev, "PCI INT %c: failed to register GSI\n",
 			 pin_name(pin));
-		kfree(entry);
 		return rc;
 	}
 	dev->irq = rc;
@@ -467,7 +491,6 @@ int acpi_pci_irq_enable(struct pci_dev *dev)
 		(triggering == ACPI_LEVEL_SENSITIVE) ? "level" : "edge",
 		(polarity == ACPI_ACTIVE_LOW) ? "low" : "high", dev->irq);
 
-	kfree(entry);
 	return 0;
 }
 
@@ -481,14 +504,6 @@ void acpi_pci_irq_disable(struct pci_dev *dev)
 	if (!pin)
 		return;
 
-	/* Keep IOAPIC pin configuration when suspending */
-	if (dev->dev.power.is_prepared)
-		return;
-#ifdef	CONFIG_PM_RUNTIME
-	if (dev->dev.power.runtime_status == RPM_SUSPENDING)
-		return;
-#endif
-
 	entry = acpi_pci_irq_lookup(dev, pin);
 	if (!entry)
 		return;
@@ -498,14 +513,11 @@ void acpi_pci_irq_disable(struct pci_dev *dev)
 	else
 		gsi = entry->index;
 
-	kfree(entry);
-
 	/*
 	 * TBD: It might be worth clearing dev->irq by magic constant
 	 * (e.g. PCI_UNDEFINED_IRQ).
 	 */
 
 	dev_dbg(&dev->dev, "PCI INT %c disabled\n", pin_name(pin));
-	if (gsi >= 0 && dev->irq > 0)
-		acpi_unregister_gsi(gsi);
+	acpi_unregister_gsi(gsi);
 }

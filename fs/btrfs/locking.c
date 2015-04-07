@@ -24,7 +24,7 @@
 #include "extent_io.h"
 #include "locking.h"
 
-static void btrfs_assert_tree_read_locked(struct extent_buffer *eb);
+void btrfs_assert_tree_read_locked(struct extent_buffer *eb);
 
 /*
  * if we currently have a spinning reader or writer lock
@@ -33,14 +33,14 @@ static void btrfs_assert_tree_read_locked(struct extent_buffer *eb);
  */
 void btrfs_set_lock_blocking_rw(struct extent_buffer *eb, int rw)
 {
-	/*
-	 * no lock is required.  The lock owner may change if
-	 * we have a read lock, but it won't change to or away
-	 * from us.  If we have the write lock, we are the owner
-	 * and it'll never change.
-	 */
-	if (eb->lock_nested && current->pid == eb->lock_owner)
-		return;
+	if (eb->lock_nested) {
+		read_lock(&eb->lock);
+		if (eb->lock_nested && current->pid == eb->lock_owner) {
+			read_unlock(&eb->lock);
+			return;
+		}
+		read_unlock(&eb->lock);
+	}
 	if (rw == BTRFS_WRITE_LOCK) {
 		if (atomic_read(&eb->blocking_writers) == 0) {
 			WARN_ON(atomic_read(&eb->spinning_writers) != 1);
@@ -65,15 +65,14 @@ void btrfs_set_lock_blocking_rw(struct extent_buffer *eb, int rw)
  */
 void btrfs_clear_lock_blocking_rw(struct extent_buffer *eb, int rw)
 {
-	/*
-	 * no lock is required.  The lock owner may change if
-	 * we have a read lock, but it won't change to or away
-	 * from us.  If we have the write lock, we are the owner
-	 * and it'll never change.
-	 */
-	if (eb->lock_nested && current->pid == eb->lock_owner)
-		return;
-
+	if (eb->lock_nested) {
+		read_lock(&eb->lock);
+		if (eb->lock_nested && current->pid == eb->lock_owner) {
+			read_unlock(&eb->lock);
+			return;
+		}
+		read_unlock(&eb->lock);
+	}
 	if (rw == BTRFS_WRITE_LOCK_BLOCKING) {
 		BUG_ON(atomic_read(&eb->blocking_writers) != 1);
 		write_lock(&eb->lock);
@@ -100,9 +99,6 @@ void btrfs_clear_lock_blocking_rw(struct extent_buffer *eb, int rw)
 void btrfs_tree_read_lock(struct extent_buffer *eb)
 {
 again:
-	BUG_ON(!atomic_read(&eb->blocking_writers) &&
-	       current->pid == eb->lock_owner);
-
 	read_lock(&eb->lock);
 	if (atomic_read(&eb->blocking_writers) &&
 	    current->pid == eb->lock_owner) {
@@ -117,10 +113,11 @@ again:
 		read_unlock(&eb->lock);
 		return;
 	}
+	read_unlock(&eb->lock);
+	wait_event(eb->write_lock_wq, atomic_read(&eb->blocking_writers) == 0);
+	read_lock(&eb->lock);
 	if (atomic_read(&eb->blocking_writers)) {
 		read_unlock(&eb->lock);
-		wait_event(eb->write_lock_wq,
-			   atomic_read(&eb->blocking_writers) == 0);
 		goto again;
 	}
 	atomic_inc(&eb->read_locks);
@@ -136,9 +133,7 @@ int btrfs_try_tree_read_lock(struct extent_buffer *eb)
 	if (atomic_read(&eb->blocking_writers))
 		return 0;
 
-	if (!read_trylock(&eb->lock))
-		return 0;
-
+	read_lock(&eb->lock);
 	if (atomic_read(&eb->blocking_writers)) {
 		read_unlock(&eb->lock);
 		return 0;
@@ -157,10 +152,7 @@ int btrfs_try_tree_write_lock(struct extent_buffer *eb)
 	if (atomic_read(&eb->blocking_writers) ||
 	    atomic_read(&eb->blocking_readers))
 		return 0;
-
-	if (!write_trylock(&eb->lock))
-		return 0;
-
+	write_lock(&eb->lock);
 	if (atomic_read(&eb->blocking_writers) ||
 	    atomic_read(&eb->blocking_readers)) {
 		write_unlock(&eb->lock);
@@ -177,15 +169,14 @@ int btrfs_try_tree_write_lock(struct extent_buffer *eb)
  */
 void btrfs_tree_read_unlock(struct extent_buffer *eb)
 {
-	/*
-	 * if we're nested, we have the write lock.  No new locking
-	 * is needed as long as we are the lock owner.
-	 * The write unlock will do a barrier for us, and the lock_nested
-	 * field only matters to the lock owner.
-	 */
-	if (eb->lock_nested && current->pid == eb->lock_owner) {
-		eb->lock_nested = 0;
-		return;
+	if (eb->lock_nested) {
+		read_lock(&eb->lock);
+		if (eb->lock_nested && current->pid == eb->lock_owner) {
+			eb->lock_nested = 0;
+			read_unlock(&eb->lock);
+			return;
+		}
+		read_unlock(&eb->lock);
 	}
 	btrfs_assert_tree_read_locked(eb);
 	WARN_ON(atomic_read(&eb->spinning_readers) == 0);
@@ -199,15 +190,14 @@ void btrfs_tree_read_unlock(struct extent_buffer *eb)
  */
 void btrfs_tree_read_unlock_blocking(struct extent_buffer *eb)
 {
-	/*
-	 * if we're nested, we have the write lock.  No new locking
-	 * is needed as long as we are the lock owner.
-	 * The write unlock will do a barrier for us, and the lock_nested
-	 * field only matters to the lock owner.
-	 */
-	if (eb->lock_nested && current->pid == eb->lock_owner) {
-		eb->lock_nested = 0;
-		return;
+	if (eb->lock_nested) {
+		read_lock(&eb->lock);
+		if (eb->lock_nested && current->pid == eb->lock_owner) {
+			eb->lock_nested = 0;
+			read_unlock(&eb->lock);
+			return;
+		}
+		read_unlock(&eb->lock);
 	}
 	btrfs_assert_tree_read_locked(eb);
 	WARN_ON(atomic_read(&eb->blocking_readers) == 0);
@@ -255,7 +245,6 @@ void btrfs_tree_unlock(struct extent_buffer *eb)
 	BUG_ON(blockers > 1);
 
 	btrfs_assert_tree_locked(eb);
-	eb->lock_owner = 0;
 	atomic_dec(&eb->write_locks);
 
 	if (blockers) {
@@ -276,7 +265,7 @@ void btrfs_assert_tree_locked(struct extent_buffer *eb)
 	BUG_ON(!atomic_read(&eb->write_locks));
 }
 
-static void btrfs_assert_tree_read_locked(struct extent_buffer *eb)
+void btrfs_assert_tree_read_locked(struct extent_buffer *eb)
 {
 	BUG_ON(!atomic_read(&eb->read_locks));
 }

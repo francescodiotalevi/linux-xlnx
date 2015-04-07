@@ -26,7 +26,7 @@
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
-#include <linux/platform_data/pca953x.h>
+#include <linux/i2c/pca953x.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -38,7 +38,6 @@
 #include "board.h"
 #include "sam9_smc.h"
 #include "generic.h"
-#include "gpio.h"
 
 #define SNAPPER9260_IO_EXP_GPIO(x)	(NR_BUILTIN_GPIO + (x))
 
@@ -178,7 +177,7 @@ static void __init snapper9260_board_init(void)
 }
 
 MACHINE_START(SNAPPER_9260, "Bluewater Systems Snapper 9260/9G20 module")
-	.init_time	= at91sam926x_pit_init,
+	.timer		= &at91sam926x_timer,
 	.map_io		= at91_map_io,
 	.handle_irq	= at91_aic_handle_irq,
 	.init_early	= snapper9260_init_early,

@@ -19,6 +19,5 @@
 #define __ASM_EXCEPTION_H
 
 #define __exception	__attribute__((section(".exception.text")))
-#define __exception_irq_entry	__exception
 
 #endif	/* __ASM_EXCEPTION_H */

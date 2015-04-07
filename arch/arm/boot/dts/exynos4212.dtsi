@@ -17,16 +17,12 @@
  * published by the Free Software Foundation.
 */
 
-#include "exynos4x12.dtsi"
+/include/ "exynos4x12.dtsi"
 
 / {
-	compatible = "samsung,exynos4212", "samsung,exynos4";
+	compatible = "samsung,exynos4212";
 
-	combiner: interrupt-controller@10440000 {
-		samsung,combiner-nr = <18>;
-	};
-
-	gic: interrupt-controller@10490000 {
+	gic:interrupt-controller@10490000 {
 		cpu-offset = <0x8000>;
 	};
 };

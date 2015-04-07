@@ -45,7 +45,6 @@ int xb_wait_for_data_to_read(void);
 int xs_input_avail(void);
 extern struct xenstore_domain_interface *xen_store_interface;
 extern int xen_store_evtchn;
-extern enum xenstore_init xen_store_domain_type;
 
 extern const struct file_operations xen_xenbus_fops;
 

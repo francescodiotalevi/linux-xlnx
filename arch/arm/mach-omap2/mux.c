@@ -34,6 +34,7 @@
 #include <linux/uaccess.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
+#include <linux/ipipe.h>
 
 
 #include "omap_hwmod.h"
@@ -70,18 +71,18 @@ struct omap_mux_partition *omap_mux_get(const char *name)
 u16 omap_mux_read(struct omap_mux_partition *partition, u16 reg)
 {
 	if (partition->flags & OMAP_MUX_REG_8BIT)
-		return readb_relaxed(partition->base + reg);
+		return __raw_readb(partition->base + reg);
 	else
-		return readw_relaxed(partition->base + reg);
+		return __raw_readw(partition->base + reg);
 }
 
 void omap_mux_write(struct omap_mux_partition *partition, u16 val,
 			   u16 reg)
 {
 	if (partition->flags & OMAP_MUX_REG_8BIT)
-		writeb_relaxed(val, partition->base + reg);
+		__raw_writeb(val, partition->base + reg);
 	else
-		writew_relaxed(val, partition->base + reg);
+		__raw_writew(val, partition->base + reg);
 }
 
 void omap_mux_write_array(struct omap_mux_partition *partition,
@@ -183,10 +184,8 @@ static int __init _omap_mux_get_by_name(struct omap_mux_partition *partition,
 		m0_entry = mux->muxnames[0];
 
 		/* First check for full name in mode0.muxmode format */
-		if (mode0_len)
-			if (strncmp(muxname, m0_entry, mode0_len) ||
-			    (strlen(m0_entry) != mode0_len))
-				continue;
+		if (mode0_len && strncmp(muxname, m0_entry, mode0_len))
+			continue;
 
 		/* Then check for muxmode only */
 		for (i = 0; i < OMAP_MUX_NR_MODES; i++) {
@@ -213,6 +212,8 @@ static int __init _omap_mux_get_by_name(struct omap_mux_partition *partition,
 		return -EINVAL;
 	}
 
+	pr_err("%s: Could not find signal %s\n", __func__, muxname);
+
 	return -ENODEV;
 }
 
@@ -233,8 +234,6 @@ int __init omap_mux_get_by_name(const char *muxname,
 
 		return mux_mode;
 	}
-
-	pr_err("%s: Could not find signal %s\n", __func__, muxname);
 
 	return -ENODEV;
 }
@@ -394,7 +393,7 @@ static bool omap_hwmod_mux_scan_wakeups(struct omap_hwmod_mux_info *hmux,
 
 		handled_irqs |= 1 << irq;
 
-		generic_handle_irq(mpu_irqs[irq].irq);
+		ipipe_handle_demuxed_irq(mpu_irqs[irq].irq);
 	}
 
 	return false;
@@ -411,7 +410,7 @@ static int _omap_hwmod_mux_handle_irq(struct omap_hwmod *oh, void *data)
 	if (!oh->mux || !oh->mux->enabled)
 		return 0;
 	if (omap_hwmod_mux_scan_wakeups(oh->mux, oh->mpu_irqs))
-		generic_handle_irq(oh->mpu_irqs[0].irq);
+		ipipe_handle_demuxed_irq(oh->mpu_irqs[0].irq);
 	return 0;
 }
 
@@ -681,18 +680,28 @@ static ssize_t omap_mux_dbg_signal_write(struct file *file,
 					 const char __user *user_buf,
 					 size_t count, loff_t *ppos)
 {
+	char buf[OMAP_MUX_MAX_ARG_CHAR];
 	struct seq_file *seqf;
 	struct omap_mux *m;
-	u16 val;
-	int ret;
+	unsigned long val;
+	int buf_size, ret;
 	struct omap_mux_partition *partition;
 
 	if (count > OMAP_MUX_MAX_ARG_CHAR)
 		return -EINVAL;
 
-	ret = kstrtou16_from_user(user_buf, count, 0x10, &val);
+	memset(buf, 0, sizeof(buf));
+	buf_size = min(count, sizeof(buf) - 1);
+
+	if (copy_from_user(buf, user_buf, buf_size))
+		return -EFAULT;
+
+	ret = strict_strtoul(buf, 0x10, &val);
 	if (ret < 0)
 		return ret;
+
+	if (val > 0xffff)
+		return -EINVAL;
 
 	seqf = file->private_data;
 	m = seqf->private;
@@ -701,7 +710,7 @@ static ssize_t omap_mux_dbg_signal_write(struct file *file,
 	if (!partition)
 		return -ENODEV;
 
-	omap_mux_write(partition, val, m->reg_offset);
+	omap_mux_write(partition, (u16)val, m->reg_offset);
 	*ppos += count;
 
 	return count;
@@ -731,9 +740,8 @@ static void __init omap_mux_dbg_create_entry(
 	list_for_each_entry(e, &partition->muxmodes, node) {
 		struct omap_mux *m = &e->mux;
 
-		(void)debugfs_create_file(m->muxnames[0], S_IWUSR | S_IRUGO,
-					  mux_dbg_dir, m,
-					  &omap_mux_dbg_signal_fops);
+		(void)debugfs_create_file(m->muxnames[0], S_IWUSR, mux_dbg_dir,
+					  m, &omap_mux_dbg_signal_fops);
 	}
 }
 
@@ -803,18 +811,14 @@ int __init omap_mux_late_init(void)
 		}
 	}
 
-	omap_mux_dbg_init();
-
-	/* see pinctrl-single-omap for the wake-up interrupt handling */
-	if (of_have_populated_dt())
-		return 0;
-
 	ret = request_irq(omap_prcm_event_to_irq("io"),
 		omap_hwmod_mux_handle_irq, IRQF_SHARED | IRQF_NO_SUSPEND,
 			"hwmod_io", omap_mux_late_init);
 
 	if (ret)
 		pr_warning("mux: Failed to setup hwmod io irq %d\n", ret);
+
+	omap_mux_dbg_init();
 
 	return 0;
 }
@@ -907,14 +911,14 @@ static void __init omap_mux_set_cmdline_signals(void)
 
 	while ((token = strsep(&next_opt, ",")) != NULL) {
 		char *keyval, *name;
-		u16 val;
+		unsigned long val;
 
 		keyval = token;
 		name = strsep(&keyval, "=");
 		if (name) {
 			int res;
 
-			res = kstrtou16(keyval, 0x10, &val);
+			res = strict_strtoul(keyval, 0x10, &val);
 			if (res < 0)
 				continue;
 

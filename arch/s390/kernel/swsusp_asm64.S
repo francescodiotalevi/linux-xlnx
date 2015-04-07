@@ -36,8 +36,8 @@ ENTRY(swsusp_arch_suspend)
 	/* Store prefix register on stack */
 	stpx	__SF_EMPTY(%r15)
 
-	/* Save prefix register contents for lowcore copy */
-	llgf	%r10,__SF_EMPTY(%r15)
+	/* Save prefix register contents for lowcore */
+	llgf	%r4,__SF_EMPTY(%r15)
 
 	/* Get pointer to save area */
 	lghi	%r1,0x1000
@@ -91,18 +91,7 @@ ENTRY(swsusp_arch_suspend)
 	xc	__SF_EMPTY(4,%r15),__SF_EMPTY(%r15)
 	spx	__SF_EMPTY(%r15)
 
-	/* Save absolute zero pages */
-	larl	%r2,suspend_zero_pages
-	lg	%r2,0(%r2)
-	lghi	%r4,0
-	lghi	%r3,2*PAGE_SIZE
-	lghi	%r5,2*PAGE_SIZE
-1:	mvcle	%r2,%r4,0
-	jo	1b
-
-	/* Copy lowcore to absolute zero lowcore */
 	lghi	%r2,0
-	lgr	%r4,%r10
 	lghi	%r3,2*PAGE_SIZE
 	lghi	%r5,2*PAGE_SIZE
 1:	mvcle	%r2,%r4,0
@@ -259,20 +248,8 @@ restore_registers:
 	/* Load old stack */
 	lg	%r15,0x2f8(%r13)
 
-	/* Save prefix register */
-	mvc __SF_EMPTY(4,%r15),0x318(%r13)
-
-	/* Restore absolute zero pages */
-	lghi	%r2,0
-	larl	%r4,suspend_zero_pages
-	lg	%r4,0(%r4)
-	lghi	%r3,2*PAGE_SIZE
-	lghi	%r5,2*PAGE_SIZE
-1:	mvcle	%r2,%r4,0
-	jo	1b
-
 	/* Restore prefix register */
-	spx	__SF_EMPTY(%r15)
+	spx	0x318(%r13)
 
 	/* Activate DAT */
 	stosm	__SF_EMPTY(%r15),0x04
@@ -281,8 +258,11 @@ restore_registers:
 	lghi	%r2,0
 	brasl	%r14,arch_set_page_states
 
-	/* Call arch specific early resume code */
-	brasl	%r14,s390_early_resume
+	/* Log potential guest relocation */
+	brasl	%r14,lgr_info_log
+
+	/* Reinitialize the channel subsystem */
+	brasl	%r14,channel_subsystem_reinit
 
 	/* Return 0 */
 	lmg	%r6,%r15,STACK_FRAME_OVERHEAD + __SF_GPRS(%r15)

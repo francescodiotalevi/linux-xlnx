@@ -18,7 +18,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/i2c/twl.h>
@@ -201,7 +200,8 @@ out:
 
 static void twl4030_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	struct twl_pwm_chip *twl = to_twl(chip);
+	struct twl_pwm_chip *twl = container_of(chip, struct twl_pwm_chip,
+						chip);
 	int ret;
 	u8 val, mask;
 
@@ -231,7 +231,8 @@ out:
 
 static int twl6030_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	struct twl_pwm_chip *twl = to_twl(chip);
+	struct twl_pwm_chip *twl = container_of(chip, struct twl_pwm_chip,
+						chip);
 	int ret;
 	u8 val;
 
@@ -249,12 +250,13 @@ static int twl6030_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 	twl->twl6030_toggle3 = val;
 out:
 	mutex_unlock(&twl->mutex);
-	return ret;
+	return 0;
 }
 
 static void twl6030_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	struct twl_pwm_chip *twl = to_twl(chip);
+	struct twl_pwm_chip *twl = container_of(chip, struct twl_pwm_chip,
+						chip);
 	int ret;
 	u8 val;
 
@@ -262,6 +264,14 @@ static void twl6030_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	val = twl->twl6030_toggle3;
 	val |= TWL6030_PWM_TOGGLE(pwm->hwpwm, TWL6030_PWMXR);
 	val &= ~TWL6030_PWM_TOGGLE(pwm->hwpwm, TWL6030_PWMXS | TWL6030_PWMXEN);
+
+	ret = twl_i2c_write_u8(TWL6030_MODULE_ID1, val, TWL6030_TOGGLE3_REG);
+	if (ret < 0) {
+		dev_err(chip->dev, "%s: Failed to read TOGGLE3\n", pwm->label);
+		goto out;
+	}
+
+	val |= TWL6030_PWM_TOGGLE(pwm->hwpwm, TWL6030_PWMXS | TWL6030_PWMXEN);
 
 	ret = twl_i2c_write_u8(TWL6030_MODULE_ID1, val, TWL6030_TOGGLE3_REG);
 	if (ret < 0) {
@@ -280,14 +290,12 @@ static const struct pwm_ops twl4030_pwm_ops = {
 	.disable = twl4030_pwm_disable,
 	.request = twl4030_pwm_request,
 	.free = twl4030_pwm_free,
-	.owner = THIS_MODULE,
 };
 
 static const struct pwm_ops twl6030_pwm_ops = {
 	.config = twl_pwm_config,
 	.enable = twl6030_pwm_enable,
 	.disable = twl6030_pwm_disable,
-	.owner = THIS_MODULE,
 };
 
 static int twl_pwm_probe(struct platform_device *pdev)
@@ -307,7 +315,6 @@ static int twl_pwm_probe(struct platform_device *pdev)
 	twl->chip.dev = &pdev->dev;
 	twl->chip.base = -1;
 	twl->chip.npwm = 2;
-	twl->chip.can_sleep = true;
 
 	mutex_init(&twl->mutex);
 
@@ -328,7 +335,7 @@ static int twl_pwm_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_OF
-static const struct of_device_id twl_pwm_of_match[] = {
+static struct of_device_id twl_pwm_of_match[] = {
 	{ .compatible = "ti,twl4030-pwm" },
 	{ .compatible = "ti,twl6030-pwm" },
 	{ },

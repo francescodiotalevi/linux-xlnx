@@ -65,8 +65,6 @@ struct dlm_mhandle;
 	printk(KERN_ERR "dlm: "fmt"\n" , ##args)
 #define log_error(ls, fmt, args...) \
 	printk(KERN_ERR "dlm: %s: " fmt "\n", (ls)->ls_name , ##args)
-#define log_rinfo(ls, fmt, args...) \
-	printk(KERN_INFO "dlm: %s: " fmt "\n", (ls)->ls_name , ##args);
 
 #define log_debug(ls, fmt, args...) \
 do { \
@@ -98,13 +96,10 @@ do { \
 }
 
 
-#define DLM_RTF_SHRINK		0x00000001
-
 struct dlm_rsbtable {
 	struct rb_root		keep;
 	struct rb_root		toss;
 	spinlock_t		lock;
-	uint32_t		flags;
 };
 
 

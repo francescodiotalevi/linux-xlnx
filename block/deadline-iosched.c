@@ -106,7 +106,7 @@ deadline_add_request(struct request_queue *q, struct request *rq)
 	/*
 	 * set expire time and add to fifo list
 	 */
-	rq->fifo_time = jiffies + dd->fifo_expire[data_dir];
+	rq_set_fifo_time(rq, jiffies + dd->fifo_expire[data_dir]);
 	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]);
 }
 
@@ -132,7 +132,7 @@ deadline_merge(struct request_queue *q, struct request **req, struct bio *bio)
 	 * check for front merge
 	 */
 	if (dd->front_merges) {
-		sector_t sector = bio_end_sector(bio);
+		sector_t sector = bio->bi_sector + bio_sectors(bio);
 
 		__rq = elv_rb_find(&dd->sort_list[bio_data_dir(bio)], sector);
 		if (__rq) {
@@ -174,9 +174,9 @@ deadline_merged_requests(struct request_queue *q, struct request *req,
 	 * and move into next position (next will be deleted) in fifo
 	 */
 	if (!list_empty(&req->queuelist) && !list_empty(&next->queuelist)) {
-		if (time_before(next->fifo_time, req->fifo_time)) {
+		if (time_before(rq_fifo_time(next), rq_fifo_time(req))) {
 			list_move(&req->queuelist, &next->queuelist);
-			req->fifo_time = next->fifo_time;
+			rq_set_fifo_time(req, rq_fifo_time(next));
 		}
 	}
 
@@ -230,7 +230,7 @@ static inline int deadline_check_fifo(struct deadline_data *dd, int ddir)
 	/*
 	 * rq is expired!
 	 */
-	if (time_after_eq(jiffies, rq->fifo_time))
+	if (time_after_eq(jiffies, rq_fifo_time(rq)))
 		return 1;
 
 	return 0;
@@ -337,21 +337,13 @@ static void deadline_exit_queue(struct elevator_queue *e)
 /*
  * initialize elevator private data (deadline_data).
  */
-static int deadline_init_queue(struct request_queue *q, struct elevator_type *e)
+static int deadline_init_queue(struct request_queue *q)
 {
 	struct deadline_data *dd;
-	struct elevator_queue *eq;
 
-	eq = elevator_alloc(q, e);
-	if (!eq)
+	dd = kmalloc_node(sizeof(*dd), GFP_KERNEL | __GFP_ZERO, q->node);
+	if (!dd)
 		return -ENOMEM;
-
-	dd = kzalloc_node(sizeof(*dd), GFP_KERNEL, q->node);
-	if (!dd) {
-		kobject_put(&eq->kobj);
-		return -ENOMEM;
-	}
-	eq->elevator_data = dd;
 
 	INIT_LIST_HEAD(&dd->fifo_list[READ]);
 	INIT_LIST_HEAD(&dd->fifo_list[WRITE]);
@@ -363,9 +355,7 @@ static int deadline_init_queue(struct request_queue *q, struct elevator_type *e)
 	dd->front_merges = 1;
 	dd->fifo_batch = fifo_batch;
 
-	spin_lock_irq(q->queue_lock);
-	q->elevator = eq;
-	spin_unlock_irq(q->queue_lock);
+	q->elevator->elevator_data = dd;
 	return 0;
 }
 

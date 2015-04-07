@@ -602,13 +602,10 @@ static int configure_tda827x_fe(struct saa7134_dev *dev,
 				struct tda1004x_config *cdec_conf,
 				struct tda827x_config *tuner_conf)
 {
-	struct vb2_dvb_frontend *fe0;
+	struct videobuf_dvb_frontend *fe0;
 
 	/* Get the first frontend */
-	fe0 = vb2_dvb_get_frontend(&dev->frontends, 1);
-
-	if (!fe0)
-		return -EINVAL;
+	fe0 = videobuf_dvb_get_frontend(&dev->frontends, 1);
 
 	fe0->dvb.frontend = dvb_attach(tda10046_attach, cdec_conf, &dev->i2c_adap);
 	if (fe0->dvb.frontend) {
@@ -1073,10 +1070,6 @@ static struct mt312_config zl10313_compro_s350_config = {
 	.demod_address = 0x0e,
 };
 
-static struct mt312_config zl10313_avermedia_a706_config = {
-	.demod_address = 0x0e,
-};
-
 static struct lgdt3305_config hcw_lgdt3305_config = {
 	.i2c_addr           = 0x0e,
 	.mpeg_mode          = LGDT3305_MPEG_SERIAL,
@@ -1215,38 +1208,29 @@ static int dvb_init(struct saa7134_dev *dev)
 {
 	int ret;
 	int attach_xc3028 = 0;
-	struct vb2_dvb_frontend *fe0;
-	struct vb2_queue *q;
+	struct videobuf_dvb_frontend *fe0;
 
 	/* FIXME: add support for multi-frontend */
 	mutex_init(&dev->frontends.lock);
 	INIT_LIST_HEAD(&dev->frontends.felist);
 
 	printk(KERN_INFO "%s() allocating 1 frontend\n", __func__);
-	fe0 = vb2_dvb_alloc_frontend(&dev->frontends, 1);
+	fe0 = videobuf_dvb_alloc_frontend(&dev->frontends, 1);
 	if (!fe0) {
 		printk(KERN_ERR "%s() failed to alloc\n", __func__);
 		return -ENOMEM;
 	}
 
-	/* init struct vb2_dvb */
+	/* init struct videobuf_dvb */
 	dev->ts.nr_bufs    = 32;
 	dev->ts.nr_packets = 32*4;
 	fe0->dvb.name = dev->name;
-	q = &fe0->dvb.dvbq;
-	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	q->io_modes = VB2_MMAP | VB2_READ;
-	q->drv_priv = &dev->ts_q;
-	q->ops = &saa7134_ts_qops;
-	q->mem_ops = &vb2_dma_sg_memops;
-	q->buf_struct_size = sizeof(struct saa7134_buf);
-	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->lock = &dev->lock;
-	ret = vb2_queue_init(q);
-	if (ret) {
-		vb2_dvb_dealloc_frontends(&dev->frontends);
-		return ret;
-	}
+	videobuf_queue_sg_init(&fe0->dvb.dvbq, &saa7134_ts_qops,
+			    &dev->pci->dev, &dev->slock,
+			    V4L2_BUF_TYPE_VIDEO_CAPTURE,
+			    V4L2_FIELD_ALTERNATE,
+			    sizeof(struct saa7134_buf),
+			    dev, NULL);
 
 	switch (dev->board) {
 	case SAA7134_BOARD_PINNACLE_300I_DVBT_PAL:
@@ -1404,9 +1388,8 @@ static int dvb_init(struct saa7134_dev *dev)
 					wprintk("%s: Lifeview Trio, No tda826x found!\n", __func__);
 					goto detach_frontend;
 				}
-				if (dvb_attach(isl6421_attach, fe0->dvb.frontend,
-					       &dev->i2c_adap,
-					       0x08, 0, 0, false) == NULL) {
+				if (dvb_attach(isl6421_attach, fe0->dvb.frontend, &dev->i2c_adap,
+										0x08, 0, 0) == NULL) {
 					wprintk("%s: Lifeview Trio, No ISL6421 found!\n", __func__);
 					goto detach_frontend;
 				}
@@ -1523,8 +1506,7 @@ static int dvb_init(struct saa7134_dev *dev)
 				goto detach_frontend;
 			}
 			if (dvb_attach(isl6421_attach, fe0->dvb.frontend,
-				       &dev->i2c_adap,
-				       0x08, 0, 0, false) == NULL) {
+				       &dev->i2c_adap, 0x08, 0, 0) == NULL) {
 				wprintk("%s: No ISL6421 found!\n", __func__);
 				goto detach_frontend;
 			}
@@ -1835,25 +1817,6 @@ static int dvb_init(struct saa7134_dev *dev)
 				   &prohdtv_pro2_tda18271_config);
 		}
 		break;
-	case SAA7134_BOARD_AVERMEDIA_A706:
-		/* Enable all DVB-S devices now */
-		/* CE5039 DVB-S tuner SLEEP pin low */
-		saa7134_set_gpio(dev, 23, 0);
-		/* CE6313 DVB-S demod SLEEP pin low */
-		saa7134_set_gpio(dev, 9, 0);
-		/* CE6313 DVB-S demod RESET# pin high */
-		saa7134_set_gpio(dev, 25, 1);
-		msleep(1);
-		fe0->dvb.frontend = dvb_attach(mt312_attach,
-				&zl10313_avermedia_a706_config, &dev->i2c_adap);
-		if (fe0->dvb.frontend) {
-			fe0->dvb.frontend->ops.i2c_gate_ctrl = NULL;
-			if (dvb_attach(zl10039_attach, fe0->dvb.frontend,
-					0x60, &dev->i2c_adap) == NULL)
-				wprintk("%s: No zl10039 found!\n",
-					__func__);
-		}
-		break;
 	default:
 		wprintk("Huh? unknown DVB card?\n");
 		break;
@@ -1885,7 +1848,7 @@ static int dvb_init(struct saa7134_dev *dev)
 	fe0->dvb.frontend->callback = saa7134_tuner_callback;
 
 	/* register everything else */
-	ret = vb2_dvb_register_bus(&dev->frontends, THIS_MODULE, dev,
+	ret = videobuf_dvb_register_bus(&dev->frontends, THIS_MODULE, dev,
 					&dev->pci->dev, adapter_nr, 0);
 
 	/* this sequence is necessary to make the tda1004x load its firmware
@@ -1902,17 +1865,16 @@ static int dvb_init(struct saa7134_dev *dev)
 	return ret;
 
 detach_frontend:
-	vb2_dvb_dealloc_frontends(&dev->frontends);
-	vb2_queue_release(&fe0->dvb.dvbq);
+	videobuf_dvb_dealloc_frontends(&dev->frontends);
 	return -EINVAL;
 }
 
 static int dvb_fini(struct saa7134_dev *dev)
 {
-	struct vb2_dvb_frontend *fe0;
+	struct videobuf_dvb_frontend *fe0;
 
 	/* Get the first frontend */
-	fe0 = vb2_dvb_get_frontend(&dev->frontends, 1);
+	fe0 = videobuf_dvb_get_frontend(&dev->frontends, 1);
 	if (!fe0)
 		return -EINVAL;
 
@@ -1943,8 +1905,7 @@ static int dvb_fini(struct saa7134_dev *dev)
 			}
 		}
 	}
-	vb2_dvb_unregister_bus(&dev->frontends);
-	vb2_queue_release(&fe0->dvb.dvbq);
+	videobuf_dvb_unregister_bus(&dev->frontends);
 	return 0;
 }
 
@@ -1966,3 +1927,10 @@ static void __exit dvb_unregister(void)
 
 module_init(dvb_register);
 module_exit(dvb_unregister);
+
+/* ------------------------------------------------------------------ */
+/*
+ * Local variables:
+ * c-basic-offset: 8
+ * End:
+ */

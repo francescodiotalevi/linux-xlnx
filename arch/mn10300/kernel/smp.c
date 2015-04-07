@@ -143,7 +143,7 @@ static struct irqaction call_function_ipi = {
 static irqreturn_t smp_ipi_timer_interrupt(int irq, void *dev_id);
 static struct irqaction local_timer_ipi = {
 	.handler	= smp_ipi_timer_interrupt,
-	.flags		= IRQF_NOBALANCING,
+	.flags		= IRQF_DISABLED | IRQF_NOBALANCING,
 	.name		= "smp local timer IPI"
 };
 #endif
@@ -675,7 +675,7 @@ int __init start_secondary(void *unused)
 #ifdef CONFIG_GENERIC_CLOCKEVENTS
 	init_clockevents();
 #endif
-	cpu_startup_entry(CPUHP_ONLINE);
+	cpu_idle();
 	return 0;
 }
 
@@ -935,6 +935,8 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	int timeout;
 
 #ifdef CONFIG_HOTPLUG_CPU
+	if (num_online_cpus() == 1)
+		disable_hlt();
 	if (sleep_mode[cpu])
 		run_wakeup_cpu(cpu);
 #endif /* CONFIG_HOTPLUG_CPU */
@@ -1001,6 +1003,9 @@ int __cpu_disable(void)
 void __cpu_die(unsigned int cpu)
 {
 	run_sleep_cpu(cpu);
+
+	if (num_online_cpus() == 1)
+		enable_hlt();
 }
 
 #ifdef CONFIG_MN10300_CACHE_ENABLED

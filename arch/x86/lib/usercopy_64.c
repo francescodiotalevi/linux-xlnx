@@ -68,16 +68,16 @@ EXPORT_SYMBOL(copy_in_user);
  * Since protection fault in copy_from/to_user is not a normal situation,
  * it is not necessary to optimize tail handling.
  */
-__visible unsigned long
+unsigned long
 copy_user_handle_tail(char *to, char *from, unsigned len, unsigned zerorest)
 {
 	char c;
 	unsigned zero_len;
 
-	for (; len; --len, to++) {
+	for (; len; --len) {
 		if (__get_user_nocheck(c, from++, sizeof(char)))
 			break;
-		if (__put_user_nocheck(c, to, sizeof(char)))
+		if (__put_user_nocheck(c, to++, sizeof(char)))
 			break;
 	}
 

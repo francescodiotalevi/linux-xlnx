@@ -39,6 +39,12 @@ int nr_l1stack_tasks;
 void *l1_stack_base;
 unsigned long l1_stack_len;
 
+/*
+ * Powermanagement idle function, if any..
+ */
+void (*pm_idle)(void) = NULL;
+EXPORT_SYMBOL(pm_idle);
+
 void (*pm_power_off)(void) = NULL;
 EXPORT_SYMBOL(pm_power_off);
 
@@ -46,14 +52,15 @@ EXPORT_SYMBOL(pm_power_off);
  * The idle loop on BFIN
  */
 #ifdef CONFIG_IDLE_L1
-void arch_cpu_idle(void)__attribute__((l1_text));
+static void default_idle(void)__attribute__((l1_text));
+void cpu_idle(void)__attribute__((l1_text));
 #endif
 
 /*
  * This is our default idle handler.  We need to disable
  * interrupts here to ensure we don't miss a wakeup call.
  */
-void arch_cpu_idle(void)
+static void default_idle(void)
 {
 #ifdef CONFIG_IPIPE
 	ipipe_suspend_domain();
@@ -65,12 +72,34 @@ void arch_cpu_idle(void)
 	hard_local_irq_enable();
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
-void arch_cpu_idle_dead(void)
+/*
+ * The idle thread.  We try to conserve power, while trying to keep
+ * overall latency low.  The architecture specific idle is passed
+ * a value to indicate the level of "idleness" of the system.
+ */
+void cpu_idle(void)
 {
-	cpu_die();
-}
+	/* endless idle loop with no priority at all */
+	while (1) {
+		void (*idle)(void) = pm_idle;
+
+#ifdef CONFIG_HOTPLUG_CPU
+		if (cpu_is_offline(smp_processor_id()))
+			cpu_die();
 #endif
+		if (!idle)
+			idle = default_idle;
+		tick_nohz_idle_enter();
+		rcu_idle_enter();
+		while (!need_resched())
+			idle();
+		rcu_idle_exit();
+		tick_nohz_idle_exit();
+		preempt_enable_no_resched();
+		schedule();
+		preempt_disable();
+	}
+}
 
 /*
  * Do necessary setup to start up a newly executed thread.

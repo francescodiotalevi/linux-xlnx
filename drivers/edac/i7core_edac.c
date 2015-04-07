@@ -9,7 +9,7 @@
  * GNU General Public License version 2 only.
  *
  * Copyright (c) 2009-2010 by:
- *	 Mauro Carvalho Chehab
+ *	 Mauro Carvalho Chehab <mchehab@redhat.com>
  *
  * Red Hat Inc. http://www.redhat.com
  *
@@ -394,7 +394,7 @@ static const struct pci_id_table pci_dev_table[] = {
 /*
  *	pci_device_id	table for which devices we are looking for
  */
-static const struct pci_device_id i7core_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(i7core_pci_tbl) = {
 	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_X58_HUB_MGMT)},
 	{PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_LYNNFIELD_QPI_LINK0)},
 	{0,}			/* 0 terminated list. */
@@ -420,21 +420,21 @@ static inline int numdimms(u32 dimms)
 
 static inline int numrank(u32 rank)
 {
-	static const int ranks[] = { 1, 2, 4, -EINVAL };
+	static int ranks[4] = { 1, 2, 4, -EINVAL };
 
 	return ranks[rank & 0x3];
 }
 
 static inline int numbank(u32 bank)
 {
-	static const int banks[] = { 4, 8, 16, -EINVAL };
+	static int banks[4] = { 4, 8, 16, -EINVAL };
 
 	return banks[bank & 0x3];
 }
 
 static inline int numrow(u32 row)
 {
-	static const int rows[] = {
+	static int rows[8] = {
 		1 << 12, 1 << 13, 1 << 14, 1 << 15,
 		1 << 16, -EINVAL, -EINVAL, -EINVAL,
 	};
@@ -444,7 +444,7 @@ static inline int numrow(u32 row)
 
 static inline int numcol(u32 col)
 {
-	static const int cols[] = {
+	static int cols[8] = {
 		1 << 10, 1 << 11, 1 << 12, -EINVAL,
 	};
 	return cols[col & 0x3];
@@ -704,7 +704,7 @@ static ssize_t i7core_inject_section_store(struct device *dev,
 	if (pvt->inject.enable)
 		disable_inject(mci);
 
-	rc = kstrtoul(data, 10, &value);
+	rc = strict_strtoul(data, 10, &value);
 	if ((rc < 0) || (value > 3))
 		return -EIO;
 
@@ -741,7 +741,7 @@ struct i7core_pvt *pvt = mci->pvt_info;
 	if (pvt->inject.enable)
 		disable_inject(mci);
 
-	rc = kstrtoul(data, 10, &value);
+	rc = strict_strtoul(data, 10, &value);
 	if ((rc < 0) || (value > 7))
 		return -EIO;
 
@@ -781,7 +781,7 @@ static ssize_t i7core_inject_eccmask_store(struct device *dev,
 	if (pvt->inject.enable)
 		disable_inject(mci);
 
-	rc = kstrtoul(data, 10, &value);
+	rc = strict_strtoul(data, 10, &value);
 	if (rc < 0)
 		return -EIO;
 
@@ -830,7 +830,7 @@ static ssize_t i7core_inject_store_##param(			\
 	if (!strcasecmp(data, "any") || !strcasecmp(data, "any\n"))\
 		value = -1;					\
 	else {							\
-		rc = kstrtoul(data, 10, &value);		\
+		rc = strict_strtoul(data, 10, &value);		\
 		if ((rc < 0) || (value >= limit))		\
 			return -EIO;				\
 	}							\
@@ -934,7 +934,7 @@ static ssize_t i7core_inject_enable_store(struct device *dev,
 	if (!pvt->pci_ch[pvt->inject.channel][0])
 		return 0;
 
-	rc = kstrtoul(data, 10, &enable);
+	rc = strict_strtoul(data, 10, &enable);
 	if ((rc < 0))
 		return 0;
 
@@ -1334,19 +1334,14 @@ static int i7core_get_onedevice(struct pci_dev **prev,
 	 * is at addr 8086:2c40, instead of 8086:2c41. So, we need
 	 * to probe for the alternate address in case of failure
 	 */
-	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_I7_NONCORE && !pdev) {
-		pci_dev_get(*prev);	/* pci_get_device will put it */
+	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_I7_NONCORE && !pdev)
 		pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
 				      PCI_DEVICE_ID_INTEL_I7_NONCORE_ALT, *prev);
-	}
 
-	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE &&
-	    !pdev) {
-		pci_dev_get(*prev);	/* pci_get_device will put it */
+	if (dev_descr->dev_id == PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE && !pdev)
 		pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
 				      PCI_DEVICE_ID_INTEL_LYNNFIELD_NONCORE_ALT,
 				      *prev);
-	}
 
 	if (!pdev) {
 		if (*prev) {
@@ -1708,7 +1703,7 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 				    const struct mce *m)
 {
 	struct i7core_pvt *pvt = mci->pvt_info;
-	char *optype, *err;
+	char *type, *optype, *err;
 	enum hw_event_mc_err_type tp_event;
 	unsigned long error = m->status & 0x1ff0000l;
 	bool uncorrected_error = m->mcgstatus & 1ll << 61;
@@ -1721,11 +1716,15 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 	u32 errnum = find_first_bit(&error, 32);
 
 	if (uncorrected_error) {
-		if (ripv)
+		if (ripv) {
+			type = "FATAL";
 			tp_event = HW_EVENT_ERR_FATAL;
-		else
+		} else {
+			type = "NON_FATAL";
 			tp_event = HW_EVENT_ERR_UNCORRECTED;
+		}
 	} else {
+		type = "CORRECTED";
 		tp_event = HW_EVENT_ERR_CORRECTED;
 	}
 
@@ -2457,7 +2456,7 @@ module_init(i7core_init);
 module_exit(i7core_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mauro Carvalho Chehab");
+MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
 MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
 MODULE_DESCRIPTION("MC Driver for Intel i7 Core memory controllers - "
 		   I7CORE_REVISION);

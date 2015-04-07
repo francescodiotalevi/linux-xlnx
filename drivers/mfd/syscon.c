@@ -18,22 +18,23 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
-#include <linux/platform_data/syscon.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/mfd/syscon.h>
 
 static struct platform_driver syscon_driver;
 
 struct syscon {
+	struct device *dev;
+	void __iomem *base;
 	struct regmap *regmap;
 };
 
-static int syscon_match_node(struct device *dev, void *data)
+static int syscon_match(struct device *dev, void *data)
 {
+	struct syscon *syscon = dev_get_drvdata(dev);
 	struct device_node *dn = data;
 
-	return (dev->of_node == dn) ? 1 : 0;
+	return (syscon->dev->of_node == dn) ? 1 : 0;
 }
 
 struct regmap *syscon_node_to_regmap(struct device_node *np)
@@ -42,7 +43,7 @@ struct regmap *syscon_node_to_regmap(struct device_node *np)
 	struct device *dev;
 
 	dev = driver_find_device(&syscon_driver.driver, NULL, np,
-				 syscon_match_node);
+				 syscon_match);
 	if (!dev)
 		return ERR_PTR(-EPROBE_DEFER);
 
@@ -68,38 +69,13 @@ struct regmap *syscon_regmap_lookup_by_compatible(const char *s)
 }
 EXPORT_SYMBOL_GPL(syscon_regmap_lookup_by_compatible);
 
-static int syscon_match_pdevname(struct device *dev, void *data)
-{
-	return !strcmp(dev_name(dev), (const char *)data);
-}
-
-struct regmap *syscon_regmap_lookup_by_pdevname(const char *s)
-{
-	struct device *dev;
-	struct syscon *syscon;
-
-	dev = driver_find_device(&syscon_driver.driver, NULL, (void *)s,
-				 syscon_match_pdevname);
-	if (!dev)
-		return ERR_PTR(-EPROBE_DEFER);
-
-	syscon = dev_get_drvdata(dev);
-
-	return syscon->regmap;
-}
-EXPORT_SYMBOL_GPL(syscon_regmap_lookup_by_pdevname);
-
 struct regmap *syscon_regmap_lookup_by_phandle(struct device_node *np,
 					const char *property)
 {
 	struct device_node *syscon_np;
 	struct regmap *regmap;
 
-	if (property)
-		syscon_np = of_parse_phandle(np, property, 0);
-	else
-		syscon_np = np;
-
+	syscon_np = of_parse_phandle(np, property, 0);
 	if (!syscon_np)
 		return ERR_PTR(-ENODEV);
 
@@ -124,44 +100,54 @@ static struct regmap_config syscon_regmap_config = {
 static int syscon_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct syscon_platform_data *pdata = dev_get_platdata(dev);
+	struct device_node *np = dev->of_node;
 	struct syscon *syscon;
-	struct resource *res;
-	void __iomem *base;
+	struct resource res;
+	int ret;
 
-	syscon = devm_kzalloc(dev, sizeof(*syscon), GFP_KERNEL);
+	if (!np)
+		return -ENOENT;
+
+	syscon = devm_kzalloc(dev, sizeof(struct syscon),
+			    GFP_KERNEL);
 	if (!syscon)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENOENT;
+	syscon->base = of_iomap(np, 0);
+	if (!syscon->base)
+		return -EADDRNOTAVAIL;
 
-	base = devm_ioremap(dev, res->start, resource_size(res));
-	if (!base)
-		return -ENOMEM;
+	ret = of_address_to_resource(np, 0, &res);
+	if (ret)
+		return ret;
 
-	syscon_regmap_config.max_register = res->end - res->start - 3;
-	if (pdata)
-		syscon_regmap_config.name = pdata->label;
-	syscon->regmap = devm_regmap_init_mmio(dev, base,
+	syscon_regmap_config.max_register = res.end - res.start - 3;
+	syscon->regmap = devm_regmap_init_mmio(dev, syscon->base,
 					&syscon_regmap_config);
 	if (IS_ERR(syscon->regmap)) {
 		dev_err(dev, "regmap init failed\n");
 		return PTR_ERR(syscon->regmap);
 	}
 
+	syscon->dev = dev;
 	platform_set_drvdata(pdev, syscon);
 
-	dev_dbg(dev, "regmap %pR registered\n", res);
+	dev_info(dev, "syscon regmap start 0x%x end 0x%x registered\n",
+		res.start, res.end);
 
 	return 0;
 }
 
-static const struct platform_device_id syscon_ids[] = {
-	{ "syscon", },
-	{ }
-};
+static int syscon_remove(struct platform_device *pdev)
+{
+	struct syscon *syscon;
+
+	syscon = platform_get_drvdata(pdev);
+	iounmap(syscon->base);
+	platform_set_drvdata(pdev, NULL);
+
+	return 0;
+}
 
 static struct platform_driver syscon_driver = {
 	.driver = {
@@ -170,7 +156,7 @@ static struct platform_driver syscon_driver = {
 		.of_match_table = of_syscon_match,
 	},
 	.probe		= syscon_probe,
-	.id_table	= syscon_ids,
+	.remove		= syscon_remove,
 };
 
 static int __init syscon_init(void)

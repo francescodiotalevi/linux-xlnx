@@ -13,7 +13,6 @@
 
 /***************************************************************************/
 
-#include <linux/init.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/rtc.h>
@@ -53,7 +52,7 @@ _bsc1(unsigned char *, gethwaddr, int, a)
 _bsc1(char *, getbenv, char *, a)
 #endif
 
-void __init config_BSP(char *command, int len)
+void config_BSP(char *command, int len)
 {
   unsigned char *p;
 
@@ -69,8 +68,7 @@ void __init config_BSP(char *command, int len)
   if (p) strcpy(p,command);
   else command[0] = 0;
 #endif
-
-  mach_sched_init = hw_timer_init;
+ 
   mach_hwclk = m68328_hwclk;
   mach_reset = m68ez328_reset;
 }

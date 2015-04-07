@@ -808,14 +808,10 @@ int qib_verbs_register_sysfs(struct qib_devdata *dd)
 	for (i = 0; i < ARRAY_SIZE(qib_attributes); ++i) {
 		ret = device_create_file(&dev->dev, qib_attributes[i]);
 		if (ret)
-			goto bail;
+			return ret;
 	}
 
 	return 0;
-bail:
-	for (i = 0; i < ARRAY_SIZE(qib_attributes); ++i)
-		device_remove_file(&dev->dev, qib_attributes[i]);
-	return ret;
 }
 
 /*

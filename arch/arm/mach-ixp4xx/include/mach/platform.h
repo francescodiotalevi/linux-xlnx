@@ -13,8 +13,6 @@
 
 #ifndef __ASSEMBLY__
 
-#include <linux/reboot.h>
-
 #include <asm/types.h>
 
 #ifndef	__ARMEB__
@@ -74,8 +72,8 @@ extern unsigned long ixp4xx_exp_bus_size;
 /*
  * Clock Speed Definitions.
  */
-#define IXP4XX_PERIPHERAL_BUS_CLOCK 	(66) /* 66Mhzi APB BUS   */ 
-#define IXP4XX_UART_XTAL        	14745600
+#define IXP4XX_PERIPHERAL_BUS_CLOCK 	(66) /* 66Mhzi APB BUS   */
+#define IXP4XX_UART_XTAL		14745600
 
 /*
  * This structure provide a means for the board setup code
@@ -90,6 +88,8 @@ struct ixp4xx_pata_data {
 	void __iomem	*cs0;
 	void __iomem	*cs1;
 };
+
+struct sys_timer;
 
 #define IXP4XX_ETH_NPEA		0x00
 #define IXP4XX_ETH_NPEB		0x10
@@ -125,11 +125,58 @@ extern void ixp4xx_init_early(void);
 extern void ixp4xx_init_irq(void);
 extern void ixp4xx_sys_init(void);
 extern void ixp4xx_timer_init(void);
-extern void ixp4xx_restart(enum reboot_mode, const char *);
+extern struct sys_timer ixp4xx_timer;
+extern void ixp4xx_restart(char, const char *);
 extern void ixp4xx_pci_preinit(void);
 struct pci_sys_data;
 extern int ixp4xx_setup(int nr, struct pci_sys_data *sys);
 extern struct pci_ops ixp4xx_ops;
 
-#endif // __ASSEMBLY__
+/*
+ * GPIO-functions
+ */
+/*
+ * The following converted to the real HW bits the gpio_line_config
+ */
+/* GPIO pin types */
+#define IXP4XX_GPIO_OUT 		0x1
+#define IXP4XX_GPIO_IN			0x2
 
+/* GPIO signal types */
+#define IXP4XX_GPIO_LOW			0
+#define IXP4XX_GPIO_HIGH		1
+
+/* GPIO Clocks */
+#define IXP4XX_GPIO_CLK_0		14
+#define IXP4XX_GPIO_CLK_1		15
+
+static inline void gpio_line_config(u8 line, u32 direction)
+{
+	unsigned long flags;
+
+	flags = hard_local_irq_save();
+	if (direction == IXP4XX_GPIO_IN)
+		*IXP4XX_GPIO_GPOER |= (1 << line);
+	else
+		*IXP4XX_GPIO_GPOER &= ~(1 << line);
+	hard_local_irq_restore(flags);
+}
+
+static inline void gpio_line_get(u8 line, int *value)
+{
+	*value = (*IXP4XX_GPIO_GPINR >> line) & 0x1;
+}
+
+static inline void gpio_line_set(u8 line, int value)
+{
+	unsigned long flags;
+
+	flags = hard_local_irq_save();
+	if (value == IXP4XX_GPIO_HIGH)
+	    *IXP4XX_GPIO_GPOUTR |= (1 << line);
+	else if (value == IXP4XX_GPIO_LOW)
+	    *IXP4XX_GPIO_GPOUTR &= ~(1 << line);
+	hard_local_irq_restore(flags);
+}
+
+#endif // __ASSEMBLY__

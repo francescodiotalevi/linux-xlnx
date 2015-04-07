@@ -435,27 +435,25 @@ static void dvb_dmx_swfilter_packet(struct dvb_demux *demux, const u8 *buf)
 		dprintk_tscheck("TEI detected. "
 				"PID=0x%x data1=0x%x\n",
 				pid, buf[1]);
-		/* data in this packet can't be trusted - drop it unless
+		/* data in this packet cant be trusted - drop it unless
 		 * module option dvb_demux_feed_err_pkts is set */
 		if (!dvb_demux_feed_err_pkts)
 			return;
 	} else /* if TEI bit is set, pid may be wrong- skip pkt counter */
-		if (demux->cnt_storage && dvb_demux_tscheck) {
-			/* check pkt counter */
-			if (pid < MAX_PID) {
-				if (buf[3] & 0x10)
-					demux->cnt_storage[pid] =
-						(demux->cnt_storage[pid] + 1) & 0xf;
-
-				if ((buf[3] & 0xf) != demux->cnt_storage[pid]) {
-					dprintk_tscheck("TS packet counter mismatch. PID=0x%x expected 0x%x got 0x%x\n",
+	if (demux->cnt_storage && dvb_demux_tscheck) {
+		/* check pkt counter */
+		if (pid < MAX_PID) {
+			if ((buf[3] & 0xf) != demux->cnt_storage[pid])
+				dprintk_tscheck("TS packet counter mismatch. "
+						"PID=0x%x expected 0x%x "
+						"got 0x%x\n",
 						pid, demux->cnt_storage[pid],
 						buf[3] & 0xf);
-					demux->cnt_storage[pid] = buf[3] & 0xf;
-				}
-			}
-			/* end check */
+
+			demux->cnt_storage[pid] = ((buf[3] & 0xf) + 1)&0xf;
 		}
+		/* end check */
+	}
 
 	list_for_each_entry(feed, &demux->feed_list, list_head) {
 		if ((feed->pid != pid) && (feed->pid != 0x2000))
@@ -476,9 +474,7 @@ static void dvb_dmx_swfilter_packet(struct dvb_demux *demux, const u8 *buf)
 void dvb_dmx_swfilter_packets(struct dvb_demux *demux, const u8 *buf,
 			      size_t count)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&demux->lock, flags);
+	spin_lock(&demux->lock);
 
 	while (count--) {
 		if (buf[0] == 0x47)
@@ -486,7 +482,7 @@ void dvb_dmx_swfilter_packets(struct dvb_demux *demux, const u8 *buf,
 		buf += 188;
 	}
 
-	spin_unlock_irqrestore(&demux->lock, flags);
+	spin_unlock(&demux->lock);
 }
 
 EXPORT_SYMBOL(dvb_dmx_swfilter_packets);
@@ -521,9 +517,8 @@ static inline void _dvb_dmx_swfilter(struct dvb_demux *demux, const u8 *buf,
 {
 	int p = 0, i, j;
 	const u8 *q;
-	unsigned long flags;
 
-	spin_lock_irqsave(&demux->lock, flags);
+	spin_lock(&demux->lock);
 
 	if (demux->tsbufp) { /* tsbuf[0] is now 0x47. */
 		i = demux->tsbufp;
@@ -567,7 +562,7 @@ static inline void _dvb_dmx_swfilter(struct dvb_demux *demux, const u8 *buf,
 	}
 
 bailout:
-	spin_unlock_irqrestore(&demux->lock, flags);
+	spin_unlock(&demux->lock);
 }
 
 void dvb_dmx_swfilter(struct dvb_demux *demux, const u8 *buf, size_t count)
@@ -584,13 +579,11 @@ EXPORT_SYMBOL(dvb_dmx_swfilter_204);
 
 void dvb_dmx_swfilter_raw(struct dvb_demux *demux, const u8 *buf, size_t count)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&demux->lock, flags);
+	spin_lock(&demux->lock);
 
 	demux->feed->cb.ts(buf, count, NULL, 0, &demux->feed->feed.ts, DMX_OK);
 
-	spin_unlock_irqrestore(&demux->lock, flags);
+	spin_unlock(&demux->lock);
 }
 EXPORT_SYMBOL(dvb_dmx_swfilter_raw);
 
@@ -679,7 +672,7 @@ static int dmx_ts_feed_set(struct dmx_ts_feed *ts_feed, u16 pid, int ts_type,
 		return -ERESTARTSYS;
 
 	if (ts_type & TS_DECODER) {
-		if (pes_type >= DMX_PES_OTHER) {
+		if (pes_type >= DMX_TS_PES_OTHER) {
 			mutex_unlock(&demux->mutex);
 			return -EINVAL;
 		}
@@ -851,7 +844,7 @@ static int dvbdmx_release_ts_feed(struct dmx_demux *dmx,
 
 	feed->pid = 0xffff;
 
-	if (feed->ts_type & TS_DECODER && feed->pes_type < DMX_PES_OTHER)
+	if (feed->ts_type & TS_DECODER && feed->pes_type < DMX_TS_PES_OTHER)
 		demux->pesfilter[feed->pes_type] = NULL;
 
 	mutex_unlock(&demux->mutex);
@@ -1032,13 +1025,8 @@ static int dmx_section_feed_release_filter(struct dmx_section_feed *feed,
 		return -EINVAL;
 	}
 
-	if (feed->is_filtering) {
-		/* release dvbdmx->mutex as far as it is
-		   acquired by stop_filtering() itself */
-		mutex_unlock(&dvbdmx->mutex);
+	if (feed->is_filtering)
 		feed->stop_filtering(feed);
-		mutex_lock(&dvbdmx->mutex);
-	}
 
 	spin_lock_irq(&dvbdmx->lock);
 	f = dvbdmxfeed->filter;
@@ -1278,7 +1266,7 @@ int dvb_dmx_init(struct dvb_demux *dvbdemux)
 
 	INIT_LIST_HEAD(&dvbdemux->frontend_list);
 
-	for (i = 0; i < DMX_PES_OTHER; i++) {
+	for (i = 0; i < DMX_TS_PES_OTHER; i++) {
 		dvbdemux->pesfilter[i] = NULL;
 		dvbdemux->pids[i] = 0xffff;
 	}

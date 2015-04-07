@@ -273,10 +273,8 @@ static int tps6586x_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	device_init_wakeup(&pdev->dev, 1);
-
 	platform_set_drvdata(pdev, rtc);
-	rtc->rtc = devm_rtc_device_register(&pdev->dev, dev_name(&pdev->dev),
+	rtc->rtc = rtc_device_register(dev_name(&pdev->dev), &pdev->dev,
 				       &tps6586x_rtc_ops, THIS_MODULE);
 	if (IS_ERR(rtc->rtc)) {
 		ret = PTR_ERR(rtc->rtc);
@@ -284,17 +282,20 @@ static int tps6586x_rtc_probe(struct platform_device *pdev)
 		goto fail_rtc_register;
 	}
 
-	ret = devm_request_threaded_irq(&pdev->dev, rtc->irq, NULL,
-				tps6586x_rtc_irq,
+	ret = request_threaded_irq(rtc->irq, NULL, tps6586x_rtc_irq,
 				IRQF_ONESHOT | IRQF_EARLY_RESUME,
 				dev_name(&pdev->dev), rtc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "request IRQ(%d) failed with ret %d\n",
 				rtc->irq, ret);
-		goto fail_rtc_register;
+		goto fail_req_irq;
 	}
 	disable_irq(rtc->irq);
+	device_set_wakeup_capable(&pdev->dev, 1);
 	return 0;
+
+fail_req_irq:
+	rtc_device_unregister(rtc->rtc);
 
 fail_rtc_register:
 	tps6586x_update(tps_dev, RTC_CTRL, 0,
@@ -304,10 +305,13 @@ fail_rtc_register:
 
 static int tps6586x_rtc_remove(struct platform_device *pdev)
 {
+	struct tps6586x_rtc *rtc = platform_get_drvdata(pdev);
 	struct device *tps_dev = to_tps6586x_dev(&pdev->dev);
 
 	tps6586x_update(tps_dev, RTC_CTRL, 0,
 		RTC_ENABLE | OSC_SRC_SEL | PRE_BYPASS | CL_SEL_MASK);
+	rtc_device_unregister(rtc->rtc);
+	free_irq(rtc->irq, rtc);
 	return 0;
 }
 
@@ -331,8 +335,9 @@ static int tps6586x_rtc_resume(struct device *dev)
 }
 #endif
 
-static SIMPLE_DEV_PM_OPS(tps6586x_pm_ops, tps6586x_rtc_suspend,
-			tps6586x_rtc_resume);
+static const struct dev_pm_ops tps6586x_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(tps6586x_rtc_suspend, tps6586x_rtc_resume)
+};
 
 static struct platform_driver tps6586x_rtc_driver = {
 	.driver	= {

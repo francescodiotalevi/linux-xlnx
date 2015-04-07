@@ -19,7 +19,6 @@
 #include <linux/seq_file.h>
 #include <linux/pci.h>
 #include <linux/rtnetlink.h>
-#include <linux/power_supply.h>
 
 #include "wil6210.h"
 #include "txrx.h"
@@ -27,16 +26,14 @@
 /* Nasty hack. Better have per device instances */
 static u32 mem_addr;
 static u32 dbg_txdesc_index;
-static u32 dbg_vring_index; /* 24+ for Rx, 0..23 for Tx */
 
 static void wil_print_vring(struct seq_file *s, struct wil6210_priv *wil,
-			    const char *name, struct vring *vring,
-			    char _s, char _h)
+			    const char *name, struct vring *vring)
 {
 	void __iomem *x = wmi_addr(wil, vring->hwtail);
 
 	seq_printf(s, "VRING %s = {\n", name);
-	seq_printf(s, "  pa     = %pad\n", &vring->pa);
+	seq_printf(s, "  pa     = 0x%016llx\n", (unsigned long long)vring->pa);
 	seq_printf(s, "  va     = 0x%p\n", vring->va);
 	seq_printf(s, "  size   = %d\n", vring->size);
 	seq_printf(s, "  swtail = %d\n", vring->swtail);
@@ -53,8 +50,8 @@ static void wil_print_vring(struct seq_file *s, struct wil6210_priv *wil,
 			volatile struct vring_tx_desc *d = &vring->va[i].tx;
 			if ((i % 64) == 0 && (i != 0))
 				seq_printf(s, "\n");
-			seq_printf(s, "%c", (d->dma.status & BIT(0)) ?
-					_s : (vring->ctx[i].skb ? _h : 'h'));
+			seq_printf(s, "%s", (d->dma.status & BIT(0)) ?
+					"S" : (vring->ctx[i] ? "H" : "h"));
 		}
 		seq_printf(s, "\n");
 	}
@@ -66,37 +63,14 @@ static int wil_vring_debugfs_show(struct seq_file *s, void *data)
 	uint i;
 	struct wil6210_priv *wil = s->private;
 
-	wil_print_vring(s, wil, "rx", &wil->vring_rx, 'S', '_');
+	wil_print_vring(s, wil, "rx", &wil->vring_rx);
 
 	for (i = 0; i < ARRAY_SIZE(wil->vring_tx); i++) {
 		struct vring *vring = &(wil->vring_tx[i]);
-		struct vring_tx_data *txdata = &wil->vring_tx_data[i];
-
 		if (vring->va) {
-			int cid = wil->vring2cid_tid[i][0];
-			int tid = wil->vring2cid_tid[i][1];
-			u32 swhead = vring->swhead;
-			u32 swtail = vring->swtail;
-			int used = (vring->size + swhead - swtail)
-				   % vring->size;
-			int avail = vring->size - used - 1;
 			char name[10];
-			/* performance monitoring */
-			cycles_t now = get_cycles();
-			cycles_t idle = txdata->idle * 100;
-			cycles_t total = now - txdata->begin;
-
-			do_div(idle, total);
-			txdata->begin = now;
-			txdata->idle = 0ULL;
-
 			snprintf(name, sizeof(name), "tx_%2d", i);
-
-			seq_printf(s, "\n%pM CID %d TID %d [%3d|%3d] idle %3d%%\n",
-				   wil->sta[cid].addr, cid, tid, used, avail,
-				   (int)idle);
-
-			wil_print_vring(s, wil, name, vring, '_', 'H');
+			wil_print_vring(s, wil, name, vring);
 		}
 	}
 
@@ -171,7 +145,7 @@ static void wil_print_ring(struct seq_file *s, const char *prefix,
 				   le16_to_cpu(hdr.type), hdr.flags);
 			if (len <= MAX_MBOXITEM_SIZE) {
 				int n = 0;
-				char printbuf[16 * 3 + 2];
+				unsigned char printbuf[16 * 3 + 2];
 				unsigned char databuf[MAX_MBOXITEM_SIZE];
 				void __iomem *src = wmi_buffer(wil, d.addr) +
 					sizeof(struct wil6210_mbox_hdr);
@@ -242,32 +216,12 @@ DEFINE_SIMPLE_ATTRIBUTE(fops_iomem_x32, wil_debugfs_iomem_x32_get,
 			wil_debugfs_iomem_x32_set, "0x%08llx\n");
 
 static struct dentry *wil_debugfs_create_iomem_x32(const char *name,
-						   umode_t mode,
+						   mode_t mode,
 						   struct dentry *parent,
 						   void __iomem *value)
 {
 	return debugfs_create_file(name, mode, parent, (void * __force)value,
 				   &fops_iomem_x32);
-}
-
-static int wil_debugfs_ulong_set(void *data, u64 val)
-{
-	*(ulong *)data = val;
-	return 0;
-}
-static int wil_debugfs_ulong_get(void *data, u64 *val)
-{
-	*val = *(ulong *)data;
-	return 0;
-}
-DEFINE_SIMPLE_ATTRIBUTE(wil_fops_ulong, wil_debugfs_ulong_get,
-			wil_debugfs_ulong_set, "%llu\n");
-
-static struct dentry *wil_debugfs_create_ulong(const char *name, umode_t mode,
-					       struct dentry *parent,
-					       ulong *value)
-{
-	return debugfs_create_file(name, mode, parent, value, &wil_fops_ulong);
 }
 
 static int wil6210_debugfs_create_ISR(struct wil6210_priv *wil,
@@ -323,11 +277,11 @@ static int wil6210_debugfs_create_ITR_CNT(struct wil6210_priv *wil,
 	if (IS_ERR_OR_NULL(d))
 		return -ENODEV;
 
-	wil_debugfs_create_iomem_x32("TRSH", S_IRUGO | S_IWUSR, d, wil->csr +
+	wil_debugfs_create_iomem_x32("TRSH", S_IRUGO, d, wil->csr +
 				     HOSTADDR(RGF_DMA_ITR_CNT_TRSH));
-	wil_debugfs_create_iomem_x32("DATA", S_IRUGO | S_IWUSR, d, wil->csr +
+	wil_debugfs_create_iomem_x32("DATA", S_IRUGO, d, wil->csr +
 				     HOSTADDR(RGF_DMA_ITR_CNT_DATA));
-	wil_debugfs_create_iomem_x32("CTL", S_IRUGO | S_IWUSR, d, wil->csr +
+	wil_debugfs_create_iomem_x32("CTL", S_IRUGO, d, wil->csr +
 				     HOSTADDR(RGF_DMA_ITR_CNT_CRL));
 
 	return 0;
@@ -357,6 +311,14 @@ static const struct file_operations fops_memread = {
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 };
+
+static int wil_default_open(struct inode *inode, struct file *file)
+{
+	if (inode->i_private)
+		file->private_data = inode->i_private;
+
+	return 0;
+}
 
 static ssize_t wil_read_file_ioblob(struct file *file, char __user *user_buf,
 				size_t count, loff_t *ppos)
@@ -399,13 +361,13 @@ static ssize_t wil_read_file_ioblob(struct file *file, char __user *user_buf,
 
 static const struct file_operations fops_ioblob = {
 	.read =		wil_read_file_ioblob,
-	.open =		simple_open,
+	.open =		wil_default_open,
 	.llseek =	default_llseek,
 };
 
 static
 struct dentry *wil_debugfs_create_ioblob(const char *name,
-					 umode_t mode,
+					 mode_t mode,
 					 struct dentry *parent,
 					 struct debugfs_blob_wrapper *blob)
 {
@@ -434,220 +396,53 @@ static ssize_t wil_write_file_reset(struct file *file, const char __user *buf,
 
 static const struct file_operations fops_reset = {
 	.write = wil_write_file_reset,
-	.open  = simple_open,
+	.open  = wil_default_open,
 };
-/*---write channel 1..4 to rxon for it, 0 to rxoff---*/
-static ssize_t wil_write_file_rxon(struct file *file, const char __user *buf,
-				   size_t len, loff_t *ppos)
-{
-	struct wil6210_priv *wil = file->private_data;
-	int rc;
-	long channel;
-	bool on;
+/*---------Tx descriptor------------*/
 
-	char *kbuf = kmalloc(len + 1, GFP_KERNEL);
-	if (!kbuf)
-		return -ENOMEM;
-	if (copy_from_user(kbuf, buf, len)) {
-		kfree(kbuf);
-		return -EIO;
-	}
-
-	kbuf[len] = '\0';
-	rc = kstrtol(kbuf, 0, &channel);
-	kfree(kbuf);
-	if (rc)
-		return rc;
-
-	if ((channel < 0) || (channel > 4)) {
-		wil_err(wil, "Invalid channel %ld\n", channel);
-		return -EINVAL;
-	}
-	on = !!channel;
-
-	if (on) {
-		rc = wmi_set_channel(wil, (int)channel);
-		if (rc)
-			return rc;
-	}
-
-	rc = wmi_rxon(wil, on);
-	if (rc)
-		return rc;
-
-	return len;
-}
-
-static const struct file_operations fops_rxon = {
-	.write = wil_write_file_rxon,
-	.open  = simple_open,
-};
-/*---tx_mgmt---*/
-/* Write mgmt frame to this file to send it */
-static ssize_t wil_write_file_txmgmt(struct file *file, const char __user *buf,
-				     size_t len, loff_t *ppos)
-{
-	struct wil6210_priv *wil = file->private_data;
-	struct wiphy *wiphy = wil_to_wiphy(wil);
-	struct wireless_dev *wdev = wil_to_wdev(wil);
-	struct cfg80211_mgmt_tx_params params;
-	int rc;
-
-	void *frame = kmalloc(len, GFP_KERNEL);
-	if (!frame)
-		return -ENOMEM;
-
-	if (copy_from_user(frame, buf, len))
-		return -EIO;
-
-	params.buf = frame;
-	params.len = len;
-	params.chan = wdev->preset_chandef.chan;
-
-	rc = wil_cfg80211_mgmt_tx(wiphy, wdev, &params, NULL);
-
-	kfree(frame);
-	wil_info(wil, "%s() -> %d\n", __func__, rc);
-
-	return len;
-}
-
-static const struct file_operations fops_txmgmt = {
-	.write = wil_write_file_txmgmt,
-	.open  = simple_open,
-};
-
-/* Write WMI command (w/o mbox header) to this file to send it
- * WMI starts from wil6210_mbox_hdr_wmi header
- */
-static ssize_t wil_write_file_wmi(struct file *file, const char __user *buf,
-				  size_t len, loff_t *ppos)
-{
-	struct wil6210_priv *wil = file->private_data;
-	struct wil6210_mbox_hdr_wmi *wmi;
-	void *cmd;
-	int cmdlen = len - sizeof(struct wil6210_mbox_hdr_wmi);
-	u16 cmdid;
-	int rc, rc1;
-
-	if (cmdlen <= 0)
-		return -EINVAL;
-
-	wmi = kmalloc(len, GFP_KERNEL);
-	if (!wmi)
-		return -ENOMEM;
-
-	rc = simple_write_to_buffer(wmi, len, ppos, buf, len);
-	if (rc < 0)
-		return rc;
-
-	cmd = &wmi[1];
-	cmdid = le16_to_cpu(wmi->id);
-
-	rc1 = wmi_send(wil, cmdid, cmd, cmdlen);
-	kfree(wmi);
-
-	wil_info(wil, "%s(0x%04x[%d]) -> %d\n", __func__, cmdid, cmdlen, rc1);
-
-	return rc;
-}
-
-static const struct file_operations fops_wmi = {
-	.write = wil_write_file_wmi,
-	.open  = simple_open,
-};
-
-static void wil_seq_hexdump(struct seq_file *s, void *p, int len,
-			    const char *prefix)
-{
-	char printbuf[16 * 3 + 2];
-	int i = 0;
-	while (i < len) {
-		int l = min(len - i, 16);
-		hex_dump_to_buffer(p + i, l, 16, 1, printbuf,
-				   sizeof(printbuf), false);
-		seq_printf(s, "%s%s\n", prefix, printbuf);
-		i += l;
-	}
-}
-
-static void wil_seq_print_skb(struct seq_file *s, struct sk_buff *skb)
-{
-	int i = 0;
-	int len = skb_headlen(skb);
-	void *p = skb->data;
-	int nr_frags = skb_shinfo(skb)->nr_frags;
-
-	seq_printf(s, "    len = %d\n", len);
-	wil_seq_hexdump(s, p, len, "      : ");
-
-	if (nr_frags) {
-		seq_printf(s, "    nr_frags = %d\n", nr_frags);
-		for (i = 0; i < nr_frags; i++) {
-			const struct skb_frag_struct *frag =
-					&skb_shinfo(skb)->frags[i];
-
-			len = skb_frag_size(frag);
-			p = skb_frag_address_safe(frag);
-			seq_printf(s, "    [%2d] : len = %d\n", i, len);
-			wil_seq_hexdump(s, p, len, "      : ");
-		}
-	}
-}
-
-/*---------Tx/Rx descriptor------------*/
 static int wil_txdesc_debugfs_show(struct seq_file *s, void *data)
 {
 	struct wil6210_priv *wil = s->private;
-	struct vring *vring;
-	bool tx = (dbg_vring_index < WIL6210_MAX_TX_RINGS);
-	if (tx)
-		vring = &(wil->vring_tx[dbg_vring_index]);
-	else
-		vring = &wil->vring_rx;
+	struct vring *vring = &(wil->vring_tx[0]);
 
 	if (!vring->va) {
-		if (tx)
-			seq_printf(s, "No Tx[%2d] VRING\n", dbg_vring_index);
-		else
-			seq_puts(s, "No Rx VRING\n");
+		seq_printf(s, "No Tx VRING\n");
 		return 0;
 	}
 
 	if (dbg_txdesc_index < vring->size) {
-		/* use struct vring_tx_desc for Rx as well,
-		 * only field used, .dma.length, is the same
-		 */
 		volatile struct vring_tx_desc *d =
 				&(vring->va[dbg_txdesc_index].tx);
 		volatile u32 *u = (volatile u32 *)d;
-		struct sk_buff *skb = vring->ctx[dbg_txdesc_index].skb;
+		struct sk_buff *skb = vring->ctx[dbg_txdesc_index];
 
-		if (tx)
-			seq_printf(s, "Tx[%2d][%3d] = {\n", dbg_vring_index,
-				   dbg_txdesc_index);
-		else
-			seq_printf(s, "Rx[%3d] = {\n", dbg_txdesc_index);
+		seq_printf(s, "Tx[%3d] = {\n", dbg_txdesc_index);
 		seq_printf(s, "  MAC = 0x%08x 0x%08x 0x%08x 0x%08x\n",
 			   u[0], u[1], u[2], u[3]);
 		seq_printf(s, "  DMA = 0x%08x 0x%08x 0x%08x 0x%08x\n",
 			   u[4], u[5], u[6], u[7]);
-		seq_printf(s, "  SKB = 0x%p\n", skb);
+		seq_printf(s, "  SKB = %p\n", skb);
 
 		if (skb) {
-			skb_get(skb);
-			wil_seq_print_skb(s, skb);
-			kfree_skb(skb);
+			unsigned char printbuf[16 * 3 + 2];
+			int i = 0;
+			int len = skb_headlen(skb);
+			void *p = skb->data;
+
+			seq_printf(s, "    len = %d\n", len);
+
+			while (i < len) {
+				int l = min(len - i, 16);
+				hex_dump_to_buffer(p + i, l, 16, 1, printbuf,
+						   sizeof(printbuf), false);
+				seq_printf(s, "      : %s\n", printbuf);
+				i += l;
+			}
 		}
 		seq_printf(s, "}\n");
 	} else {
-		if (tx)
-			seq_printf(s, "[%2d] TxDesc index (%d) >= size (%d)\n",
-				   dbg_vring_index, dbg_txdesc_index,
-				   vring->size);
-		else
-			seq_printf(s, "RxDesc index (%d) >= size (%d)\n",
-				   dbg_txdesc_index, vring->size);
+		seq_printf(s, "TxDesc index (%d) >= size (%d)\n",
+			   dbg_txdesc_index, vring->size);
 	}
 
 	return 0;
@@ -731,260 +526,10 @@ static ssize_t wil_write_file_ssid(struct file *file, const char __user *buf,
 static const struct file_operations fops_ssid = {
 	.read = wil_read_file_ssid,
 	.write = wil_write_file_ssid,
-	.open  = simple_open,
-};
-
-/*---------temp------------*/
-static void print_temp(struct seq_file *s, const char *prefix, u32 t)
-{
-	switch (t) {
-	case 0:
-	case ~(u32)0:
-		seq_printf(s, "%s N/A\n", prefix);
-	break;
-	default:
-		seq_printf(s, "%s %d.%03d\n", prefix, t / 1000, t % 1000);
-		break;
-	}
-}
-
-static int wil_temp_debugfs_show(struct seq_file *s, void *data)
-{
-	struct wil6210_priv *wil = s->private;
-	u32 t_m, t_r;
-
-	int rc = wmi_get_temperature(wil, &t_m, &t_r);
-	if (rc) {
-		seq_printf(s, "Failed\n");
-		return 0;
-	}
-
-	print_temp(s, "T_mac   =", t_m);
-	print_temp(s, "T_radio =", t_r);
-
-	return 0;
-}
-
-static int wil_temp_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wil_temp_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations fops_temp = {
-	.open		= wil_temp_seq_open,
-	.release	= single_release,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-};
-
-/*---------freq------------*/
-static int wil_freq_debugfs_show(struct seq_file *s, void *data)
-{
-	struct wil6210_priv *wil = s->private;
-	struct wireless_dev *wdev = wil_to_wdev(wil);
-	u16 freq = wdev->chandef.chan ? wdev->chandef.chan->center_freq : 0;
-
-	seq_printf(s, "Freq = %d\n", freq);
-
-	return 0;
-}
-
-static int wil_freq_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wil_freq_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations fops_freq = {
-	.open		= wil_freq_seq_open,
-	.release	= single_release,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-};
-
-/*---------link------------*/
-static int wil_link_debugfs_show(struct seq_file *s, void *data)
-{
-	struct wil6210_priv *wil = s->private;
-	struct station_info sinfo;
-	int i, rc;
-
-	for (i = 0; i < ARRAY_SIZE(wil->sta); i++) {
-		struct wil_sta_info *p = &wil->sta[i];
-		char *status = "unknown";
-		switch (p->status) {
-		case wil_sta_unused:
-			status = "unused   ";
-			break;
-		case wil_sta_conn_pending:
-			status = "pending  ";
-			break;
-		case wil_sta_connected:
-			status = "connected";
-			break;
-		}
-		seq_printf(s, "[%d] %pM %s%s\n", i, p->addr, status,
-			   (p->data_port_open ? " data_port_open" : ""));
-
-		if (p->status == wil_sta_connected) {
-			rc = wil_cid_fill_sinfo(wil, i, &sinfo);
-			if (rc)
-				return rc;
-
-			seq_printf(s, "  Tx_mcs = %d\n", sinfo.txrate.mcs);
-			seq_printf(s, "  Rx_mcs = %d\n", sinfo.rxrate.mcs);
-			seq_printf(s, "  SQ     = %d\n", sinfo.signal);
-		}
-	}
-
-	return 0;
-}
-
-static int wil_link_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wil_link_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations fops_link = {
-	.open		= wil_link_seq_open,
-	.release	= single_release,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-};
-
-/*---------info------------*/
-static int wil_info_debugfs_show(struct seq_file *s, void *data)
-{
-	struct wil6210_priv *wil = s->private;
-	struct net_device *ndev = wil_to_ndev(wil);
-	int is_ac = power_supply_is_system_supplied();
-	int rx = atomic_xchg(&wil->isr_count_rx, 0);
-	int tx = atomic_xchg(&wil->isr_count_tx, 0);
-	static ulong rxf_old, txf_old;
-	ulong rxf = ndev->stats.rx_packets;
-	ulong txf = ndev->stats.tx_packets;
-	unsigned int i;
-
-	/* >0 : AC; 0 : battery; <0 : error */
-	seq_printf(s, "AC powered : %d\n", is_ac);
-	seq_printf(s, "Rx irqs:packets : %8d : %8ld\n", rx, rxf - rxf_old);
-	seq_printf(s, "Tx irqs:packets : %8d : %8ld\n", tx, txf - txf_old);
-	rxf_old = rxf;
-	txf_old = txf;
-
-
-#define CHECK_QSTATE(x) (state & BIT(__QUEUE_STATE_ ## x)) ? \
-	" " __stringify(x) : ""
-
-	for (i = 0; i < ndev->num_tx_queues; i++) {
-		struct netdev_queue *txq = netdev_get_tx_queue(ndev, i);
-		unsigned long state = txq->state;
-
-		seq_printf(s, "Tx queue[%i] state : 0x%lx%s%s%s\n", i, state,
-			   CHECK_QSTATE(DRV_XOFF),
-			   CHECK_QSTATE(STACK_XOFF),
-			   CHECK_QSTATE(FROZEN)
-			  );
-	}
-#undef CHECK_QSTATE
-	return 0;
-}
-
-static int wil_info_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wil_info_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations fops_info = {
-	.open		= wil_info_seq_open,
-	.release	= single_release,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-};
-
-/*---------Station matrix------------*/
-static void wil_print_rxtid(struct seq_file *s, struct wil_tid_ampdu_rx *r)
-{
-	int i;
-	u16 index = ((r->head_seq_num - r->ssn) & 0xfff) % r->buf_size;
-	seq_printf(s, "0x%03x [", r->head_seq_num);
-	for (i = 0; i < r->buf_size; i++) {
-		if (i == index)
-			seq_printf(s, "%c", r->reorder_buf[i] ? 'O' : '|');
-		else
-			seq_printf(s, "%c", r->reorder_buf[i] ? '*' : '_');
-	}
-	seq_printf(s, "] last drop 0x%03x\n", r->ssn_last_drop);
-}
-
-static int wil_sta_debugfs_show(struct seq_file *s, void *data)
-{
-	struct wil6210_priv *wil = s->private;
-	int i, tid;
-
-	for (i = 0; i < ARRAY_SIZE(wil->sta); i++) {
-		struct wil_sta_info *p = &wil->sta[i];
-		char *status = "unknown";
-		switch (p->status) {
-		case wil_sta_unused:
-			status = "unused   ";
-			break;
-		case wil_sta_conn_pending:
-			status = "pending  ";
-			break;
-		case wil_sta_connected:
-			status = "connected";
-			break;
-		}
-		seq_printf(s, "[%d] %pM %s%s\n", i, p->addr, status,
-			   (p->data_port_open ? " data_port_open" : ""));
-
-		if (p->status == wil_sta_connected) {
-			for (tid = 0; tid < WIL_STA_TID_NUM; tid++) {
-				struct wil_tid_ampdu_rx *r = p->tid_rx[tid];
-				if (r) {
-					seq_printf(s, "[%2d] ", tid);
-					wil_print_rxtid(s, r);
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
-static int wil_sta_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, wil_sta_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations fops_sta = {
-	.open		= wil_sta_seq_open,
-	.release	= single_release,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
+	.open  = wil_default_open,
 };
 
 /*----------------*/
-static void wil6210_debugfs_init_blobs(struct wil6210_priv *wil,
-				       struct dentry *dbg)
-{
-	int i;
-	char name[32];
-
-	for (i = 0; i < ARRAY_SIZE(fw_mapping); i++) {
-		struct debugfs_blob_wrapper *blob = &wil->blobs[i];
-		const struct fw_map *map = &fw_mapping[i];
-
-		if (!map->name)
-			continue;
-
-		blob->data = (void * __force)wil->csr + HOSTADDR(map->host);
-		blob->size = map->to - map->from;
-		snprintf(name, sizeof(name), "blob_%s", map->name);
-		wil_debugfs_create_ioblob(name, S_IRUGO, dbg, blob);
-	}
-}
-
 int wil6210_debugfs_init(struct wil6210_priv *wil)
 {
 	struct dentry *dbg = wil->debug = debugfs_create_dir(WIL_NAME,
@@ -995,21 +540,13 @@ int wil6210_debugfs_init(struct wil6210_priv *wil)
 
 	debugfs_create_file("mbox", S_IRUGO, dbg, wil, &fops_mbox);
 	debugfs_create_file("vrings", S_IRUGO, dbg, wil, &fops_vring);
-	debugfs_create_file("stations", S_IRUGO, dbg, wil, &fops_sta);
-	debugfs_create_file("desc", S_IRUGO, dbg, wil, &fops_txdesc);
-	debugfs_create_u32("desc_index", S_IRUGO | S_IWUSR, dbg,
+	debugfs_create_file("txdesc", S_IRUGO, dbg, wil, &fops_txdesc);
+	debugfs_create_u32("txdesc_index", S_IRUGO | S_IWUSR, dbg,
 			   &dbg_txdesc_index);
-	debugfs_create_u32("vring_index", S_IRUGO | S_IWUSR, dbg,
-			   &dbg_vring_index);
-
 	debugfs_create_file("bf", S_IRUGO, dbg, wil, &fops_bf);
 	debugfs_create_file("ssid", S_IRUGO | S_IWUSR, dbg, wil, &fops_ssid);
 	debugfs_create_u32("secure_pcp", S_IRUGO | S_IWUSR, dbg,
 			   &wil->secure_pcp);
-	wil_debugfs_create_ulong("status", S_IRUGO | S_IWUSR, dbg,
-				 &wil->status);
-	debugfs_create_u32("fw_version", S_IRUGO, dbg, &wil->fw_version);
-	debugfs_create_x32("hw_version", S_IRUGO, dbg, &wil->hw_version);
 
 	wil6210_debugfs_create_ISR(wil, "USER_ICR", dbg,
 				   HOSTADDR(RGF_USER_USER_ICR));
@@ -1022,22 +559,39 @@ int wil6210_debugfs_init(struct wil6210_priv *wil)
 	wil6210_debugfs_create_pseudo_ISR(wil, dbg);
 	wil6210_debugfs_create_ITR_CNT(wil, dbg);
 
-	wil_debugfs_create_iomem_x32("RGF_USER_USAGE_1", S_IRUGO, dbg,
-				     wil->csr +
-				     HOSTADDR(RGF_USER_USAGE_1));
 	debugfs_create_u32("mem_addr", S_IRUGO | S_IWUSR, dbg, &mem_addr);
 	debugfs_create_file("mem_val", S_IRUGO, dbg, wil, &fops_memread);
 
 	debugfs_create_file("reset", S_IWUSR, dbg, wil, &fops_reset);
-	debugfs_create_file("rxon", S_IWUSR, dbg, wil, &fops_rxon);
-	debugfs_create_file("tx_mgmt", S_IWUSR, dbg, wil, &fops_txmgmt);
-	debugfs_create_file("wmi_send", S_IWUSR, dbg, wil, &fops_wmi);
-	debugfs_create_file("temp", S_IRUGO, dbg, wil, &fops_temp);
-	debugfs_create_file("freq", S_IRUGO, dbg, wil, &fops_freq);
-	debugfs_create_file("link", S_IRUGO, dbg, wil, &fops_link);
-	debugfs_create_file("info", S_IRUGO, dbg, wil, &fops_info);
 
-	wil6210_debugfs_init_blobs(wil, dbg);
+	wil->rgf_blob.data = (void * __force)wil->csr + 0;
+	wil->rgf_blob.size = 0xa000;
+	wil_debugfs_create_ioblob("blob_rgf", S_IRUGO, dbg, &wil->rgf_blob);
+
+	wil->fw_code_blob.data = (void * __force)wil->csr + 0x40000;
+	wil->fw_code_blob.size = 0x40000;
+	wil_debugfs_create_ioblob("blob_fw_code", S_IRUGO, dbg,
+				  &wil->fw_code_blob);
+
+	wil->fw_data_blob.data = (void * __force)wil->csr + 0x80000;
+	wil->fw_data_blob.size = 0x8000;
+	wil_debugfs_create_ioblob("blob_fw_data", S_IRUGO, dbg,
+				  &wil->fw_data_blob);
+
+	wil->fw_peri_blob.data = (void * __force)wil->csr + 0x88000;
+	wil->fw_peri_blob.size = 0x18000;
+	wil_debugfs_create_ioblob("blob_fw_peri", S_IRUGO, dbg,
+				  &wil->fw_peri_blob);
+
+	wil->uc_code_blob.data = (void * __force)wil->csr + 0xa0000;
+	wil->uc_code_blob.size = 0x10000;
+	wil_debugfs_create_ioblob("blob_uc_code", S_IRUGO, dbg,
+				  &wil->uc_code_blob);
+
+	wil->uc_data_blob.data = (void * __force)wil->csr + 0xb0000;
+	wil->uc_data_blob.size = 0x4000;
+	wil_debugfs_create_ioblob("blob_uc_data", S_IRUGO, dbg,
+				  &wil->uc_data_blob);
 
 	return 0;
 }

@@ -26,7 +26,6 @@
 #include <linux/slab.h>
 #include <linux/irq.h>
 #include <asm/bootinfo.h>
-#include <asm/idle.h>
 #include <asm/time.h>
 #include <asm/reboot.h>
 #include <asm/r4kcache.h>
@@ -119,7 +118,7 @@ EXPORT_SYMBOL(clk_put);
 
 /* GPIO support */
 
-#ifdef CONFIG_GPIOLIB
+#ifdef CONFIG_GENERIC_GPIO
 int gpio_to_irq(unsigned gpio)
 {
 	return -EINVAL;
@@ -309,8 +308,8 @@ static void __init preprocess_cmdline(void)
 			txx9_board_vec = find_board_byname(str + 6);
 			continue;
 		} else if (strncmp(str, "masterclk=", 10) == 0) {
-			unsigned int val;
-			if (kstrtouint(str + 10, 10, &val) == 0)
+			unsigned long val;
+			if (strict_strtoul(str + 10, 10, &val) == 0)
 				txx9_master_clock = val;
 			continue;
 		} else if (strcmp(str, "icdisable") == 0) {
@@ -350,7 +349,7 @@ static void __init select_board(void)
 	}
 
 	/* select "default" board */
-#ifdef CONFIG_TOSHIBA_JMR3927
+#ifdef CONFIG_CPU_TX39XX
 	txx9_board_vec = &jmr3927_vec;
 #endif
 #ifdef CONFIG_CPU_TX49XX
@@ -514,19 +513,19 @@ void __init txx9_sio_init(unsigned long baseaddr, int irq,
 }
 
 #ifdef CONFIG_EARLY_PRINTK
-static void null_prom_putchar(char c)
+static void __init null_prom_putchar(char c)
 {
 }
-void (*txx9_prom_putchar)(char c) = null_prom_putchar;
+void (*txx9_prom_putchar)(char c) __initdata = null_prom_putchar;
 
-void prom_putchar(char c)
+void __init prom_putchar(char c)
 {
 	txx9_prom_putchar(c);
 }
 
 static void __iomem *early_txx9_sio_port;
 
-static void early_txx9_sio_putchar(char c)
+static void __init early_txx9_sio_putchar(char c)
 {
 #define TXX9_SICISR	0x0c
 #define TXX9_SITFIFO	0x1c
@@ -937,14 +936,6 @@ static ssize_t txx9_sram_write(struct file *filp, struct kobject *kobj,
 	return size;
 }
 
-static void txx9_device_release(struct device *dev)
-{
-	struct txx9_sramc_dev *tdev;
-
-	tdev = container_of(dev, struct txx9_sramc_dev, dev);
-	kfree(tdev);
-}
-
 void __init txx9_sramc_init(struct resource *r)
 {
 	struct txx9_sramc_dev *dev;
@@ -959,11 +950,8 @@ void __init txx9_sramc_init(struct resource *r)
 		return;
 	size = resource_size(r);
 	dev->base = ioremap(r->start, size);
-	if (!dev->base) {
-		kfree(dev);
-		return;
-	}
-	dev->dev.release = &txx9_device_release;
+	if (!dev->base)
+		goto exit;
 	dev->dev.bus = &txx9_sramc_subsys;
 	sysfs_bin_attr_init(&dev->bindata_attr);
 	dev->bindata_attr.attr.name = "bindata";
@@ -974,15 +962,17 @@ void __init txx9_sramc_init(struct resource *r)
 	dev->bindata_attr.private = dev;
 	err = device_register(&dev->dev);
 	if (err)
-		goto exit_put;
+		goto exit;
 	err = sysfs_create_bin_file(&dev->dev.kobj, &dev->bindata_attr);
 	if (err) {
 		device_unregister(&dev->dev);
-		iounmap(dev->base);
-		kfree(dev);
+		goto exit;
 	}
 	return;
-exit_put:
-	put_device(&dev->dev);
-	return;
+exit:
+	if (dev) {
+		if (dev->base)
+			iounmap(dev->base);
+		kfree(dev);
+	}
 }

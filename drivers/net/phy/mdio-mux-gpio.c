@@ -10,6 +10,7 @@
 #include <linux/device.h>
 #include <linux/of_mdio.h>
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/phy.h>
 #include <linux/mdio-mux.h>
 #include <linux/of_gpio.h>
@@ -52,7 +53,7 @@ static int mdio_mux_gpio_probe(struct platform_device *pdev)
 {
 	enum of_gpio_flags f;
 	struct mdio_mux_gpio_state *s;
-	int num_gpios;
+	unsigned int num_gpios;
 	unsigned int n;
 	int r;
 
@@ -60,7 +61,7 @@ static int mdio_mux_gpio_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	num_gpios = of_gpio_count(pdev->dev.of_node);
-	if (num_gpios <= 0 || num_gpios > MDIO_MUX_GPIO_MAX_BITS)
+	if (num_gpios == 0 || num_gpios > MDIO_MUX_GPIO_MAX_BITS)
 		return -ENODEV;
 
 	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
@@ -105,7 +106,7 @@ err:
 
 static int mdio_mux_gpio_remove(struct platform_device *pdev)
 {
-	struct mdio_mux_gpio_state *s = dev_get_platdata(&pdev->dev);
+	struct mdio_mux_gpio_state *s = pdev->dev.platform_data;
 	mdio_mux_uninit(s->mux_handle);
 	return 0;
 }

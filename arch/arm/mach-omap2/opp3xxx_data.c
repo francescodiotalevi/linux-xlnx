@@ -168,4 +168,4 @@ int __init omap3_opp_init(void)
 
 	return r;
 }
-omap_device_initcall(omap3_opp_init);
+device_initcall(omap3_opp_init);

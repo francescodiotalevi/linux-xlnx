@@ -12,6 +12,8 @@
 #include <linux/module.h>
 #include <linux/ucb1400.h>
 
+struct ucb1400_gpio_data *ucbdata;
+
 static int ucb1400_gpio_dir_in(struct gpio_chip *gc, unsigned off)
 {
 	struct ucb1400_gpio *gpio;
@@ -45,10 +47,10 @@ static void ucb1400_gpio_set(struct gpio_chip *gc, unsigned off, int val)
 
 static int ucb1400_gpio_probe(struct platform_device *dev)
 {
-	struct ucb1400_gpio *ucb = dev_get_platdata(&dev->dev);
+	struct ucb1400_gpio *ucb = dev->dev.platform_data;
 	int err = 0;
 
-	if (!(ucb && ucb->gpio_offset)) {
+	if (!(ucbdata && ucbdata->gpio_offset)) {
 		err = -EINVAL;
 		goto err;
 	}
@@ -56,7 +58,7 @@ static int ucb1400_gpio_probe(struct platform_device *dev)
 	platform_set_drvdata(dev, ucb);
 
 	ucb->gc.label = "ucb1400_gpio";
-	ucb->gc.base = ucb->gpio_offset;
+	ucb->gc.base = ucbdata->gpio_offset;
 	ucb->gc.ngpio = 10;
 	ucb->gc.owner = THIS_MODULE;
 
@@ -64,14 +66,14 @@ static int ucb1400_gpio_probe(struct platform_device *dev)
 	ucb->gc.direction_output = ucb1400_gpio_dir_out;
 	ucb->gc.get = ucb1400_gpio_get;
 	ucb->gc.set = ucb1400_gpio_set;
-	ucb->gc.can_sleep = true;
+	ucb->gc.can_sleep = 1;
 
 	err = gpiochip_add(&ucb->gc);
 	if (err)
 		goto err;
 
-	if (ucb->gpio_setup)
-		err = ucb->gpio_setup(&dev->dev, ucb->gc.ngpio);
+	if (ucbdata && ucbdata->gpio_setup)
+		err = ucbdata->gpio_setup(&dev->dev, ucb->gc.ngpio);
 
 err:
 	return err;
@@ -83,13 +85,13 @@ static int ucb1400_gpio_remove(struct platform_device *dev)
 	int err = 0;
 	struct ucb1400_gpio *ucb = platform_get_drvdata(dev);
 
-	if (ucb && ucb->gpio_teardown) {
-		err = ucb->gpio_teardown(&dev->dev, ucb->gc.ngpio);
+	if (ucbdata && ucbdata->gpio_teardown) {
+		err = ucbdata->gpio_teardown(&dev->dev, ucb->gc.ngpio);
 		if (err)
 			return err;
 	}
 
-	gpiochip_remove(&ucb->gc);
+	err = gpiochip_remove(&ucb->gc);
 	return err;
 }
 
@@ -101,8 +103,12 @@ static struct platform_driver ucb1400_gpio_driver = {
 	},
 };
 
+void __init ucb1400_gpio_set_data(struct ucb1400_gpio_data *data)
+{
+	ucbdata = data;
+}
+
 module_platform_driver(ucb1400_gpio_driver);
 
 MODULE_DESCRIPTION("Philips UCB1400 GPIO driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:ucb1400_gpio");

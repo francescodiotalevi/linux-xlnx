@@ -39,7 +39,6 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <linux/reboot.h>
 #include <linux/module.h>
 #include <linux/list.h>
@@ -530,6 +529,13 @@ mega_build_cmd(adapter_t *adapter, Scsi_Cmnd *cmd, int *busy)
 	int	channel = 0;
 	int	target = 0;
 	int	ldrv_num = 0;   /* logical drive number */
+
+
+	/*
+	 * filter the internal and ioctl commands
+	 */
+	if((cmd->cmnd[0] == MEGA_INTERNAL_CMD))
+		return (scb_t *)cmd->host_scribble;
 
 	/*
 	 * We know what channels our logical drives are on - mega_find_card()
@@ -1432,22 +1438,19 @@ mega_cmd_done(adapter_t *adapter, u8 completed[], int nstatus, int status)
 
 		cmdid = completed[i];
 
-		/*
-		 * Only free SCBs for the commands coming down from the
-		 * mid-layer, not for which were issued internally
-		 *
-		 * For internal command, restore the status returned by the
-		 * firmware so that user can interpret it.
-		 */
-		if (cmdid == CMDID_INT_CMDS) {
+		if( cmdid == CMDID_INT_CMDS ) { /* internal command */
 			scb = &adapter->int_scb;
+			cmd = scb->cmd;
+			mbox = (mbox_t *)scb->raw_mbox;
 
-			list_del_init(&scb->list);
-			scb->state = SCB_FREE;
+			/*
+			 * Internal command interface do not fire the extended
+			 * passthru or 64-bit passthru
+			 */
+			pthru = scb->pthru;
 
-			adapter->int_status = status;
-			complete(&adapter->int_waitq);
-		} else {
+		}
+		else {
 			scb = &adapter->scb_list[cmdid];
 
 			/*
@@ -1636,7 +1639,25 @@ mega_cmd_done(adapter_t *adapter, u8 completed[], int nstatus, int status)
 				cmd->result |= (DID_BAD_TARGET << 16)|status;
 		}
 
-		mega_free_scb(adapter, scb);
+		/*
+		 * Only free SCBs for the commands coming down from the
+		 * mid-layer, not for which were issued internally
+		 *
+		 * For internal command, restore the status returned by the
+		 * firmware so that user can interpret it.
+		 */
+		if( cmdid == CMDID_INT_CMDS ) { /* internal command */
+			cmd->result = status;
+
+			/*
+			 * Remove the internal command from the pending list
+			 */
+			list_del_init(&scb->list);
+			scb->state = SCB_FREE;
+		}
+		else {
+			mega_free_scb(adapter, scb);
+		}
 
 		/* Add Scsi_Command to end of completed queue */
 		list_add_tail(SCSI_LIST(cmd), &adapter->completed_list);
@@ -1860,7 +1881,7 @@ megaraid_info(struct Scsi_Host *host)
 		 "LSI Logic MegaRAID %s %d commands %d targs %d chans %d luns",
 		 adapter->fw_version, adapter->product_info.max_commands,
 		 adapter->host->max_id, adapter->host->max_channel,
-		 (u32)adapter->host->max_lun);
+		 adapter->host->max_lun);
 	return buffer;
 }
 
@@ -1941,8 +1962,8 @@ megaraid_abort_and_reset(adapter_t *adapter, Scsi_Cmnd *cmd, int aor)
 
 	printk(KERN_WARNING "megaraid: %s cmd=%x <c=%d t=%d l=%d>\n",
 	     (aor == SCB_ABORT)? "ABORTING":"RESET",
-	     cmd->cmnd[0], cmd->device->channel,
-	     cmd->device->id, (u32)cmd->device->lun);
+	     cmd->cmnd[0], cmd->device->channel, 
+	     cmd->device->id, cmd->device->lun);
 
 	if(list_empty(&adapter->pending_list))
 		return FALSE;
@@ -2004,7 +2025,7 @@ megaraid_abort_and_reset(adapter_t *adapter, Scsi_Cmnd *cmd, int aor)
 static inline int
 make_local_pdev(adapter_t *adapter, struct pci_dev **pdev)
 {
-	*pdev = pci_alloc_dev(NULL);
+	*pdev = alloc_pci_dev();
 
 	if( *pdev == NULL ) return -1;
 
@@ -2048,201 +2069,385 @@ mega_free_inquiry(void *inquiry, dma_addr_t dma_handle, struct pci_dev *pdev)
 #ifdef CONFIG_PROC_FS
 /* Following code handles /proc fs  */
 
+#define CREATE_READ_PROC(string, func)	create_proc_read_entry(string,	\
+					S_IRUSR | S_IFREG,		\
+					controller_proc_dir_entry,	\
+					func, adapter)
+
 /**
- * proc_show_config()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * mega_create_proc_entry()
+ * @index - index in soft state array
+ * @parent - parent node for this /proc entry
+ *
+ * Creates /proc entries for our controllers.
+ */
+static void
+mega_create_proc_entry(int index, struct proc_dir_entry *parent)
+{
+	struct proc_dir_entry	*controller_proc_dir_entry = NULL;
+	u8		string[64] = { 0 };
+	adapter_t	*adapter = hba_soft_state[index];
+
+	sprintf(string, "hba%d", adapter->host->host_no);
+
+	controller_proc_dir_entry =
+		adapter->controller_proc_dir_entry = proc_mkdir(string, parent);
+
+	if(!controller_proc_dir_entry) {
+		printk(KERN_WARNING "\nmegaraid: proc_mkdir failed\n");
+		return;
+	}
+	adapter->proc_read = CREATE_READ_PROC("config", proc_read_config);
+	adapter->proc_stat = CREATE_READ_PROC("stat", proc_read_stat);
+	adapter->proc_mbox = CREATE_READ_PROC("mailbox", proc_read_mbox);
+#if MEGA_HAVE_ENH_PROC
+	adapter->proc_rr = CREATE_READ_PROC("rebuild-rate", proc_rebuild_rate);
+	adapter->proc_battery = CREATE_READ_PROC("battery-status",
+			proc_battery);
+
+	/*
+	 * Display each physical drive on its channel
+	 */
+	adapter->proc_pdrvstat[0] = CREATE_READ_PROC("diskdrives-ch0",
+					proc_pdrv_ch0);
+	adapter->proc_pdrvstat[1] = CREATE_READ_PROC("diskdrives-ch1",
+					proc_pdrv_ch1);
+	adapter->proc_pdrvstat[2] = CREATE_READ_PROC("diskdrives-ch2",
+					proc_pdrv_ch2);
+	adapter->proc_pdrvstat[3] = CREATE_READ_PROC("diskdrives-ch3",
+					proc_pdrv_ch3);
+
+	/*
+	 * Display a set of up to 10 logical drive through each of following
+	 * /proc entries
+	 */
+	adapter->proc_rdrvstat[0] = CREATE_READ_PROC("raiddrives-0-9",
+					proc_rdrv_10);
+	adapter->proc_rdrvstat[1] = CREATE_READ_PROC("raiddrives-10-19",
+					proc_rdrv_20);
+	adapter->proc_rdrvstat[2] = CREATE_READ_PROC("raiddrives-20-29",
+					proc_rdrv_30);
+	adapter->proc_rdrvstat[3] = CREATE_READ_PROC("raiddrives-30-39",
+					proc_rdrv_40);
+#endif
+}
+
+
+/**
+ * proc_read_config()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
  * Display configuration information about the controller.
  */
 static int
-proc_show_config(struct seq_file *m, void *v)
+proc_read_config(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
 
-	adapter_t *adapter = m->private;
+	adapter_t *adapter = (adapter_t *)data;
+	int len = 0;
 
-	seq_puts(m, MEGARAID_VERSION);
+	len += sprintf(page+len, "%s", MEGARAID_VERSION);
+
 	if(adapter->product_info.product_name[0])
-		seq_printf(m, "%s\n", adapter->product_info.product_name);
+		len += sprintf(page+len, "%s\n",
+				adapter->product_info.product_name);
 
-	seq_puts(m, "Controller Type: ");
+	len += sprintf(page+len, "Controller Type: ");
 
-	if( adapter->flag & BOARD_MEMMAP )
-		seq_puts(m, "438/466/467/471/493/518/520/531/532\n");
-	else
-		seq_puts(m, "418/428/434\n");
+	if( adapter->flag & BOARD_MEMMAP ) {
+		len += sprintf(page+len,
+			"438/466/467/471/493/518/520/531/532\n");
+	}
+	else {
+		len += sprintf(page+len,
+			"418/428/434\n");
+	}
 
-	if(adapter->flag & BOARD_40LD)
-		seq_puts(m, "Controller Supports 40 Logical Drives\n");
+	if(adapter->flag & BOARD_40LD) {
+		len += sprintf(page+len,
+				"Controller Supports 40 Logical Drives\n");
+	}
 
-	if(adapter->flag & BOARD_64BIT)
-		seq_puts(m, "Controller capable of 64-bit memory addressing\n");
-	if( adapter->has_64bit_addr )
-		seq_puts(m, "Controller using 64-bit memory addressing\n");
-	else
-		seq_puts(m, "Controller is not using 64-bit memory addressing\n");
+	if(adapter->flag & BOARD_64BIT) {
+		len += sprintf(page+len,
+		"Controller capable of 64-bit memory addressing\n");
+	}
+	if( adapter->has_64bit_addr ) {
+		len += sprintf(page+len,
+			"Controller using 64-bit memory addressing\n");
+	}
+	else {
+		len += sprintf(page+len,
+			"Controller is not using 64-bit memory addressing\n");
+	}
 
-	seq_printf(m, "Base = %08lx, Irq = %d, ",
-		   adapter->base, adapter->host->irq);
+	len += sprintf(page+len, "Base = %08lx, Irq = %d, ", adapter->base,
+			adapter->host->irq);
 
-	seq_printf(m, "Logical Drives = %d, Channels = %d\n",
-		   adapter->numldrv, adapter->product_info.nchannels);
+	len += sprintf(page+len, "Logical Drives = %d, Channels = %d\n",
+			adapter->numldrv, adapter->product_info.nchannels);
 
-	seq_printf(m, "Version =%s:%s, DRAM = %dMb\n",
-		   adapter->fw_version, adapter->bios_version,
-		   adapter->product_info.dram_size);
+	len += sprintf(page+len, "Version =%s:%s, DRAM = %dMb\n",
+			adapter->fw_version, adapter->bios_version,
+			adapter->product_info.dram_size);
 
-	seq_printf(m, "Controller Queue Depth = %d, Driver Queue Depth = %d\n",
-		   adapter->product_info.max_commands, adapter->max_cmds);
+	len += sprintf(page+len,
+		"Controller Queue Depth = %d, Driver Queue Depth = %d\n",
+		adapter->product_info.max_commands, adapter->max_cmds);
 
-	seq_printf(m, "support_ext_cdb    = %d\n", adapter->support_ext_cdb);
-	seq_printf(m, "support_random_del = %d\n", adapter->support_random_del);
-	seq_printf(m, "boot_ldrv_enabled  = %d\n", adapter->boot_ldrv_enabled);
-	seq_printf(m, "boot_ldrv          = %d\n", adapter->boot_ldrv);
-	seq_printf(m, "boot_pdrv_enabled  = %d\n", adapter->boot_pdrv_enabled);
-	seq_printf(m, "boot_pdrv_ch       = %d\n", adapter->boot_pdrv_ch);
-	seq_printf(m, "boot_pdrv_tgt      = %d\n", adapter->boot_pdrv_tgt);
-	seq_printf(m, "quiescent          = %d\n",
-		   atomic_read(&adapter->quiescent));
-	seq_printf(m, "has_cluster        = %d\n", adapter->has_cluster);
+	len += sprintf(page+len, "support_ext_cdb    = %d\n",
+			adapter->support_ext_cdb);
+	len += sprintf(page+len, "support_random_del = %d\n",
+			adapter->support_random_del);
+	len += sprintf(page+len, "boot_ldrv_enabled  = %d\n",
+			adapter->boot_ldrv_enabled);
+	len += sprintf(page+len, "boot_ldrv          = %d\n",
+			adapter->boot_ldrv);
+	len += sprintf(page+len, "boot_pdrv_enabled  = %d\n",
+			adapter->boot_pdrv_enabled);
+	len += sprintf(page+len, "boot_pdrv_ch       = %d\n",
+			adapter->boot_pdrv_ch);
+	len += sprintf(page+len, "boot_pdrv_tgt      = %d\n",
+			adapter->boot_pdrv_tgt);
+	len += sprintf(page+len, "quiescent          = %d\n",
+			atomic_read(&adapter->quiescent));
+	len += sprintf(page+len, "has_cluster        = %d\n",
+			adapter->has_cluster);
 
-	seq_puts(m, "\nModule Parameters:\n");
-	seq_printf(m, "max_cmd_per_lun    = %d\n", max_cmd_per_lun);
-	seq_printf(m, "max_sectors_per_io = %d\n", max_sectors_per_io);
-	return 0;
+	len += sprintf(page+len, "\nModule Parameters:\n");
+	len += sprintf(page+len, "max_cmd_per_lun    = %d\n",
+			max_cmd_per_lun);
+	len += sprintf(page+len, "max_sectors_per_io = %d\n",
+			max_sectors_per_io);
+
+	*eof = 1;
+
+	return len;
 }
 
+
+
 /**
- * proc_show_stat()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_read_stat()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
- * Display statistical information about the I/O activity.
+ * Diaplay statistical information about the I/O activity.
  */
 static int
-proc_show_stat(struct seq_file *m, void *v)
+proc_read_stat(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	adapter_t *adapter = m->private;
-#if MEGA_HAVE_STATS
+	adapter_t	*adapter;
+	int	len;
 	int	i;
-#endif
 
-	seq_puts(m, "Statistical Information for this controller\n");
-	seq_printf(m, "pend_cmds = %d\n", atomic_read(&adapter->pend_cmds));
+	i = 0;	/* avoid compilation warnings */
+	len = 0;
+	adapter = (adapter_t *)data;
+
+	len = sprintf(page, "Statistical Information for this controller\n");
+	len += sprintf(page+len, "pend_cmds = %d\n",
+			atomic_read(&adapter->pend_cmds));
 #if MEGA_HAVE_STATS
 	for(i = 0; i < adapter->numldrv; i++) {
-		seq_printf(m, "Logical Drive %d:\n", i);
-		seq_printf(m, "\tReads Issued = %lu, Writes Issued = %lu\n",
-			   adapter->nreads[i], adapter->nwrites[i]);
-		seq_printf(m, "\tSectors Read = %lu, Sectors Written = %lu\n",
-			   adapter->nreadblocks[i], adapter->nwriteblocks[i]);
-		seq_printf(m, "\tRead errors = %lu, Write errors = %lu\n\n",
-			   adapter->rd_errors[i], adapter->wr_errors[i]);
+		len += sprintf(page+len, "Logical Drive %d:\n", i);
+
+		len += sprintf(page+len,
+			"\tReads Issued = %lu, Writes Issued = %lu\n",
+			adapter->nreads[i], adapter->nwrites[i]);
+
+		len += sprintf(page+len,
+			"\tSectors Read = %lu, Sectors Written = %lu\n",
+			adapter->nreadblocks[i], adapter->nwriteblocks[i]);
+
+		len += sprintf(page+len,
+			"\tRead errors = %lu, Write errors = %lu\n\n",
+			adapter->rd_errors[i], adapter->wr_errors[i]);
 	}
 #else
-	seq_puts(m, "IO and error counters not compiled in driver.\n");
+	len += sprintf(page+len,
+			"IO and error counters not compiled in driver.\n");
 #endif
-	return 0;
+
+	*eof = 1;
+
+	return len;
 }
 
 
 /**
- * proc_show_mbox()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_read_mbox()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
  * Display mailbox information for the last command issued. This information
  * is good for debugging.
  */
 static int
-proc_show_mbox(struct seq_file *m, void *v)
+proc_read_mbox(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	adapter_t	*adapter = m->private;
-	volatile mbox_t	*mbox = adapter->mbox;
 
-	seq_puts(m, "Contents of Mail Box Structure\n");
-	seq_printf(m, "  Fw Command   = 0x%02x\n", mbox->m_out.cmd);
-	seq_printf(m, "  Cmd Sequence = 0x%02x\n", mbox->m_out.cmdid);
-	seq_printf(m, "  No of Sectors= %04d\n", mbox->m_out.numsectors);
-	seq_printf(m, "  LBA          = 0x%02x\n", mbox->m_out.lba);
-	seq_printf(m, "  DTA          = 0x%08x\n", mbox->m_out.xferaddr);
-	seq_printf(m, "  Logical Drive= 0x%02x\n", mbox->m_out.logdrv);
-	seq_printf(m, "  No of SG Elmt= 0x%02x\n", mbox->m_out.numsgelements);
-	seq_printf(m, "  Busy         = %01x\n", mbox->m_in.busy);
-	seq_printf(m, "  Status       = 0x%02x\n", mbox->m_in.status);
-	return 0;
+	adapter_t	*adapter = (adapter_t *)data;
+	volatile mbox_t	*mbox = adapter->mbox;
+	int	len = 0;
+
+	len = sprintf(page, "Contents of Mail Box Structure\n");
+	len += sprintf(page+len, "  Fw Command   = 0x%02x\n", 
+			mbox->m_out.cmd);
+	len += sprintf(page+len, "  Cmd Sequence = 0x%02x\n", 
+			mbox->m_out.cmdid);
+	len += sprintf(page+len, "  No of Sectors= %04d\n", 
+			mbox->m_out.numsectors);
+	len += sprintf(page+len, "  LBA          = 0x%02x\n", 
+			mbox->m_out.lba);
+	len += sprintf(page+len, "  DTA          = 0x%08x\n", 
+			mbox->m_out.xferaddr);
+	len += sprintf(page+len, "  Logical Drive= 0x%02x\n", 
+			mbox->m_out.logdrv);
+	len += sprintf(page+len, "  No of SG Elmt= 0x%02x\n",
+			mbox->m_out.numsgelements);
+	len += sprintf(page+len, "  Busy         = %01x\n", 
+			mbox->m_in.busy);
+	len += sprintf(page+len, "  Status       = 0x%02x\n", 
+			mbox->m_in.status);
+
+	*eof = 1;
+
+	return len;
 }
 
 
 /**
- * proc_show_rebuild_rate()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_rebuild_rate()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
  * Display current rebuild rate
  */
 static int
-proc_show_rebuild_rate(struct seq_file *m, void *v)
+proc_rebuild_rate(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	adapter_t	*adapter = m->private;
+	adapter_t	*adapter = (adapter_t *)data;
 	dma_addr_t	dma_handle;
 	caddr_t		inquiry;
 	struct pci_dev	*pdev;
+	int	len = 0;
 
-	if( make_local_pdev(adapter, &pdev) != 0 )
-		return 0;
-
-	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL )
-		goto free_pdev;
-
-	if( mega_adapinq(adapter, dma_handle) != 0 ) {
-		seq_puts(m, "Adapter inquiry failed.\n");
-		printk(KERN_WARNING "megaraid: inquiry failed.\n");
-		goto free_inquiry;
+	if( make_local_pdev(adapter, &pdev) != 0 ) {
+		*eof = 1;
+		return len;
 	}
 
-	if( adapter->flag & BOARD_40LD )
-		seq_printf(m, "Rebuild Rate: [%d%%]\n",
-			   ((mega_inquiry3 *)inquiry)->rebuild_rate);
-	else
-		seq_printf(m, "Rebuild Rate: [%d%%]\n",
-			((mraid_ext_inquiry *)
-			 inquiry)->raid_inq.adapter_info.rebuild_rate);
+	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL ) {
+		free_local_pdev(pdev);
+		*eof = 1;
+		return len;
+	}
 
-free_inquiry:
+	if( mega_adapinq(adapter, dma_handle) != 0 ) {
+
+		len = sprintf(page, "Adapter inquiry failed.\n");
+
+		printk(KERN_WARNING "megaraid: inquiry failed.\n");
+
+		mega_free_inquiry(inquiry, dma_handle, pdev);
+
+		free_local_pdev(pdev);
+
+		*eof = 1;
+
+		return len;
+	}
+
+	if( adapter->flag & BOARD_40LD ) {
+		len = sprintf(page, "Rebuild Rate: [%d%%]\n",
+			((mega_inquiry3 *)inquiry)->rebuild_rate);
+	}
+	else {
+		len = sprintf(page, "Rebuild Rate: [%d%%]\n",
+			((mraid_ext_inquiry *)
+			inquiry)->raid_inq.adapter_info.rebuild_rate);
+	}
+
+
 	mega_free_inquiry(inquiry, dma_handle, pdev);
-free_pdev:
+
 	free_local_pdev(pdev);
-	return 0;
+
+	*eof = 1;
+
+	return len;
 }
 
 
 /**
- * proc_show_battery()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_battery()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
  * Display information about the battery module on the controller.
  */
 static int
-proc_show_battery(struct seq_file *m, void *v)
+proc_battery(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	adapter_t	*adapter = m->private;
+	adapter_t	*adapter = (adapter_t *)data;
 	dma_addr_t	dma_handle;
 	caddr_t		inquiry;
 	struct pci_dev	*pdev;
-	u8	battery_status;
+	u8	battery_status = 0;
+	char	str[256];
+	int	len = 0;
 
-	if( make_local_pdev(adapter, &pdev) != 0 )
-		return 0;
+	if( make_local_pdev(adapter, &pdev) != 0 ) {
+		*eof = 1;
+		return len;
+	}
 
-	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL )
-		goto free_pdev;
+	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL ) {
+		free_local_pdev(pdev);
+		*eof = 1;
+		return len;
+	}
 
 	if( mega_adapinq(adapter, dma_handle) != 0 ) {
-		seq_printf(m, "Adapter inquiry failed.\n");
+
+		len = sprintf(page, "Adapter inquiry failed.\n");
+
 		printk(KERN_WARNING "megaraid: inquiry failed.\n");
-		goto free_inquiry;
+
+		mega_free_inquiry(inquiry, dma_handle, pdev);
+
+		free_local_pdev(pdev);
+
+		*eof = 1;
+
+		return len;
 	}
 
 	if( adapter->flag & BOARD_40LD ) {
@@ -2256,80 +2461,146 @@ proc_show_battery(struct seq_file *m, void *v)
 	/*
 	 * Decode the battery status
 	 */
-	seq_printf(m, "Battery Status:[%d]", battery_status);
+	sprintf(str, "Battery Status:[%d]", battery_status);
 
 	if(battery_status == MEGA_BATT_CHARGE_DONE)
-		seq_puts(m, " Charge Done");
+		strcat(str, " Charge Done");
 
 	if(battery_status & MEGA_BATT_MODULE_MISSING)
-		seq_puts(m, " Module Missing");
+		strcat(str, " Module Missing");
 	
 	if(battery_status & MEGA_BATT_LOW_VOLTAGE)
-		seq_puts(m, " Low Voltage");
+		strcat(str, " Low Voltage");
 	
 	if(battery_status & MEGA_BATT_TEMP_HIGH)
-		seq_puts(m, " Temperature High");
+		strcat(str, " Temperature High");
 	
 	if(battery_status & MEGA_BATT_PACK_MISSING)
-		seq_puts(m, " Pack Missing");
+		strcat(str, " Pack Missing");
 	
 	if(battery_status & MEGA_BATT_CHARGE_INPROG)
-		seq_puts(m, " Charge In-progress");
+		strcat(str, " Charge In-progress");
 	
 	if(battery_status & MEGA_BATT_CHARGE_FAIL)
-		seq_puts(m, " Charge Fail");
+		strcat(str, " Charge Fail");
 	
 	if(battery_status & MEGA_BATT_CYCLES_EXCEEDED)
-		seq_puts(m, " Cycles Exceeded");
+		strcat(str, " Cycles Exceeded");
 
-	seq_putc(m, '\n');
+	len = sprintf(page, "%s\n", str);
 
-free_inquiry:
+
 	mega_free_inquiry(inquiry, dma_handle, pdev);
-free_pdev:
+
 	free_local_pdev(pdev);
-	return 0;
+
+	*eof = 1;
+
+	return len;
 }
 
-
-/*
- * Display scsi inquiry
- */
-static void
-mega_print_inquiry(struct seq_file *m, char *scsi_inq)
-{
-	int	i;
-
-	seq_puts(m, "  Vendor: ");
-	seq_write(m, scsi_inq + 8, 8);
-	seq_puts(m, "  Model: ");
-	seq_write(m, scsi_inq + 16, 16);
-	seq_puts(m, "  Rev: ");
-	seq_write(m, scsi_inq + 32, 4);
-	seq_putc(m, '\n');
-
-	i = scsi_inq[0] & 0x1f;
-	seq_printf(m, "  Type:   %s ", scsi_device_type(i));
-
-	seq_printf(m, "                 ANSI SCSI revision: %02x",
-		   scsi_inq[2] & 0x07);
-
-	if( (scsi_inq[2] & 0x07) == 1 && (scsi_inq[3] & 0x0f) == 1 )
-		seq_puts(m, " CCS\n");
-	else
-		seq_putc(m, '\n');
-}
 
 /**
- * proc_show_pdrv()
- * @m - Synthetic file construction data
+ * proc_pdrv_ch0()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
+ *
+ * Display information about the physical drives on physical channel 0.
+ */
+static int
+proc_pdrv_ch0(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
+{
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_pdrv(adapter, page, 0));
+}
+
+
+/**
+ * proc_pdrv_ch1()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
+ *
+ * Display information about the physical drives on physical channel 1.
+ */
+static int
+proc_pdrv_ch1(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
+{
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_pdrv(adapter, page, 1));
+}
+
+
+/**
+ * proc_pdrv_ch2()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
+ *
+ * Display information about the physical drives on physical channel 2.
+ */
+static int
+proc_pdrv_ch2(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
+{
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_pdrv(adapter, page, 2));
+}
+
+
+/**
+ * proc_pdrv_ch3()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
+ *
+ * Display information about the physical drives on physical channel 3.
+ */
+static int
+proc_pdrv_ch3(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
+{
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_pdrv(adapter, page, 3));
+}
+
+
+/**
+ * proc_pdrv()
  * @page - buffer to write the data in
  * @adapter - pointer to our soft state
  *
  * Display information about the physical drives.
  */
 static int
-proc_show_pdrv(struct seq_file *m, adapter_t *adapter, int channel)
+proc_pdrv(adapter_t *adapter, char *page, int channel)
 {
 	dma_addr_t	dma_handle;
 	char		*scsi_inq;
@@ -2340,24 +2611,32 @@ proc_show_pdrv(struct seq_file *m, adapter_t *adapter, int channel)
 	u8	state;
 	int	tgt;
 	int	max_channels;
+	int	len = 0;
+	char	str[80];
 	int	i;
 
-	if( make_local_pdev(adapter, &pdev) != 0 )
-		return 0;
+	if( make_local_pdev(adapter, &pdev) != 0 ) {
+		return len;
+	}
 
-	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL )
+	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL ) {
 		goto free_pdev;
+	}
 
 	if( mega_adapinq(adapter, dma_handle) != 0 ) {
-		seq_puts(m, "Adapter inquiry failed.\n");
+		len = sprintf(page, "Adapter inquiry failed.\n");
+
 		printk(KERN_WARNING "megaraid: inquiry failed.\n");
+
 		goto free_inquiry;
 	}
 
 
 	scsi_inq = pci_alloc_consistent(pdev, 256, &scsi_inq_dma_handle);
+
 	if( scsi_inq == NULL ) {
-		seq_puts(m, "memory not available for scsi inq.\n");
+		len = sprintf(page, "memory not available for scsi inq.\n");
+
 		goto free_inquiry;
 	}
 
@@ -2380,31 +2659,39 @@ proc_show_pdrv(struct seq_file *m, adapter_t *adapter, int channel)
 		i = channel*16 + tgt;
 
 		state = *(pdrv_state + i);
+
 		switch( state & 0x0F ) {
+
 		case PDRV_ONLINE:
-			seq_printf(m, "Channel:%2d Id:%2d State: Online",
-				   channel, tgt);
+			sprintf(str,
+			"Channel:%2d Id:%2d State: Online",
+				channel, tgt);
 			break;
 
 		case PDRV_FAILED:
-			seq_printf(m, "Channel:%2d Id:%2d State: Failed",
-				   channel, tgt);
+			sprintf(str,
+			"Channel:%2d Id:%2d State: Failed",
+				channel, tgt);
 			break;
 
 		case PDRV_RBLD:
-			seq_printf(m, "Channel:%2d Id:%2d State: Rebuild",
-				   channel, tgt);
+			sprintf(str,
+			"Channel:%2d Id:%2d State: Rebuild",
+				channel, tgt);
 			break;
 
 		case PDRV_HOTSPARE:
-			seq_printf(m, "Channel:%2d Id:%2d State: Hot spare",
-				   channel, tgt);
+			sprintf(str,
+			"Channel:%2d Id:%2d State: Hot spare",
+				channel, tgt);
 			break;
 
 		default:
-			seq_printf(m, "Channel:%2d Id:%2d State: Un-configured",
-				   channel, tgt);
+			sprintf(str,
+			"Channel:%2d Id:%2d State: Un-configured",
+				channel, tgt);
 			break;
+
 		}
 
 		/*
@@ -2423,8 +2710,11 @@ proc_show_pdrv(struct seq_file *m, adapter_t *adapter, int channel)
 		 * Check for overflow. We print less than 240
 		 * characters for inquiry
 		 */
-		seq_puts(m, ".\n");
-		mega_print_inquiry(m, scsi_inq);
+		if( (len + 240) >= PAGE_SIZE ) break;
+
+		len += sprintf(page+len, "%s.\n", str);
+
+		len += mega_print_inquiry(page+len, scsi_inq);
 	}
 
 free_pci:
@@ -2433,68 +2723,150 @@ free_inquiry:
 	mega_free_inquiry(inquiry, dma_handle, pdev);
 free_pdev:
 	free_local_pdev(pdev);
-	return 0;
+
+	return len;
 }
 
-/**
- * proc_show_pdrv_ch0()
- * @m - Synthetic file construction data
- * @v - File iterator
- *
- * Display information about the physical drives on physical channel 0.
+
+/*
+ * Display scsi inquiry
  */
 static int
-proc_show_pdrv_ch0(struct seq_file *m, void *v)
+mega_print_inquiry(char *page, char *scsi_inq)
 {
-	return proc_show_pdrv(m, m->private, 0);
+	int	len = 0;
+	int	i;
+
+	len = sprintf(page, "  Vendor: ");
+	for( i = 8; i < 16; i++ ) {
+		len += sprintf(page+len, "%c", scsi_inq[i]);
+	}
+
+	len += sprintf(page+len, "  Model: ");
+
+	for( i = 16; i < 32; i++ ) {
+		len += sprintf(page+len, "%c", scsi_inq[i]);
+	}
+
+	len += sprintf(page+len, "  Rev: ");
+
+	for( i = 32; i < 36; i++ ) {
+		len += sprintf(page+len, "%c", scsi_inq[i]);
+	}
+
+	len += sprintf(page+len, "\n");
+
+	i = scsi_inq[0] & 0x1f;
+
+	len += sprintf(page+len, "  Type:   %s ", scsi_device_type(i));
+
+	len += sprintf(page+len,
+	"                 ANSI SCSI revision: %02x", scsi_inq[2] & 0x07);
+
+	if( (scsi_inq[2] & 0x07) == 1 && (scsi_inq[3] & 0x0f) == 1 )
+		len += sprintf(page+len, " CCS\n");
+	else
+		len += sprintf(page+len, "\n");
+
+	return len;
 }
 
 
 /**
- * proc_show_pdrv_ch1()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_rdrv_10()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
- * Display information about the physical drives on physical channel 1.
+ * Display real time information about the logical drives 0 through 9.
  */
 static int
-proc_show_pdrv_ch1(struct seq_file *m, void *v)
+proc_rdrv_10(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	return proc_show_pdrv(m, m->private, 1);
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_rdrv(adapter, page, 0, 9));
 }
 
 
 /**
- * proc_show_pdrv_ch2()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_rdrv_20()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
- * Display information about the physical drives on physical channel 2.
+ * Display real time information about the logical drives 0 through 9.
  */
 static int
-proc_show_pdrv_ch2(struct seq_file *m, void *v)
+proc_rdrv_20(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	return proc_show_pdrv(m, m->private, 2);
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_rdrv(adapter, page, 10, 19));
 }
 
 
 /**
- * proc_show_pdrv_ch3()
- * @m - Synthetic file construction data
- * @v - File iterator
+ * proc_rdrv_30()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
  *
- * Display information about the physical drives on physical channel 3.
+ * Display real time information about the logical drives 0 through 9.
  */
 static int
-proc_show_pdrv_ch3(struct seq_file *m, void *v)
+proc_rdrv_30(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
 {
-	return proc_show_pdrv(m, m->private, 3);
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_rdrv(adapter, page, 20, 29));
 }
 
 
 /**
- * proc_show_rdrv()
- * @m - Synthetic file construction data
+ * proc_rdrv_40()
+ * @page - buffer to write the data in
+ * @start - where the actual data has been written in page
+ * @offset - same meaning as the read system call
+ * @count - same meaning as the read system call
+ * @eof - set if no more data needs to be returned
+ * @data - pointer to our soft state
+ *
+ * Display real time information about the logical drives 0 through 9.
+ */
+static int
+proc_rdrv_40(char *page, char **start, off_t offset, int count, int *eof,
+		void *data)
+{
+	adapter_t *adapter = (adapter_t *)data;
+
+	*eof = 1;
+
+	return (proc_rdrv(adapter, page, 30, 39));
+}
+
+
+/**
+ * proc_rdrv()
+ * @page - buffer to write the data in
  * @adapter - pointer to our soft state
  * @start - starting logical drive to display
  * @end - ending logical drive to display
@@ -2503,7 +2875,7 @@ proc_show_pdrv_ch3(struct seq_file *m, void *v)
  * /proc/scsi/scsi interface
  */
 static int
-proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
+proc_rdrv(adapter_t *adapter, char *page, int start, int end )
 {
 	dma_addr_t	dma_handle;
 	logdrv_param	*lparam;
@@ -2515,18 +2887,29 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 	u8	*rdrv_state;
 	int	num_ldrv;
 	u32	array_sz;
+	int	len = 0;
 	int	i;
 
-	if( make_local_pdev(adapter, &pdev) != 0 )
-		return 0;
+	if( make_local_pdev(adapter, &pdev) != 0 ) {
+		return len;
+	}
 
-	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL )
-		goto free_pdev;
+	if( (inquiry = mega_allocate_inquiry(&dma_handle, pdev)) == NULL ) {
+		free_local_pdev(pdev);
+		return len;
+	}
 
 	if( mega_adapinq(adapter, dma_handle) != 0 ) {
-		seq_puts(m, "Adapter inquiry failed.\n");
+
+		len = sprintf(page, "Adapter inquiry failed.\n");
+
 		printk(KERN_WARNING "megaraid: inquiry failed.\n");
-		goto free_inquiry;
+
+		mega_free_inquiry(inquiry, dma_handle, pdev);
+
+		free_local_pdev(pdev);
+
+		return len;
 	}
 
 	memset(&mc, 0, sizeof(megacmd_t));
@@ -2552,8 +2935,13 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 			&disk_array_dma_handle);
 
 	if( disk_array == NULL ) {
-		seq_puts(m, "memory not available.\n");
-		goto free_inquiry;
+		len = sprintf(page, "memory not available.\n");
+
+		mega_free_inquiry(inquiry, dma_handle, pdev);
+
+		free_local_pdev(pdev);
+
+		return len;
 	}
 
 	mc.xferaddr = (u32)disk_array_dma_handle;
@@ -2563,8 +2951,17 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 		mc.opcode = OP_DCMD_READ_CONFIG;
 
 		if( mega_internal_command(adapter, &mc, NULL) ) {
-			seq_puts(m, "40LD read config failed.\n");
-			goto free_pci;
+
+			len = sprintf(page, "40LD read config failed.\n");
+
+			mega_free_inquiry(inquiry, dma_handle, pdev);
+
+			pci_free_consistent(pdev, array_sz, disk_array,
+					disk_array_dma_handle);
+
+			free_local_pdev(pdev);
+
+			return len;
 		}
 
 	}
@@ -2572,10 +2969,24 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 		mc.cmd = NEW_READ_CONFIG_8LD;
 
 		if( mega_internal_command(adapter, &mc, NULL) ) {
+
 			mc.cmd = READ_CONFIG_8LD;
-			if( mega_internal_command(adapter, &mc, NULL) ) {
-				seq_puts(m, "8LD read config failed.\n");
-				goto free_pci;
+
+			if( mega_internal_command(adapter, &mc,
+						NULL) ){
+
+				len = sprintf(page,
+					"8LD read config failed.\n");
+
+				mega_free_inquiry(inquiry, dma_handle, pdev);
+
+				pci_free_consistent(pdev, array_sz,
+						disk_array,
+						disk_array_dma_handle);
+
+				free_local_pdev(pdev);
+
+				return len;
 			}
 		}
 	}
@@ -2595,23 +3006,29 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 		 * Check for overflow. We print less than 240 characters for
 		 * information about each logical drive.
 		 */
-		seq_printf(m, "Logical drive:%2d:, ", i);
+		if( (len + 240) >= PAGE_SIZE ) break;
+
+		len += sprintf(page+len, "Logical drive:%2d:, ", i);
 
 		switch( rdrv_state[i] & 0x0F ) {
 		case RDRV_OFFLINE:
-			seq_puts(m, "state: offline");
+			len += sprintf(page+len, "state: offline");
 			break;
+
 		case RDRV_DEGRADED:
-			seq_puts(m, "state: degraded");
+			len += sprintf(page+len, "state: degraded");
 			break;
+
 		case RDRV_OPTIMAL:
-			seq_puts(m, "state: optimal");
+			len += sprintf(page+len, "state: optimal");
 			break;
+
 		case RDRV_DELETED:
-			seq_puts(m, "state: deleted");
+			len += sprintf(page+len, "state: deleted");
 			break;
+
 		default:
-			seq_puts(m, "state: unknown");
+			len += sprintf(page+len, "state: unknown");
 			break;
 		}
 
@@ -2619,203 +3036,84 @@ proc_show_rdrv(struct seq_file *m, adapter_t *adapter, int start, int end )
 		 * Check if check consistency or initialization is going on
 		 * for this logical drive.
 		 */
-		if( (rdrv_state[i] & 0xF0) == 0x20 )
-			seq_puts(m, ", check-consistency in progress");
-		else if( (rdrv_state[i] & 0xF0) == 0x10 )
-			seq_puts(m, ", initialization in progress");
+		if( (rdrv_state[i] & 0xF0) == 0x20 ) {
+			len += sprintf(page+len,
+					", check-consistency in progress");
+		}
+		else if( (rdrv_state[i] & 0xF0) == 0x10 ) {
+			len += sprintf(page+len,
+					", initialization in progress");
+		}
 		
-		seq_putc(m, '\n');
+		len += sprintf(page+len, "\n");
 
-		seq_printf(m, "Span depth:%3d, ", lparam->span_depth);
-		seq_printf(m, "RAID level:%3d, ", lparam->level);
-		seq_printf(m, "Stripe size:%3d, ",
-			   lparam->stripe_sz ? lparam->stripe_sz/2: 128);
-		seq_printf(m, "Row size:%3d\n", lparam->row_size);
+		len += sprintf(page+len, "Span depth:%3d, ",
+				lparam->span_depth);
 
-		seq_puts(m, "Read Policy: ");
+		len += sprintf(page+len, "RAID level:%3d, ",
+				lparam->level);
+
+		len += sprintf(page+len, "Stripe size:%3d, ",
+				lparam->stripe_sz ? lparam->stripe_sz/2: 128);
+
+		len += sprintf(page+len, "Row size:%3d\n",
+				lparam->row_size);
+
+
+		len += sprintf(page+len, "Read Policy: ");
+
 		switch(lparam->read_ahead) {
+
 		case NO_READ_AHEAD:
-			seq_puts(m, "No read ahead, ");
+			len += sprintf(page+len, "No read ahead, ");
 			break;
+
 		case READ_AHEAD:
-			seq_puts(m, "Read ahead, ");
+			len += sprintf(page+len, "Read ahead, ");
 			break;
+
 		case ADAP_READ_AHEAD:
-			seq_puts(m, "Adaptive, ");
+			len += sprintf(page+len, "Adaptive, ");
 			break;
 
 		}
 
-		seq_puts(m, "Write Policy: ");
+		len += sprintf(page+len, "Write Policy: ");
+
 		switch(lparam->write_mode) {
+
 		case WRMODE_WRITE_THRU:
-			seq_puts(m, "Write thru, ");
+			len += sprintf(page+len, "Write thru, ");
 			break;
+
 		case WRMODE_WRITE_BACK:
-			seq_puts(m, "Write back, ");
+			len += sprintf(page+len, "Write back, ");
 			break;
 		}
 
-		seq_puts(m, "Cache Policy: ");
+		len += sprintf(page+len, "Cache Policy: ");
+
 		switch(lparam->direct_io) {
+
 		case CACHED_IO:
-			seq_puts(m, "Cached IO\n\n");
+			len += sprintf(page+len, "Cached IO\n\n");
 			break;
+
 		case DIRECT_IO:
-			seq_puts(m, "Direct IO\n\n");
+			len += sprintf(page+len, "Direct IO\n\n");
 			break;
 		}
 	}
 
-free_pci:
+	mega_free_inquiry(inquiry, dma_handle, pdev);
+
 	pci_free_consistent(pdev, array_sz, disk_array,
 			disk_array_dma_handle);
-free_inquiry:
-	mega_free_inquiry(inquiry, dma_handle, pdev);
-free_pdev:
+
 	free_local_pdev(pdev);
-	return 0;
+
+	return len;
 }
-
-/**
- * proc_show_rdrv_10()
- * @m - Synthetic file construction data
- * @v - File iterator
- *
- * Display real time information about the logical drives 0 through 9.
- */
-static int
-proc_show_rdrv_10(struct seq_file *m, void *v)
-{
-	return proc_show_rdrv(m, m->private, 0, 9);
-}
-
-
-/**
- * proc_show_rdrv_20()
- * @m - Synthetic file construction data
- * @v - File iterator
- *
- * Display real time information about the logical drives 0 through 9.
- */
-static int
-proc_show_rdrv_20(struct seq_file *m, void *v)
-{
-	return proc_show_rdrv(m, m->private, 10, 19);
-}
-
-
-/**
- * proc_show_rdrv_30()
- * @m - Synthetic file construction data
- * @v - File iterator
- *
- * Display real time information about the logical drives 0 through 9.
- */
-static int
-proc_show_rdrv_30(struct seq_file *m, void *v)
-{
-	return proc_show_rdrv(m, m->private, 20, 29);
-}
-
-
-/**
- * proc_show_rdrv_40()
- * @m - Synthetic file construction data
- * @v - File iterator
- *
- * Display real time information about the logical drives 0 through 9.
- */
-static int
-proc_show_rdrv_40(struct seq_file *m, void *v)
-{
-	return proc_show_rdrv(m, m->private, 30, 39);
-}
-
-
-/*
- * seq_file wrappers for procfile show routines.
- */
-static int mega_proc_open(struct inode *inode, struct file *file)
-{
-	adapter_t *adapter = proc_get_parent_data(inode);
-	int (*show)(struct seq_file *, void *) = PDE_DATA(inode);
-
-	return single_open(file, show, adapter);
-}
-
-static const struct file_operations mega_proc_fops = {
-	.open		= mega_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-/*
- * Table of proc files we need to create.
- */
-struct mega_proc_file {
-	const char *name;
-	unsigned short ptr_offset;
-	int (*show) (struct seq_file *m, void *v);
-};
-
-static const struct mega_proc_file mega_proc_files[] = {
-	{ "config",	      offsetof(adapter_t, proc_read), proc_show_config },
-	{ "stat",	      offsetof(adapter_t, proc_stat), proc_show_stat },
-	{ "mailbox",	      offsetof(adapter_t, proc_mbox), proc_show_mbox },
-#if MEGA_HAVE_ENH_PROC
-	{ "rebuild-rate",     offsetof(adapter_t, proc_rr), proc_show_rebuild_rate },
-	{ "battery-status",   offsetof(adapter_t, proc_battery), proc_show_battery },
-	{ "diskdrives-ch0",   offsetof(adapter_t, proc_pdrvstat[0]), proc_show_pdrv_ch0 },
-	{ "diskdrives-ch1",   offsetof(adapter_t, proc_pdrvstat[1]), proc_show_pdrv_ch1 },
-	{ "diskdrives-ch2",   offsetof(adapter_t, proc_pdrvstat[2]), proc_show_pdrv_ch2 },
-	{ "diskdrives-ch3",   offsetof(adapter_t, proc_pdrvstat[3]), proc_show_pdrv_ch3 },
-	{ "raiddrives-0-9",   offsetof(adapter_t, proc_rdrvstat[0]), proc_show_rdrv_10 },
-	{ "raiddrives-10-19", offsetof(adapter_t, proc_rdrvstat[1]), proc_show_rdrv_20 },
-	{ "raiddrives-20-29", offsetof(adapter_t, proc_rdrvstat[2]), proc_show_rdrv_30 },
-	{ "raiddrives-30-39", offsetof(adapter_t, proc_rdrvstat[3]), proc_show_rdrv_40 },
-#endif
-	{ NULL }
-};
-
-/**
- * mega_create_proc_entry()
- * @index - index in soft state array
- * @parent - parent node for this /proc entry
- *
- * Creates /proc entries for our controllers.
- */
-static void
-mega_create_proc_entry(int index, struct proc_dir_entry *parent)
-{
-	const struct mega_proc_file *f;
-	adapter_t	*adapter = hba_soft_state[index];
-	struct proc_dir_entry	*dir, *de, **ppde;
-	u8		string[16];
-
-	sprintf(string, "hba%d", adapter->host->host_no);
-
-	dir = adapter->controller_proc_dir_entry =
-		proc_mkdir_data(string, 0, parent, adapter);
-	if(!dir) {
-		printk(KERN_WARNING "\nmegaraid: proc_mkdir failed\n");
-		return;
-	}
-
-	for (f = mega_proc_files; f->name; f++) {
-		de = proc_create_data(f->name, S_IRUSR, dir, &mega_proc_fops,
-				      f->show);
-		if (!de) {
-			printk(KERN_WARNING "\nmegaraid: proc_create failed\n");
-			return;
-		}
-
-		ppde = (void *)adapter + f->ptr_offset;
-		*ppde = de;
-	}
-}
-
 #else
 static inline void mega_create_proc_entry(int index, struct proc_dir_entry *parent)
 {
@@ -4111,14 +4409,22 @@ mega_internal_dev_inquiry(adapter_t *adapter, u8 ch, u8 tgt,
  * The last argument is the address of the passthru structure if the command
  * to be fired is a passthru command
  *
+ * lockscope specifies whether the caller has already acquired the lock. Of
+ * course, the caller must know which lock we are talking about.
+ *
  * Note: parameter 'pthru' is null for non-passthru commands.
  */
 static int
 mega_internal_command(adapter_t *adapter, megacmd_t *mc, mega_passthru *pthru)
 {
-	unsigned long flags;
+	Scsi_Cmnd	*scmd;
+	struct	scsi_device *sdev;
 	scb_t	*scb;
 	int	rval;
+
+	scmd = scsi_allocate_command(GFP_KERNEL);
+	if (!scmd)
+		return -ENOMEM;
 
 	/*
 	 * The internal commands share one command id and hence are
@@ -4130,44 +4436,72 @@ mega_internal_command(adapter_t *adapter, megacmd_t *mc, mega_passthru *pthru)
 	scb = &adapter->int_scb;
 	memset(scb, 0, sizeof(scb_t));
 
-	scb->idx = CMDID_INT_CMDS;
-	scb->state |= SCB_ACTIVE | SCB_PENDQ;
+	sdev = kzalloc(sizeof(struct scsi_device), GFP_KERNEL);
+	scmd->device = sdev;
+
+	memset(adapter->int_cdb, 0, sizeof(adapter->int_cdb));
+	scmd->cmnd = adapter->int_cdb;
+	scmd->device->host = adapter->host;
+	scmd->host_scribble = (void *)scb;
+	scmd->cmnd[0] = MEGA_INTERNAL_CMD;
+
+	scb->state |= SCB_ACTIVE;
+	scb->cmd = scmd;
 
 	memcpy(scb->raw_mbox, mc, sizeof(megacmd_t));
 
 	/*
 	 * Is it a passthru command
 	 */
-	if (mc->cmd == MEGA_MBOXCMD_PASSTHRU)
-		scb->pthru = pthru;
+	if( mc->cmd == MEGA_MBOXCMD_PASSTHRU ) {
 
-	spin_lock_irqsave(&adapter->lock, flags);
-	list_add_tail(&scb->list, &adapter->pending_list);
-	/*
-	 * Check if the HBA is in quiescent state, e.g., during a
-	 * delete logical drive opertion. If it is, don't run
-	 * the pending_list.
-	 */
-	if (atomic_read(&adapter->quiescent) == 0)
-		mega_runpendq(adapter);
-	spin_unlock_irqrestore(&adapter->lock, flags);
+		scb->pthru = pthru;
+	}
+
+	scb->idx = CMDID_INT_CMDS;
+
+	megaraid_queue_lck(scmd, mega_internal_done);
 
 	wait_for_completion(&adapter->int_waitq);
 
-	mc->status = rval = adapter->int_status;
+	rval = scmd->result;
+	mc->status = scmd->result;
+	kfree(sdev);
 
 	/*
 	 * Print a debug message for all failed commands. Applications can use
 	 * this information.
 	 */
-	if (rval && trace_level) {
+	if( scmd->result && trace_level ) {
 		printk("megaraid: cmd [%x, %x, %x] status:[%x]\n",
-			mc->cmd, mc->opcode, mc->subopcode, rval);
+			mc->cmd, mc->opcode, mc->subopcode, scmd->result);
 	}
 
 	mutex_unlock(&adapter->int_mtx);
+
+	scsi_free_command(GFP_KERNEL, scmd);
+
 	return rval;
 }
+
+
+/**
+ * mega_internal_done()
+ * @scmd - internal scsi command
+ *
+ * Callback routine for internal commands.
+ */
+static void
+mega_internal_done(Scsi_Cmnd *scmd)
+{
+	adapter_t	*adapter;
+
+	adapter = (adapter_t *)scmd->device->host->hostdata;
+
+	complete(&adapter->int_waitq);
+
+}
+
 
 static struct scsi_host_template megaraid_template = {
 	.module				= THIS_MODULE,
@@ -4186,7 +4520,6 @@ static struct scsi_host_template megaraid_template = {
 	.eh_device_reset_handler	= megaraid_reset,
 	.eh_bus_reset_handler		= megaraid_reset,
 	.eh_host_reset_handler		= megaraid_reset,
-	.no_write_same			= 1,
 };
 
 static int

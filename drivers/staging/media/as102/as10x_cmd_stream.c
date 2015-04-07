@@ -34,6 +34,8 @@ int as10x_cmd_add_PID_filter(struct as10x_bus_adapter_t *adap,
 	int error;
 	struct as10x_cmd_t *pcmd, *prsp;
 
+	ENTER();
+
 	pcmd = adap->cmd;
 	prsp = adap->rsp;
 
@@ -75,6 +77,7 @@ int as10x_cmd_add_PID_filter(struct as10x_bus_adapter_t *adap,
 	}
 
 out:
+	LEAVE();
 	return error;
 }
 
@@ -90,6 +93,8 @@ int as10x_cmd_del_PID_filter(struct as10x_bus_adapter_t *adap,
 {
 	int error;
 	struct as10x_cmd_t *pcmd, *prsp;
+
+	ENTER();
 
 	pcmd = adap->cmd;
 	prsp = adap->rsp;
@@ -121,6 +126,7 @@ int as10x_cmd_del_PID_filter(struct as10x_bus_adapter_t *adap,
 	error = as10x_rsp_parse(prsp, CONTROL_PROC_REMOVEFILTER_RSP);
 
 out:
+	LEAVE();
 	return error;
 }
 
@@ -134,6 +140,8 @@ int as10x_cmd_start_streaming(struct as10x_bus_adapter_t *adap)
 {
 	int error;
 	struct as10x_cmd_t *pcmd, *prsp;
+
+	ENTER();
 
 	pcmd = adap->cmd;
 	prsp = adap->rsp;
@@ -164,6 +172,7 @@ int as10x_cmd_start_streaming(struct as10x_bus_adapter_t *adap)
 	error = as10x_rsp_parse(prsp, CONTROL_PROC_START_STREAMING_RSP);
 
 out:
+	LEAVE();
 	return error;
 }
 
@@ -177,6 +186,8 @@ int as10x_cmd_stop_streaming(struct as10x_bus_adapter_t *adap)
 {
 	int8_t error;
 	struct as10x_cmd_t *pcmd, *prsp;
+
+	ENTER();
 
 	pcmd = adap->cmd;
 	prsp = adap->rsp;
@@ -207,5 +218,6 @@ int as10x_cmd_stop_streaming(struct as10x_bus_adapter_t *adap)
 	error = as10x_rsp_parse(prsp, CONTROL_PROC_STOP_STREAMING_RSP);
 
 out:
+	LEAVE();
 	return error;
 }

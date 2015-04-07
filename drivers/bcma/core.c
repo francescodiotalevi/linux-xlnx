@@ -9,25 +9,6 @@
 #include <linux/export.h>
 #include <linux/bcma/bcma.h>
 
-static bool bcma_core_wait_value(struct bcma_device *core, u16 reg, u32 mask,
-				 u32 value, int timeout)
-{
-	unsigned long deadline = jiffies + timeout;
-	u32 val;
-
-	do {
-		val = bcma_aread32(core, reg);
-		if ((val & mask) == value)
-			return true;
-		cpu_relax();
-		udelay(10);
-	} while (!time_after_eq(jiffies, deadline));
-
-	bcma_warn(core->bus, "Timeout waiting for register 0x%04X!\n", reg);
-
-	return false;
-}
-
 bool bcma_core_is_enabled(struct bcma_device *core)
 {
 	if ((bcma_aread32(core, BCMA_IOCTL) & (BCMA_IOCTL_CLK | BCMA_IOCTL_FGC))
@@ -44,15 +25,13 @@ void bcma_core_disable(struct bcma_device *core, u32 flags)
 	if (bcma_aread32(core, BCMA_RESET_CTL) & BCMA_RESET_CTL_RESET)
 		return;
 
-	bcma_core_wait_value(core, BCMA_RESET_ST, ~0, 0, 300);
+	bcma_awrite32(core, BCMA_IOCTL, flags);
+	bcma_aread32(core, BCMA_IOCTL);
+	udelay(10);
 
 	bcma_awrite32(core, BCMA_RESET_CTL, BCMA_RESET_CTL_RESET);
 	bcma_aread32(core, BCMA_RESET_CTL);
 	udelay(1);
-
-	bcma_awrite32(core, BCMA_IOCTL, flags);
-	bcma_aread32(core, BCMA_IOCTL);
-	udelay(10);
 }
 EXPORT_SYMBOL_GPL(bcma_core_disable);
 
@@ -64,7 +43,6 @@ int bcma_core_enable(struct bcma_device *core, u32 flags)
 	bcma_aread32(core, BCMA_IOCTL);
 
 	bcma_awrite32(core, BCMA_RESET_CTL, 0);
-	bcma_aread32(core, BCMA_RESET_CTL);
 	udelay(1);
 
 	bcma_awrite32(core, BCMA_IOCTL, (BCMA_IOCTL_CLK | flags));
@@ -126,13 +104,7 @@ void bcma_core_pll_ctl(struct bcma_device *core, u32 req, u32 status, bool on)
 		if (i)
 			bcma_err(core->bus, "PLL enable timeout\n");
 	} else {
-		/*
-		 * Mask the PLL but don't wait for it to be disabled. PLL may be
-		 * shared between cores and will be still up if there is another
-		 * core using it.
-		 */
-		bcma_mask32(core, BCMA_CLKCTLST, ~req);
-		bcma_read32(core, BCMA_CLKCTLST);
+		bcma_warn(core->bus, "Disabling PLL not supported yet!\n");
 	}
 }
 EXPORT_SYMBOL_GPL(bcma_core_pll_ctl);

@@ -110,7 +110,7 @@ struct cpu_hw_events {
 
 	unsigned int		group_flag;
 };
-static DEFINE_PER_CPU(struct cpu_hw_events, cpu_hw_events) = { .enabled = 1, };
+DEFINE_PER_CPU(struct cpu_hw_events, cpu_hw_events) = { .enabled = 1, };
 
 /* An event map describes the characteristics of a performance
  * counter event.  In particular it gives the encoding as well as
@@ -1153,7 +1153,7 @@ static void perf_stop_nmi_watchdog(void *unused)
 		cpuc->pcr[i] = pcr_ops->read_pcr(i);
 }
 
-static void perf_event_grab_pmc(void)
+void perf_event_grab_pmc(void)
 {
 	if (atomic_inc_not_zero(&active_events))
 		return;
@@ -1169,7 +1169,7 @@ static void perf_event_grab_pmc(void)
 	mutex_unlock(&pmc_grab_mutex);
 }
 
-static void perf_event_release_pmc(void)
+void perf_event_release_pmc(void)
 {
 	if (atomic_dec_and_mutex_lock(&active_events, &pmc_grab_mutex)) {
 		if (atomic_read(&nmi_active) == 0)
@@ -1669,14 +1669,11 @@ static bool __init supported_pmu(void)
 	return false;
 }
 
-static int __init init_hw_perf_events(void)
+int __init init_hw_perf_events(void)
 {
-	int err;
-
 	pr_info("Performance events: ");
 
-	err = pcr_arch_init();
-	if (err || !supported_pmu()) {
+	if (!supported_pmu()) {
 		pr_cont("No support for PMU type '%s'\n", sparc_pmu_type);
 		return 0;
 	}
@@ -1688,7 +1685,7 @@ static int __init init_hw_perf_events(void)
 
 	return 0;
 }
-pure_initcall(init_hw_perf_events);
+early_initcall(init_hw_perf_events);
 
 void perf_callchain_kernel(struct perf_callchain_entry *entry,
 			   struct pt_regs *regs)
@@ -1745,11 +1742,10 @@ static void perf_callchain_user_64(struct perf_callchain_entry *entry,
 
 	ufp = regs->u_regs[UREG_I6] + STACK_BIAS;
 	do {
-		struct sparc_stackf __user *usf;
-		struct sparc_stackf sf;
+		struct sparc_stackf *usf, sf;
 		unsigned long pc;
 
-		usf = (struct sparc_stackf __user *)ufp;
+		usf = (struct sparc_stackf *) ufp;
 		if (__copy_from_user_inatomic(&sf, usf, sizeof(sf)))
 			break;
 
@@ -1769,19 +1765,17 @@ static void perf_callchain_user_32(struct perf_callchain_entry *entry,
 		unsigned long pc;
 
 		if (thread32_stack_is_64bit(ufp)) {
-			struct sparc_stackf __user *usf;
-			struct sparc_stackf sf;
+			struct sparc_stackf *usf, sf;
 
 			ufp += STACK_BIAS;
-			usf = (struct sparc_stackf __user *)ufp;
+			usf = (struct sparc_stackf *) ufp;
 			if (__copy_from_user_inatomic(&sf, usf, sizeof(sf)))
 				break;
 			pc = sf.callers_pc & 0xffffffff;
 			ufp = ((unsigned long) sf.fp) & 0xffffffff;
 		} else {
-			struct sparc_stackf32 __user *usf;
-			struct sparc_stackf32 sf;
-			usf = (struct sparc_stackf32 __user *)ufp;
+			struct sparc_stackf32 *usf, sf;
+			usf = (struct sparc_stackf32 *) ufp;
 			if (__copy_from_user_inatomic(&sf, usf, sizeof(sf)))
 				break;
 			pc = sf.callers_pc;

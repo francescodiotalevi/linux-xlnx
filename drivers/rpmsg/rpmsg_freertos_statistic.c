@@ -24,6 +24,7 @@
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/scatterlist.h>
+#include <linux/slab.h>
 #include <linux/idr.h>
 #include <linux/poll.h>
 #include <linux/jiffies.h>
@@ -223,7 +224,6 @@ static const struct file_operations rpmsg_fops = {
 
 static struct class *rpmsg_class;
 static dev_t rpmsg_dev;
-static u32 minor;
 
 static int rpmsg_sample_probe(struct rpmsg_channel *rpdev)
 {
@@ -238,7 +238,7 @@ static int rpmsg_sample_probe(struct rpmsg_channel *rpdev)
 
 	service->rpdev = rpdev;
 	service->major = MAJOR(rpmsg_dev);
-	service->minor = minor++;
+	service->minor = 0;
 
 	cdev_init(&service->cdev, &rpmsg_fops);
 	service->cdev.owner = THIS_MODULE;

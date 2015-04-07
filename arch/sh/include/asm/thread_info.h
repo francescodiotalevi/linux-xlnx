@@ -41,6 +41,8 @@ struct thread_info {
 
 #endif
 
+#define PREEMPT_ACTIVE		0x10000000
+
 #if defined(CONFIG_4KSTACKS)
 #define THREAD_SHIFT	12
 #else
@@ -204,6 +206,8 @@ static inline bool test_and_clear_restore_sigmask(void)
 	ti->status &= ~TS_RESTORE_SIGMASK;
 	return true;
 }
+
+#define tsk_is_polling(t) test_tsk_thread_flag(t, TIF_POLLING_NRFLAG)
 
 #endif	/* !__ASSEMBLY__ */
 

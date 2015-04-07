@@ -15,9 +15,11 @@
 #include <linux/err.h>
 #include <linux/acct.h>
 #include <linux/slab.h>
-#include <linux/proc_ns.h>
+#include <linux/proc_fs.h>
 #include <linux/reboot.h>
 #include <linux/export.h>
+
+#define BITS_PER_PAGE		(PAGE_SIZE*8)
 
 struct pid_cache {
 	int nr_ids;
@@ -132,12 +134,6 @@ out:
 	return ERR_PTR(err);
 }
 
-static void delayed_free_pidns(struct rcu_head *p)
-{
-	kmem_cache_free(pid_ns_cachep,
-			container_of(p, struct pid_namespace, rcu));
-}
-
 static void destroy_pid_namespace(struct pid_namespace *ns)
 {
 	int i;
@@ -146,7 +142,7 @@ static void destroy_pid_namespace(struct pid_namespace *ns)
 	for (i = 0; i < PIDMAP_ENTRIES; i++)
 		kfree(ns->pidmap[i].page);
 	put_user_ns(ns->user_ns);
-	call_rcu(&ns->rcu, delayed_free_pidns);
+	kmem_cache_free(pid_ns_cachep, ns);
 }
 
 struct pid_namespace *copy_pid_ns(unsigned long flags,
@@ -185,7 +181,6 @@ void zap_pid_ns_processes(struct pid_namespace *pid_ns)
 	int nr;
 	int rc;
 	struct task_struct *task, *me = current;
-	int init_pids = thread_group_leader(me) ? 1 : 2;
 
 	/* Don't allow any more processes into the pid namespace */
 	disable_pid_allocation(pid_ns);
@@ -235,7 +230,7 @@ void zap_pid_ns_processes(struct pid_namespace *pid_ns)
 	 */
 	for (;;) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
-		if (pid_ns->nr_hashed == init_pids)
+		if (pid_ns->nr_hashed == 1)
 			break;
 		schedule();
 	}
@@ -318,9 +313,7 @@ static void *pidns_get(struct task_struct *task)
 	struct pid_namespace *ns;
 
 	rcu_read_lock();
-	ns = task_active_pid_ns(task);
-	if (ns)
-		get_pid_ns(ns);
+	ns = get_pid_ns(task_active_pid_ns(task));
 	rcu_read_unlock();
 
 	return ns;
@@ -337,7 +330,7 @@ static int pidns_install(struct nsproxy *nsproxy, void *ns)
 	struct pid_namespace *ancestor, *new = ns;
 
 	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN) ||
-	    !ns_capable(current_user_ns(), CAP_SYS_ADMIN))
+	    !nsown_capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	/*
@@ -357,8 +350,8 @@ static int pidns_install(struct nsproxy *nsproxy, void *ns)
 	if (ancestor != active)
 		return -EINVAL;
 
-	put_pid_ns(nsproxy->pid_ns_for_children);
-	nsproxy->pid_ns_for_children = get_pid_ns(new);
+	put_pid_ns(nsproxy->pid_ns);
+	nsproxy->pid_ns = get_pid_ns(new);
 	return 0;
 }
 

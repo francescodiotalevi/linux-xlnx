@@ -17,7 +17,6 @@
  * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/ratelimit.h>
@@ -218,7 +217,7 @@ static void tegra30_mc_decode(struct tegra30_mc *mc, int n)
 		return;
 	}
 
-	err = mc_readl(mc, MC_ERR_STATUS);
+	err = readl(mc + MC_ERR_STATUS);
 
 	type = (err & MC_ERR_TYPE_MASK) >> MC_ERR_TYPE_SHIFT;
 	perm = (err & MC_ERR_INVALID_SMMU_PAGE_MASK) >>
@@ -235,7 +234,7 @@ static void tegra30_mc_decode(struct tegra30_mc *mc, int n)
 	if (cid < ARRAY_SIZE(tegra30_mc_client))
 		client = tegra30_mc_client[cid];
 
-	addr = mc_readl(mc, MC_ERR_ADR);
+	addr = readl(mc + MC_ERR_ADR);
 
 	dev_err_ratelimited(mc->dev, "%s (0x%08x): 0x%08x %s (%s %s %s %s)\n",
 			   mc_int_err[idx], err, addr, client,
@@ -268,7 +267,6 @@ static const u32 tegra30_mc_ctx[] = {
 	MC_INTMASK,
 };
 
-#ifdef CONFIG_PM
 static int tegra30_mc_suspend(struct device *dev)
 {
 	int i;
@@ -292,7 +290,6 @@ static int tegra30_mc_resume(struct device *dev)
 	mc_readl(mc, MC_TIMING_CONTROL);
 	return 0;
 }
-#endif
 
 static UNIVERSAL_DEV_PM_OPS(tegra30_mc_pm,
 			    tegra30_mc_suspend,
@@ -313,11 +310,8 @@ static irqreturn_t tegra30_mc_isr(int irq, void *data)
 	mask &= stat;
 	if (!mask)
 		return IRQ_NONE;
-	while ((bit = ffs(mask)) != 0) {
+	while ((bit = ffs(mask)) != 0)
 		tegra30_mc_decode(mc, bit - 1);
-		mask &= ~BIT(bit - 1);
-	}
-
 	mc_writel(mc, stat, MC_INTSTATUS);
 	return IRQ_HANDLED;
 }
@@ -340,9 +334,11 @@ static int tegra30_mc_probe(struct platform_device *pdev)
 		struct resource *res;
 
 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
-		mc->regs[i] = devm_ioremap_resource(&pdev->dev, res);
-		if (IS_ERR(mc->regs[i]))
-			return PTR_ERR(mc->regs[i]);
+		if (!res)
+			return -ENODEV;
+		mc->regs[i] = devm_request_and_ioremap(&pdev->dev, res);
+		if (!mc->regs[i])
+			return -EBUSY;
 	}
 
 	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);

@@ -5,6 +5,7 @@
 #include "btrfs_inode.h"
 #include "print-tree.h"
 #include "export.h"
+#include "compat.h"
 
 #define BTRFS_FID_SIZE_NON_CONNECTABLE (offsetof(struct btrfs_fid, \
 						 parent_objectid) / 4)
@@ -21,10 +22,10 @@ static int btrfs_encode_fh(struct inode *inode, u32 *fh, int *max_len,
 
 	if (parent && (len < BTRFS_FID_SIZE_CONNECTABLE)) {
 		*max_len = BTRFS_FID_SIZE_CONNECTABLE;
-		return FILEID_INVALID;
+		return 255;
 	} else if (len < BTRFS_FID_SIZE_NON_CONNECTABLE) {
 		*max_len = BTRFS_FID_SIZE_NON_CONNECTABLE;
-		return FILEID_INVALID;
+		return 255;
 	}
 
 	len  = BTRFS_FID_SIZE_NON_CONNECTABLE;
@@ -78,6 +79,11 @@ static struct dentry *btrfs_get_dentry(struct super_block *sb, u64 objectid,
 	root = btrfs_read_fs_root_no_name(fs_info, &key);
 	if (IS_ERR(root)) {
 		err = PTR_ERR(root);
+		goto fail;
+	}
+
+	if (btrfs_root_refs(&root->root_item) == 0) {
+		err = -ENOENT;
 		goto fail;
 	}
 

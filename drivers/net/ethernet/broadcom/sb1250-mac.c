@@ -13,7 +13,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  *
  *
  * This driver is designed for the Broadcom SiByte SOC built-in
@@ -35,6 +36,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
+#include <linux/init.h>
 #include <linux/bitops.h>
 #include <linux/err.h>
 #include <linux/ethtool.h>
@@ -829,8 +831,11 @@ static int sbdma_add_rcvbuffer(struct sbmac_softc *sc, struct sbmacdma *d,
 		sb_new = netdev_alloc_skb(dev, ENET_PACKET_SIZE +
 					       SMP_CACHE_BYTES * 2 +
 					       NET_IP_ALIGN);
-		if (sb_new == NULL)
+		if (sb_new == NULL) {
+			pr_info("%s: sk_buff allocation failed\n",
+			       d->sbdma_eth->sbm_dev->name);
 			return -ENOBUFS;
+		}
 
 		sbdma_align_skb(sb_new, SMP_CACHE_BYTES, NET_IP_ALIGN);
 	}
@@ -2195,7 +2200,7 @@ static const struct net_device_ops sbmac_netdev_ops = {
 
 static int sbmac_init(struct platform_device *pldev, long long base)
 {
-	struct net_device *dev = platform_get_drvdata(pldev);
+	struct net_device *dev = dev_get_drvdata(&pldev->dev);
 	int idx = pldev->id;
 	struct sbmac_softc *sc = netdev_priv(dev);
 	unsigned char *eaddr;
@@ -2273,7 +2278,7 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 		       dev->name);
 		goto free_mdio;
 	}
-	platform_set_drvdata(pldev, sc->mii_bus);
+	dev_set_drvdata(&pldev->dev, sc->mii_bus);
 
 	err = register_netdev(dev);
 	if (err) {
@@ -2298,6 +2303,7 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 	return 0;
 unreg_mdio:
 	mdiobus_unregister(sc->mii_bus);
+	dev_set_drvdata(&pldev->dev, NULL);
 free_mdio:
 	mdiobus_free(sc->mii_bus);
 uninit_ctx:
@@ -2379,7 +2385,7 @@ static int sbmac_mii_probe(struct net_device *dev)
 		return -ENXIO;
 	}
 
-	phy_dev = phy_connect(dev, dev_name(&phy_dev->dev), &sbmac_mii_poll,
+	phy_dev = phy_connect(dev, dev_name(&phy_dev->dev), &sbmac_mii_poll, 0,
 			      PHY_INTERFACE_MODE_GMII);
 	if (IS_ERR(phy_dev)) {
 		printk(KERN_ERR "%s: could not attach to PHY\n", dev->name);
@@ -2621,7 +2627,7 @@ static int sbmac_probe(struct platform_device *pldev)
 		goto out_unmap;
 	}
 
-	platform_set_drvdata(pldev, dev);
+	dev_set_drvdata(&pldev->dev, dev);
 	SET_NETDEV_DEV(dev, &pldev->dev);
 
 	sc = netdev_priv(dev);
@@ -2646,7 +2652,7 @@ out_out:
 
 static int __exit sbmac_remove(struct platform_device *pldev)
 {
-	struct net_device *dev = platform_get_drvdata(pldev);
+	struct net_device *dev = dev_get_drvdata(&pldev->dev);
 	struct sbmac_softc *sc = netdev_priv(dev);
 
 	unregister_netdev(dev);

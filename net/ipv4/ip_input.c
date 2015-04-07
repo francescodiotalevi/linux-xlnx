@@ -141,7 +141,6 @@
 #include <net/icmp.h>
 #include <net/raw.h>
 #include <net/checksum.h>
-#include <net/inet_ecn.h>
 #include <linux/netfilter_ipv4.h>
 #include <net/xfrm.h>
 #include <linux/mroute.h>
@@ -191,7 +190,10 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 {
 	struct net *net = dev_net(skb->dev);
 
-	__skb_pull(skb, skb_network_header_len(skb));
+	__skb_pull(skb, ip_hdrlen(skb));
+
+	/* Point into the IP datagram, just past the header. */
+	skb_reset_transport_header(skb);
 
 	rcu_read_lock();
 	{
@@ -205,6 +207,13 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 		ipprot = rcu_dereference(inet_protos[protocol]);
 		if (ipprot != NULL) {
 			int ret;
+
+			if (!net_eq(net, &init_net) && !ipprot->netns_ok) {
+				net_info_ratelimited("%s: proto %d isn't netns-ready\n",
+						     __func__, protocol);
+				kfree_skb(skb);
+				goto out;
+			}
 
 			if (!ipprot->no_policy) {
 				if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
@@ -226,11 +235,9 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 					icmp_send(skb, ICMP_DEST_UNREACH,
 						  ICMP_PROT_UNREACH, 0);
 				}
-				kfree_skb(skb);
-			} else {
+			} else
 				IP_INC_STATS_BH(net, IPSTATS_MIB_INDELIVERS);
-				consume_skb(skb);
-			}
+			kfree_skb(skb);
 		}
 	}
  out:
@@ -314,7 +321,7 @@ static int ip_rcv_finish(struct sk_buff *skb)
 	const struct iphdr *iph = ip_hdr(skb);
 	struct rtable *rt;
 
-	if (sysctl_ip_early_demux && !skb_dst(skb) && skb->sk == NULL) {
+	if (sysctl_ip_early_demux && !skb_dst(skb)) {
 		const struct net_protocol *ipprot;
 		int protocol = iph->protocol;
 
@@ -411,20 +418,13 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 	if (iph->ihl < 5 || iph->version != 4)
 		goto inhdr_error;
 
-	BUILD_BUG_ON(IPSTATS_MIB_ECT1PKTS != IPSTATS_MIB_NOECTPKTS + INET_ECN_ECT_1);
-	BUILD_BUG_ON(IPSTATS_MIB_ECT0PKTS != IPSTATS_MIB_NOECTPKTS + INET_ECN_ECT_0);
-	BUILD_BUG_ON(IPSTATS_MIB_CEPKTS != IPSTATS_MIB_NOECTPKTS + INET_ECN_CE);
-	IP_ADD_STATS_BH(dev_net(dev),
-			IPSTATS_MIB_NOECTPKTS + (iph->tos & INET_ECN_MASK),
-			max_t(unsigned short, 1, skb_shinfo(skb)->gso_segs));
-
 	if (!pskb_may_pull(skb, iph->ihl*4))
 		goto inhdr_error;
 
 	iph = ip_hdr(skb);
 
 	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
-		goto csum_error;
+		goto inhdr_error;
 
 	len = ntohs(iph->tot_len);
 	if (skb->len < len) {
@@ -442,8 +442,6 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 		goto drop;
 	}
 
-	skb->transport_header = skb->network_header + iph->ihl*4;
-
 	/* Remove any debris in the socket control block */
 	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
 
@@ -453,8 +451,6 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL,
 		       ip_rcv_finish);
 
-csum_error:
-	IP_INC_STATS_BH(dev_net(dev), IPSTATS_MIB_CSUMERRORS);
 inhdr_error:
 	IP_INC_STATS_BH(dev_net(dev), IPSTATS_MIB_INHDRERRORS);
 drop:

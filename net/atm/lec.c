@@ -152,7 +152,7 @@ static void lec_handle_bridge(struct sk_buff *skb, struct net_device *dev)
 		atm_force_charge(priv->lecd, skb2->truesize);
 		sk = sk_atm(priv->lecd);
 		skb_queue_tail(&sk->sk_receive_queue, skb2);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb2->len);
 	}
 }
 #endif /* defined(CONFIG_BRIDGE) || defined(CONFIG_BRIDGE_MODULE) */
@@ -410,11 +410,9 @@ static int lec_atm_send(struct atm_vcc *vcc, struct sk_buff *skb)
 		priv->lane2_ops = NULL;
 		if (priv->lane_version > 1)
 			priv->lane2_ops = &lane2_ops;
-		rtnl_lock();
 		if (dev_set_mtu(dev, mesg->content.config.mtu))
 			pr_info("%s: change_mtu to %d failed\n",
 				dev->name, mesg->content.config.mtu);
-		rtnl_unlock();
 		priv->is_proxy = mesg->content.config.is_proxy;
 		break;
 	case l_flush_tran_id:
@@ -449,7 +447,7 @@ static int lec_atm_send(struct atm_vcc *vcc, struct sk_buff *skb)
 			atm_force_charge(priv->lecd, skb2->truesize);
 			sk = sk_atm(priv->lecd);
 			skb_queue_tail(&sk->sk_receive_queue, skb2);
-			sk->sk_data_ready(sk);
+			sk->sk_data_ready(sk, skb2->len);
 		}
 	}
 #endif /* defined(CONFIG_BRIDGE) || defined(CONFIG_BRIDGE_MODULE) */
@@ -523,7 +521,7 @@ send_to_lecd(struct lec_priv *priv, atmlec_msg_type type,
 	if (data != NULL)
 		mesg->sizeoftlvs = data->len;
 	if (mac_addr)
-		ether_addr_copy(mesg->content.normal.mac_addr, mac_addr);
+		memcpy(&mesg->content.normal.mac_addr, mac_addr, ETH_ALEN);
 	else
 		mesg->content.normal.targetless_le_arp = 1;
 	if (atm_addr)
@@ -532,13 +530,13 @@ send_to_lecd(struct lec_priv *priv, atmlec_msg_type type,
 	atm_force_charge(priv->lecd, skb->truesize);
 	sk = sk_atm(priv->lecd);
 	skb_queue_tail(&sk->sk_receive_queue, skb);
-	sk->sk_data_ready(sk);
+	sk->sk_data_ready(sk, skb->len);
 
 	if (data != NULL) {
 		pr_debug("about to send %d bytes of data\n", data->len);
 		atm_force_charge(priv->lecd, data->truesize);
 		skb_queue_tail(&sk->sk_receive_queue, data);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb->len);
 	}
 
 	return 0;
@@ -618,7 +616,7 @@ static void lec_push(struct atm_vcc *vcc, struct sk_buff *skb)
 
 		pr_debug("%s: To daemon\n", dev->name);
 		skb_queue_tail(&sk->sk_receive_queue, skb);
-		sk->sk_data_ready(sk);
+		sk->sk_data_ready(sk, skb->len);
 	} else {		/* Data frame, queue to protocol handlers */
 		struct lec_arp_table *entry;
 		unsigned char *src, *dst;
@@ -835,6 +833,7 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 			  loff_t *l)
 {
 	struct hlist_node *e = state->node;
+	struct lec_arp_table *tmp;
 
 	if (!e)
 		e = tbl->first;
@@ -843,7 +842,7 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 		--*l;
 	}
 
-	for (; e; e = e->next) {
+	hlist_for_each_entry_from(tmp, e, next) {
 		if (--*l < 0)
 			break;
 	}
@@ -1308,6 +1307,7 @@ lec_arp_add(struct lec_priv *priv, struct lec_arp_table *entry)
 static int
 lec_arp_remove(struct lec_priv *priv, struct lec_arp_table *to_remove)
 {
+	struct hlist_node *node;
 	struct lec_arp_table *entry;
 	int i, remove_vcc = 1;
 
@@ -1326,7 +1326,7 @@ lec_arp_remove(struct lec_priv *priv, struct lec_arp_table *to_remove)
 		 * ESI_FLUSH_PENDING, ESI_FORWARD_DIRECT
 		 */
 		for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-			hlist_for_each_entry(entry,
+			hlist_for_each_entry(entry, node,
 					     &priv->lec_arp_tables[i], next) {
 				if (memcmp(to_remove->atm_addr,
 					   entry->atm_addr, ATM_ESA_LEN) == 0) {
@@ -1364,13 +1364,14 @@ static const char *get_status_string(unsigned char st)
 
 static void dump_arp_table(struct lec_priv *priv)
 {
+	struct hlist_node *node;
 	struct lec_arp_table *rulla;
 	char buf[256];
 	int i, j, offset;
 
 	pr_info("Dump %p:\n", priv);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry(rulla,
+		hlist_for_each_entry(rulla, node,
 				     &priv->lec_arp_tables[i], next) {
 			offset = 0;
 			offset += sprintf(buf, "%d: %p\n", i, rulla);
@@ -1402,7 +1403,7 @@ static void dump_arp_table(struct lec_priv *priv)
 
 	if (!hlist_empty(&priv->lec_no_forward))
 		pr_info("No forward\n");
-	hlist_for_each_entry(rulla, &priv->lec_no_forward, next) {
+	hlist_for_each_entry(rulla, node, &priv->lec_no_forward, next) {
 		offset = 0;
 		offset += sprintf(buf + offset, "Mac: %pM", rulla->mac_addr);
 		offset += sprintf(buf + offset, " Atm:");
@@ -1427,7 +1428,7 @@ static void dump_arp_table(struct lec_priv *priv)
 
 	if (!hlist_empty(&priv->lec_arp_empty_ones))
 		pr_info("Empty ones\n");
-	hlist_for_each_entry(rulla, &priv->lec_arp_empty_ones, next) {
+	hlist_for_each_entry(rulla, node, &priv->lec_arp_empty_ones, next) {
 		offset = 0;
 		offset += sprintf(buf + offset, "Mac: %pM", rulla->mac_addr);
 		offset += sprintf(buf + offset, " Atm:");
@@ -1452,7 +1453,7 @@ static void dump_arp_table(struct lec_priv *priv)
 
 	if (!hlist_empty(&priv->mcast_fwds))
 		pr_info("Multicast Forward VCCs\n");
-	hlist_for_each_entry(rulla, &priv->mcast_fwds, next) {
+	hlist_for_each_entry(rulla, node, &priv->mcast_fwds, next) {
 		offset = 0;
 		offset += sprintf(buf + offset, "Mac: %pM", rulla->mac_addr);
 		offset += sprintf(buf + offset, " Atm:");
@@ -1486,7 +1487,7 @@ static void dump_arp_table(struct lec_priv *priv)
 static void lec_arp_destroy(struct lec_priv *priv)
 {
 	unsigned long flags;
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry;
 	int i;
 
@@ -1498,7 +1499,7 @@ static void lec_arp_destroy(struct lec_priv *priv)
 
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry_safe(entry, next,
+		hlist_for_each_entry_safe(entry, node, next,
 					  &priv->lec_arp_tables[i], next) {
 			lec_arp_remove(priv, entry);
 			lec_arp_put(entry);
@@ -1506,7 +1507,7 @@ static void lec_arp_destroy(struct lec_priv *priv)
 		INIT_HLIST_HEAD(&priv->lec_arp_tables[i]);
 	}
 
-	hlist_for_each_entry_safe(entry, next,
+	hlist_for_each_entry_safe(entry, node, next,
 				  &priv->lec_arp_empty_ones, next) {
 		del_timer_sync(&entry->timer);
 		lec_arp_clear_vccs(entry);
@@ -1515,7 +1516,7 @@ static void lec_arp_destroy(struct lec_priv *priv)
 	}
 	INIT_HLIST_HEAD(&priv->lec_arp_empty_ones);
 
-	hlist_for_each_entry_safe(entry, next,
+	hlist_for_each_entry_safe(entry, node, next,
 				  &priv->lec_no_forward, next) {
 		del_timer_sync(&entry->timer);
 		lec_arp_clear_vccs(entry);
@@ -1524,7 +1525,7 @@ static void lec_arp_destroy(struct lec_priv *priv)
 	}
 	INIT_HLIST_HEAD(&priv->lec_no_forward);
 
-	hlist_for_each_entry_safe(entry, next, &priv->mcast_fwds, next) {
+	hlist_for_each_entry_safe(entry, node, next, &priv->mcast_fwds, next) {
 		/* No timer, LANEv2 7.1.20 and 2.3.5.3 */
 		lec_arp_clear_vccs(entry);
 		hlist_del(&entry->next);
@@ -1541,13 +1542,14 @@ static void lec_arp_destroy(struct lec_priv *priv)
 static struct lec_arp_table *lec_arp_find(struct lec_priv *priv,
 					  const unsigned char *mac_addr)
 {
+	struct hlist_node *node;
 	struct hlist_head *head;
 	struct lec_arp_table *entry;
 
 	pr_debug("%pM\n", mac_addr);
 
 	head = &priv->lec_arp_tables[HASH(mac_addr[ETH_ALEN - 1])];
-	hlist_for_each_entry(entry, head, next) {
+	hlist_for_each_entry(entry, node, head, next) {
 		if (ether_addr_equal(mac_addr, entry->mac_addr))
 			return entry;
 	}
@@ -1564,7 +1566,7 @@ static struct lec_arp_table *make_entry(struct lec_priv *priv,
 		pr_info("LEC: Arp entry kmalloc failed\n");
 		return NULL;
 	}
-	ether_addr_copy(to_return->mac_addr, mac_addr);
+	memcpy(to_return->mac_addr, mac_addr, ETH_ALEN);
 	INIT_HLIST_NODE(&to_return->next);
 	setup_timer(&to_return->timer, lec_arp_expire_arp,
 			(unsigned long)to_return);
@@ -1684,7 +1686,7 @@ static void lec_arp_check_expire(struct work_struct *work)
 	unsigned long flags;
 	struct lec_priv *priv =
 		container_of(work, struct lec_priv, lec_arp_work.work);
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry;
 	unsigned long now;
 	int i;
@@ -1694,7 +1696,7 @@ static void lec_arp_check_expire(struct work_struct *work)
 restart:
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry_safe(entry, next,
+		hlist_for_each_entry_safe(entry, node, next,
 					  &priv->lec_arp_tables[i], next) {
 			if (__lec_arp_check_expire(entry, now, priv)) {
 				struct sk_buff *skb;
@@ -1821,14 +1823,14 @@ lec_addr_delete(struct lec_priv *priv, const unsigned char *atm_addr,
 		unsigned long permanent)
 {
 	unsigned long flags;
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry;
 	int i;
 
 	pr_debug("\n");
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry_safe(entry, next,
+		hlist_for_each_entry_safe(entry, node, next,
 					  &priv->lec_arp_tables[i], next) {
 			if (!memcmp(atm_addr, entry->atm_addr, ATM_ESA_LEN) &&
 			    (permanent ||
@@ -1853,7 +1855,7 @@ lec_arp_update(struct lec_priv *priv, const unsigned char *mac_addr,
 	       unsigned int targetless_le_arp)
 {
 	unsigned long flags;
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry, *tmp;
 	int i;
 
@@ -1868,7 +1870,7 @@ lec_arp_update(struct lec_priv *priv, const unsigned char *mac_addr,
 				 * we have no entry in the cache. 7.1.30
 				 */
 	if (!hlist_empty(&priv->lec_arp_empty_ones)) {
-		hlist_for_each_entry_safe(entry, next,
+		hlist_for_each_entry_safe(entry, node, next,
 					  &priv->lec_arp_empty_ones, next) {
 			if (memcmp(entry->atm_addr, atm_addr, ATM_ESA_LEN) == 0) {
 				hlist_del(&entry->next);
@@ -1886,8 +1888,7 @@ lec_arp_update(struct lec_priv *priv, const unsigned char *mac_addr,
 					entry = tmp;
 				} else {
 					entry->status = ESI_FORWARD_DIRECT;
-					ether_addr_copy(entry->mac_addr,
-							mac_addr);
+					memcpy(entry->mac_addr, mac_addr, ETH_ALEN);
 					entry->last_used = jiffies;
 					lec_arp_add(priv, entry);
 				}
@@ -1914,7 +1915,7 @@ lec_arp_update(struct lec_priv *priv, const unsigned char *mac_addr,
 	memcpy(entry->atm_addr, atm_addr, ATM_ESA_LEN);
 	del_timer(&entry->timer);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry(tmp,
+		hlist_for_each_entry(tmp, node,
 				     &priv->lec_arp_tables[i], next) {
 			if (entry != tmp &&
 			    !memcmp(tmp->atm_addr, atm_addr, ATM_ESA_LEN)) {
@@ -1955,6 +1956,7 @@ lec_vcc_added(struct lec_priv *priv, const struct atmlec_ioc *ioc_data,
 	      void (*old_push) (struct atm_vcc *vcc, struct sk_buff *skb))
 {
 	unsigned long flags;
+	struct hlist_node *node;
 	struct lec_arp_table *entry;
 	int i, found_entry = 0;
 
@@ -2024,7 +2026,7 @@ lec_vcc_added(struct lec_priv *priv, const struct atmlec_ioc *ioc_data,
 		 ioc_data->atm_addr[16], ioc_data->atm_addr[17],
 		 ioc_data->atm_addr[18], ioc_data->atm_addr[19]);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry(entry,
+		hlist_for_each_entry(entry, node,
 				     &priv->lec_arp_tables[i], next) {
 			if (memcmp
 			    (ioc_data->atm_addr, entry->atm_addr,
@@ -2101,6 +2103,7 @@ out:
 static void lec_flush_complete(struct lec_priv *priv, unsigned long tran_id)
 {
 	unsigned long flags;
+	struct hlist_node *node;
 	struct lec_arp_table *entry;
 	int i;
 
@@ -2108,7 +2111,7 @@ static void lec_flush_complete(struct lec_priv *priv, unsigned long tran_id)
 restart:
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry(entry,
+		hlist_for_each_entry(entry, node,
 				     &priv->lec_arp_tables[i], next) {
 			if (entry->flush_tran_id == tran_id &&
 			    entry->status == ESI_FLUSH_PENDING) {
@@ -2137,12 +2140,13 @@ lec_set_flush_tran_id(struct lec_priv *priv,
 		      const unsigned char *atm_addr, unsigned long tran_id)
 {
 	unsigned long flags;
+	struct hlist_node *node;
 	struct lec_arp_table *entry;
 	int i;
 
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++)
-		hlist_for_each_entry(entry,
+		hlist_for_each_entry(entry, node,
 				     &priv->lec_arp_tables[i], next) {
 			if (!memcmp(atm_addr, entry->atm_addr, ATM_ESA_LEN)) {
 				entry->flush_tran_id = tran_id;
@@ -2194,7 +2198,7 @@ out:
 static void lec_vcc_close(struct lec_priv *priv, struct atm_vcc *vcc)
 {
 	unsigned long flags;
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry;
 	int i;
 
@@ -2204,7 +2208,7 @@ static void lec_vcc_close(struct lec_priv *priv, struct atm_vcc *vcc)
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
 
 	for (i = 0; i < LEC_ARP_TABLE_SIZE; i++) {
-		hlist_for_each_entry_safe(entry, next,
+		hlist_for_each_entry_safe(entry, node, next,
 					  &priv->lec_arp_tables[i], next) {
 			if (vcc == entry->vcc) {
 				lec_arp_remove(priv, entry);
@@ -2215,7 +2219,7 @@ static void lec_vcc_close(struct lec_priv *priv, struct atm_vcc *vcc)
 		}
 	}
 
-	hlist_for_each_entry_safe(entry, next,
+	hlist_for_each_entry_safe(entry, node, next,
 				  &priv->lec_arp_empty_ones, next) {
 		if (entry->vcc == vcc) {
 			lec_arp_clear_vccs(entry);
@@ -2225,7 +2229,7 @@ static void lec_vcc_close(struct lec_priv *priv, struct atm_vcc *vcc)
 		}
 	}
 
-	hlist_for_each_entry_safe(entry, next,
+	hlist_for_each_entry_safe(entry, node, next,
 				  &priv->lec_no_forward, next) {
 		if (entry->recv_vcc == vcc) {
 			lec_arp_clear_vccs(entry);
@@ -2235,7 +2239,7 @@ static void lec_vcc_close(struct lec_priv *priv, struct atm_vcc *vcc)
 		}
 	}
 
-	hlist_for_each_entry_safe(entry, next, &priv->mcast_fwds, next) {
+	hlist_for_each_entry_safe(entry, node, next, &priv->mcast_fwds, next) {
 		if (entry->recv_vcc == vcc) {
 			lec_arp_clear_vccs(entry);
 			/* No timer, LANEv2 7.1.20 and 2.3.5.3 */
@@ -2253,17 +2257,17 @@ lec_arp_check_empties(struct lec_priv *priv,
 		      struct atm_vcc *vcc, struct sk_buff *skb)
 {
 	unsigned long flags;
-	struct hlist_node *next;
+	struct hlist_node *node, *next;
 	struct lec_arp_table *entry, *tmp;
 	struct lecdatahdr_8023 *hdr = (struct lecdatahdr_8023 *)skb->data;
 	unsigned char *src = hdr->h_source;
 
 	spin_lock_irqsave(&priv->lec_arp_lock, flags);
-	hlist_for_each_entry_safe(entry, next,
+	hlist_for_each_entry_safe(entry, node, next,
 				  &priv->lec_arp_empty_ones, next) {
 		if (vcc == entry->vcc) {
 			del_timer(&entry->timer);
-			ether_addr_copy(entry->mac_addr, src);
+			memcpy(entry->mac_addr, src, ETH_ALEN);
 			entry->status = ESI_FORWARD_DIRECT;
 			entry->last_used = jiffies;
 			/* We might have got an entry */

@@ -234,7 +234,7 @@ static int __alloc_objio_seg(unsigned numdevs, gfp_t gfp_flags,
 
 	lseg = kzalloc(lseg_size, gfp_flags);
 	if (unlikely(!lseg)) {
-		dprintk("%s: Failed allocation numdevs=%d size=%zd\n", __func__,
+		dprintk("%s: Faild allocation numdevs=%d size=%zd\n", __func__,
 			numdevs, lseg_size);
 		return -ENOMEM;
 	}
@@ -439,21 +439,22 @@ static void _read_done(struct ore_io_state *ios, void *private)
 	objlayout_read_done(&objios->oir, status, objios->sync);
 }
 
-int objio_read_pagelist(struct nfs_pgio_header *hdr)
+int objio_read_pagelist(struct nfs_read_data *rdata)
 {
+	struct nfs_pgio_header *hdr = rdata->header;
 	struct objio_state *objios;
 	int ret;
 
 	ret = objio_alloc_io_state(NFS_I(hdr->inode)->layout, true,
-			hdr->lseg, hdr->args.pages, hdr->args.pgbase,
-			hdr->args.offset, hdr->args.count, hdr,
+			hdr->lseg, rdata->args.pages, rdata->args.pgbase,
+			rdata->args.offset, rdata->args.count, rdata,
 			GFP_KERNEL, &objios);
 	if (unlikely(ret))
 		return ret;
 
 	objios->ios->done = _read_done;
 	dprintk("%s: offset=0x%llx length=0x%x\n", __func__,
-		hdr->args.offset, hdr->args.count);
+		rdata->args.offset, rdata->args.count);
 	ret = ore_read(objios->ios);
 	if (unlikely(ret))
 		objio_free_result(&objios->oir);
@@ -486,11 +487,11 @@ static void _write_done(struct ore_io_state *ios, void *private)
 static struct page *__r4w_get_page(void *priv, u64 offset, bool *uptodate)
 {
 	struct objio_state *objios = priv;
-	struct nfs_pgio_header *hdr = objios->oir.rpcdata;
-	struct address_space *mapping = hdr->inode->i_mapping;
+	struct nfs_write_data *wdata = objios->oir.rpcdata;
+	struct address_space *mapping = wdata->header->inode->i_mapping;
 	pgoff_t index = offset / PAGE_SIZE;
 	struct page *page;
-	loff_t i_size = i_size_read(hdr->inode);
+	loff_t i_size = i_size_read(wdata->header->inode);
 
 	if (offset >= i_size) {
 		*uptodate = true;
@@ -530,14 +531,15 @@ static const struct _ore_r4w_op _r4w_op = {
 	.put_page = &__r4w_put_page,
 };
 
-int objio_write_pagelist(struct nfs_pgio_header *hdr, int how)
+int objio_write_pagelist(struct nfs_write_data *wdata, int how)
 {
+	struct nfs_pgio_header *hdr = wdata->header;
 	struct objio_state *objios;
 	int ret;
 
 	ret = objio_alloc_io_state(NFS_I(hdr->inode)->layout, false,
-			hdr->lseg, hdr->args.pages, hdr->args.pgbase,
-			hdr->args.offset, hdr->args.count, hdr, GFP_NOFS,
+			hdr->lseg, wdata->args.pages, wdata->args.pgbase,
+			wdata->args.offset, wdata->args.count, wdata, GFP_NOFS,
 			&objios);
 	if (unlikely(ret))
 		return ret;
@@ -549,7 +551,7 @@ int objio_write_pagelist(struct nfs_pgio_header *hdr, int how)
 		objios->ios->done = _write_done;
 
 	dprintk("%s: offset=0x%llx length=0x%x\n", __func__,
-		hdr->args.offset, hdr->args.count);
+		wdata->args.offset, wdata->args.count);
 	ret = ore_write(objios->ios);
 	if (unlikely(ret)) {
 		objio_free_result(&objios->oir);
@@ -562,22 +564,14 @@ int objio_write_pagelist(struct nfs_pgio_header *hdr, int how)
 	return 0;
 }
 
-/*
- * Return 0 if @req cannot be coalesced into @pgio, otherwise return the number
- * of bytes (maximum @req->wb_bytes) that can be coalesced.
- */
-static size_t objio_pg_test(struct nfs_pageio_descriptor *pgio,
+static bool objio_pg_test(struct nfs_pageio_descriptor *pgio,
 			  struct nfs_page *prev, struct nfs_page *req)
 {
-	unsigned int size;
+	if (!pnfs_generic_pg_test(pgio, prev, req))
+		return false;
 
-	size = pnfs_generic_pg_test(pgio, prev, req);
-
-	if (!size || pgio->pg_count + req->wb_bytes >
-	    (unsigned long)pgio->pg_layout_private)
-		return 0;
-
-	return min(size, req->wb_bytes);
+	return pgio->pg_count + req->wb_bytes <=
+			(unsigned long)pgio->pg_layout_private;
 }
 
 static void objio_init_read(struct nfs_pageio_descriptor *pgio, struct nfs_page *req)
@@ -653,7 +647,6 @@ static struct pnfs_layoutdriver_type objlayout_type = {
 	.flags                   = PNFS_LAYOUTRET_ON_SETATTR |
 				   PNFS_LAYOUTRET_ON_ERROR,
 
-	.owner		       	 = THIS_MODULE,
 	.alloc_layout_hdr        = objlayout_alloc_layout_hdr,
 	.free_layout_hdr         = objlayout_free_layout_hdr,
 

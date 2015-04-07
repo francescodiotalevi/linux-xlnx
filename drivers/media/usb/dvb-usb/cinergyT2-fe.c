@@ -300,7 +300,8 @@ static int cinergyt2_fe_set_frontend(struct dvb_frontend *fe)
 static void cinergyt2_fe_release(struct dvb_frontend *fe)
 {
 	struct cinergyt2_fe_state *state = fe->demodulator_priv;
-	kfree(state);
+	if (state != NULL)
+		kfree(state);
 }
 
 static struct dvb_frontend_ops cinergyt2_fe_ops;

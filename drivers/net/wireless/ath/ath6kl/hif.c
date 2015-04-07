@@ -22,7 +22,6 @@
 #include "target.h"
 #include "hif-ops.h"
 #include "debug.h"
-#include "trace.h"
 
 #define MAILBOX_FOR_BLOCK_SIZE          1
 
@@ -37,6 +36,7 @@ static int ath6kl_hif_cp_scat_dma_buf(struct hif_scatter_req *req,
 	buf = req->virt_dma_buf;
 
 	for (i = 0; i < req->scat_entries; i++) {
+
 		if (from_dma)
 			memcpy(req->scat_list[i].buf, buf,
 			       req->scat_list[i].len);
@@ -115,6 +115,7 @@ static void ath6kl_hif_dump_fw_crash(struct ath6kl *ar)
 			    le32_to_cpu(regdump_val[i + 2]),
 			    le32_to_cpu(regdump_val[i + 3]));
 	}
+
 }
 
 static int ath6kl_hif_proc_dbg_intr(struct ath6kl_device *dev)
@@ -435,8 +436,6 @@ static int proc_pending_irqs(struct ath6kl_device *dev, bool *done)
 
 		ath6kl_dump_registers(dev, &dev->irq_proc_reg,
 				      &dev->irq_en_reg);
-		trace_ath6kl_sdio_irq(&dev->irq_en_reg,
-				      sizeof(dev->irq_en_reg));
 
 		/* Update only those registers that are enabled */
 		host_int_status = dev->irq_proc_reg.host_int_status &
@@ -699,4 +698,5 @@ int ath6kl_hif_setup(struct ath6kl_device *dev)
 
 fail_setup:
 	return status;
+
 }

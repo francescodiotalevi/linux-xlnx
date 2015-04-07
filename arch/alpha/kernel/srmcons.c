@@ -44,7 +44,7 @@ typedef union _srmcons_result {
 
 /* called with callback_lock held */
 static int
-srmcons_do_receive_chars(struct tty_port *port)
+srmcons_do_receive_chars(struct tty_struct *tty)
 {
 	srmcons_result result;
 	int count = 0, loops = 0;
@@ -52,13 +52,13 @@ srmcons_do_receive_chars(struct tty_port *port)
 	do {
 		result.as_long = callback_getc(0);
 		if (result.bits.status < 2) {
-			tty_insert_flip_char(port, (char)result.bits.c, 0);
+			tty_insert_flip_char(tty, (char)result.bits.c, 0);
 			count++;
 		}
 	} while((result.bits.status & 1) && (++loops < 10));
 
 	if (count)
-		tty_schedule_flip(port);
+		tty_schedule_flip(tty);
 
 	return count;
 }
@@ -73,7 +73,7 @@ srmcons_receive_chars(unsigned long data)
 
 	local_irq_save(flags);
 	if (spin_trylock(&srmcons_callback_lock)) {
-		if (!srmcons_do_receive_chars(port))
+		if (!srmcons_do_receive_chars(port->tty))
 			incr = 100;
 		spin_unlock(&srmcons_callback_lock);
 	} 
@@ -88,7 +88,7 @@ srmcons_receive_chars(unsigned long data)
 
 /* called with callback_lock held */
 static int
-srmcons_do_write(struct tty_port *port, const char *buf, int count)
+srmcons_do_write(struct tty_struct *tty, const char *buf, int count)
 {
 	static char str_cr[1] = "\r";
 	long c, remaining = count;
@@ -113,10 +113,10 @@ srmcons_do_write(struct tty_port *port, const char *buf, int count)
 			cur += result.bits.c;
 
 			/*
-			 * Check for pending input iff a tty port was provided
+			 * Check for pending input iff a tty was provided
 			 */
-			if (port)
-				srmcons_do_receive_chars(port);
+			if (tty)
+				srmcons_do_receive_chars(tty);
 		}
 
 		while (need_cr) {
@@ -135,7 +135,7 @@ srmcons_write(struct tty_struct *tty,
 	unsigned long flags;
 
 	spin_lock_irqsave(&srmcons_callback_lock, flags);
-	srmcons_do_write(tty->port, (const char *) buf, count);
+	srmcons_do_write(tty, (const char *) buf, count);
 	spin_unlock_irqrestore(&srmcons_callback_lock, flags);
 
 	return count;

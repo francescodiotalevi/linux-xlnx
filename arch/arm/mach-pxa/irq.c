@@ -85,6 +85,9 @@ static struct irq_chip pxa_internal_irq_chip = {
 	.name		= "SC",
 	.irq_ack	= pxa_mask_irq,
 	.irq_mask	= pxa_mask_irq,
+#ifdef CONFIG_IPIPE
+	.irq_mask_ack	= pxa_mask_irq,
+#endif /* CONFIG_IPIPE */
 	.irq_unmask	= pxa_unmask_irq,
 };
 
@@ -100,7 +103,7 @@ asmlinkage void __exception_irq_entry icip_handle_irq(struct pt_regs *regs)
 		if (mask == 0)
 			break;
 
-		handle_IRQ(PXA_IRQ(fls(mask) - 1), regs);
+		ipipe_handle_multi_irq(PXA_IRQ(fls(mask) - 1), regs);
 	} while (1);
 }
 
@@ -114,7 +117,7 @@ asmlinkage void __exception_irq_entry ichp_handle_irq(struct pt_regs *regs)
 		if ((ichp & ICHP_VAL_IRQ) == 0)
 			break;
 
-		handle_IRQ(PXA_IRQ(ICHP_IRQ(ichp)), regs);
+		ipipe_handle_multi_irq(PXA_IRQ(ICHP_IRQ(ichp)), regs);
 	} while (1);
 }
 
@@ -235,6 +238,8 @@ static const struct of_device_id intc_ids[] __initconst = {
 void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int))
 {
 	struct device_node *node;
+	const struct of_device_id *of_id;
+	struct pxa_intc_conf *conf;
 	struct resource res;
 	int n, ret;
 
@@ -243,6 +248,8 @@ void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int))
 		pr_err("Failed to find interrupt controller in arch-pxa\n");
 		return;
 	}
+	of_id = of_match_node(intc_ids, node);
+	conf = of_id->data;
 
 	ret = of_property_read_u32(node, "marvell,intc-nr-irqs",
 				   &pxa_internal_irq_nr);

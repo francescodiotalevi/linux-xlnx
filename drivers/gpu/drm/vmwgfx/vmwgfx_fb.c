@@ -147,7 +147,7 @@ static int vmw_fb_check_var(struct fb_var_screeninfo *var,
 	}
 
 	if (!vmw_kms_validate_mode_vram(vmw_priv,
-					var->xres * var->bits_per_pixel/8,
+					info->fix.line_length,
 					var->yoffset + var->yres)) {
 		DRM_ERROR("Requested geom can not fit in framebuffer\n");
 		return -EINVAL;
@@ -161,8 +161,6 @@ static int vmw_fb_set_par(struct fb_info *info)
 	struct vmw_fb_par *par = info->par;
 	struct vmw_private *vmw_priv = par->vmw_priv;
 	int ret;
-
-	info->fix.line_length = info->var.xres * info->var.bits_per_pixel/8;
 
 	ret = vmw_kms_write_svga(vmw_priv, info->var.xres, info->var.yres,
 				 info->fix.line_length,
@@ -379,13 +377,14 @@ static int vmw_fb_create_bo(struct vmw_private *vmw_priv,
 
 	ne_placement.lpfn = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
-	(void) ttm_write_lock(&vmw_priv->reservation_sem, false);
+	/* interuptable? */
+	ret = ttm_write_lock(&vmw_priv->fbdev_master.lock, false);
+	if (unlikely(ret != 0))
+		return ret;
 
 	vmw_bo = kmalloc(sizeof(*vmw_bo), GFP_KERNEL);
-	if (!vmw_bo) {
-		ret = -ENOMEM;
+	if (!vmw_bo)
 		goto err_unlock;
-	}
 
 	ret = vmw_dmabuf_init(vmw_priv, vmw_bo, size,
 			      &ne_placement,

@@ -26,7 +26,8 @@ enum vpbe_version {
 /* vpbe_timing_type - Timing types used in vpbe device */
 enum vpbe_enc_timings_type {
 	VPBE_ENC_STD = 0x1,
-	VPBE_ENC_DV_TIMINGS = 0x4,
+	VPBE_ENC_DV_PRESET = 0x2,
+	VPBE_ENC_CUSTOM_TIMINGS = 0x4,
 	/* Used when set timings through FB device interface */
 	VPBE_ENC_TIMINGS_INVALID = 0x8,
 };

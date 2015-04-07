@@ -27,6 +27,7 @@ struct puv3_pwm_chip {
 	struct pwm_chip chip;
 	void __iomem *base;
 	struct clk *clk;
+	bool enabled;
 };
 
 static inline struct puv3_pwm_chip *to_puv3(struct pwm_chip *chip)
@@ -117,9 +118,14 @@ static int pwm_probe(struct platform_device *pdev)
 		return PTR_ERR(puv3->clk);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	puv3->base = devm_ioremap_resource(&pdev->dev, r);
-	if (IS_ERR(puv3->base))
-		return PTR_ERR(puv3->base);
+	if (r == NULL) {
+		dev_err(&pdev->dev, "no memory resource defined\n");
+		return -ENODEV;
+	}
+
+	puv3->base = devm_request_and_ioremap(&pdev->dev, r);
+	if (puv3->base == NULL)
+		return -EADDRNOTAVAIL;
 
 	puv3->chip.dev = &pdev->dev;
 	puv3->chip.ops = &puv3_pwm_ops;
@@ -146,7 +152,6 @@ static int pwm_remove(struct platform_device *pdev)
 static struct platform_driver puv3_pwm_driver = {
 	.driver = {
 		.name = "PKUnity-v3-PWM",
-		.owner = THIS_MODULE,
 	},
 	.probe = pwm_probe,
 	.remove = pwm_remove,

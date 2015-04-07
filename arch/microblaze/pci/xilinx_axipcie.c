@@ -29,7 +29,6 @@
 #include <linux/init.h>
 #include <linux/of_address.h>
 #include <linux/of.h>
-#include <linux/of_irq.h>
 #include <linux/bootmem.h>
 #include <linux/delay.h>
 #include <linux/compiler.h>

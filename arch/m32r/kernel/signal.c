@@ -27,6 +27,15 @@
 
 #define DEBUG_SIG 0
 
+asmlinkage int
+sys_sigaltstack(const stack_t __user *uss, stack_t __user *uoss,
+		unsigned long r2, unsigned long r3, unsigned long r4,
+		unsigned long r5, unsigned long r6, struct pt_regs *regs)
+{
+	return do_sigaltstack(uss, uoss, regs->spu);
+}
+
+
 /*
  * Do a signal return; undo the signal stack.
  */
@@ -104,7 +113,7 @@ sys_rt_sigreturn(unsigned long r0, unsigned long r1,
 	if (restore_sigcontext(regs, &frame->uc.uc_mcontext, &result))
 		goto badframe;
 
-	if (restore_altstack(&frame->uc.uc_stack))
+	if (do_sigaltstack(&frame->uc.uc_stack, NULL, regs->spu) == -EFAULT)
 		goto badframe;
 
 	return result;
@@ -162,22 +171,28 @@ setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs,
  * Determine which stack to use..
  */
 static inline void __user *
-get_sigframe(struct ksignal *ksig, unsigned long sp, size_t frame_size)
+get_sigframe(struct k_sigaction *ka, unsigned long sp, size_t frame_size)
 {
-	return (void __user *)((sigsp(sp, ksig) - frame_size) & -8ul);
+	/* This is the X/Open sanctioned signal stack switching.  */
+	if (ka->sa.sa_flags & SA_ONSTACK) {
+		if (sas_ss_flags(sp) == 0)
+			sp = current->sas_ss_sp + current->sas_ss_size;
+	}
+
+	return (void __user *)((sp - frame_size) & -8ul);
 }
 
-static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
-			  struct pt_regs *regs)
+static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
+			   sigset_t *set, struct pt_regs *regs)
 {
 	struct rt_sigframe __user *frame;
 	int err = 0;
-	int signal, sig = ksig->sig;
+	int signal;
 
-	frame = get_sigframe(ksig, regs->spu, sizeof(*frame));
+	frame = get_sigframe(ka, regs->spu, sizeof(*frame));
 
 	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
-		return -EFAULT;
+		goto give_sigsegv;
 
 	signal = current_thread_info()->exec_domain
 		&& current_thread_info()->exec_domain->signal_invmap
@@ -187,32 +202,35 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 
 	err |= __put_user(signal, &frame->sig);
 	if (err)
-		return -EFAULT;
+		goto give_sigsegv;
 
 	err |= __put_user(&frame->info, &frame->pinfo);
 	err |= __put_user(&frame->uc, &frame->puc);
-	err |= copy_siginfo_to_user(&frame->info, &ksig->info);
+	err |= copy_siginfo_to_user(&frame->info, info);
 	if (err)
-		return -EFAULT;
+		goto give_sigsegv;
 
 	/* Create the ucontext.  */
 	err |= __put_user(0, &frame->uc.uc_flags);
 	err |= __put_user(0, &frame->uc.uc_link);
-	err |= __save_altstack(&frame->uc.uc_stack, regs->spu);
+	err |= __put_user(current->sas_ss_sp, &frame->uc.uc_stack.ss_sp);
+	err |= __put_user(sas_ss_flags(regs->spu),
+			  &frame->uc.uc_stack.ss_flags);
+	err |= __put_user(current->sas_ss_size, &frame->uc.uc_stack.ss_size);
 	err |= setup_sigcontext(&frame->uc.uc_mcontext, regs, set->sig[0]);
 	err |= __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
 	if (err)
-		return -EFAULT;
+		goto give_sigsegv;
 
 	/* Set up to return from userspace.  */
-	regs->lr = (unsigned long)ksig->ka.sa.sa_restorer;
+	regs->lr = (unsigned long)ka->sa.sa_restorer;
 
 	/* Set up registers for signal handler */
 	regs->spu = (unsigned long)frame;
 	regs->r0 = signal;	/* Arg for signal handler */
 	regs->r1 = (unsigned long)&frame->info;
 	regs->r2 = (unsigned long)&frame->uc;
-	regs->bpc = (unsigned long)ksig->ka.sa.sa_handler;
+	regs->bpc = (unsigned long)ka->sa.sa_handler;
 
 	set_fs(USER_DS);
 
@@ -222,6 +240,10 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 #endif
 
 	return 0;
+
+give_sigsegv:
+	force_sigsegv(sig, current);
+	return -EFAULT;
 }
 
 static int prev_insn(struct pt_regs *regs)
@@ -242,10 +264,9 @@ static int prev_insn(struct pt_regs *regs)
  */
 
 static void
-handle_signal(struct ksignal *ksig, struct pt_regs *regs)
+handle_signal(unsigned long sig, struct k_sigaction *ka, siginfo_t *info,
+	      struct pt_regs *regs)
 {
-	int ret;
-
 	/* Are we from a system call? */
 	if (regs->syscall_nr >= 0) {
 		/* If so, check system call restarting.. */
@@ -256,7 +277,7 @@ handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 				break;
 
 			case -ERESTARTSYS:
-				if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
+				if (!(ka->sa.sa_flags & SA_RESTART)) {
 					regs->r0 = -EINTR;
 					break;
 				}
@@ -269,9 +290,10 @@ handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 	}
 
 	/* Set up the stack frame */
-	ret = setup_rt_frame(ksig, sigmask_to_save(), regs);
+	if (setup_rt_frame(sig, ka, info, sigmask_to_save(), regs))
+		return;
 
-	signal_setup_done(ret, ksig, 0);
+	signal_delivered(sig, info, ka, regs, 0);
 }
 
 /*
@@ -281,7 +303,9 @@ handle_signal(struct ksignal *ksig, struct pt_regs *regs)
  */
 static void do_signal(struct pt_regs *regs)
 {
-	struct ksignal ksig;
+	siginfo_t info;
+	int signr;
+	struct k_sigaction ka;
 
 	/*
 	 * We want the common case to go fast, which
@@ -292,7 +316,8 @@ static void do_signal(struct pt_regs *regs)
 	if (!user_mode(regs))
 		return;
 
-	if (get_signal(&ksig)) {
+	signr = get_signal_to_deliver(&info, &ka, regs, NULL);
+	if (signr > 0) {
 		/* Re-enable any watchpoints before delivering the
 		 * signal to user space. The processor register will
 		 * have been cleared if the watchpoint triggered
@@ -300,7 +325,7 @@ static void do_signal(struct pt_regs *regs)
 		 */
 
 		/* Whee!  Actually deliver the signal.  */
-		handle_signal(&ksig, regs);
+		handle_signal(signr, &ka, &info, regs);
 
 		return;
 	}

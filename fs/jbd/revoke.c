@@ -231,15 +231,19 @@ record_cache_failure:
 
 static struct jbd_revoke_table_s *journal_init_revoke_table(int hash_size)
 {
-	int i;
+	int shift = 0;
+	int tmp = hash_size;
 	struct jbd_revoke_table_s *table;
 
 	table = kmem_cache_alloc(revoke_table_cache, GFP_KERNEL);
 	if (!table)
 		goto out;
 
+	while((tmp >>= 1UL) != 0UL)
+		shift++;
+
 	table->hash_size = hash_size;
-	table->hash_shift = ilog2(hash_size);
+	table->hash_shift = shift;
 	table->hash_table =
 		kmalloc(hash_size * sizeof(struct list_head), GFP_KERNEL);
 	if (!table->hash_table) {
@@ -248,8 +252,8 @@ static struct jbd_revoke_table_s *journal_init_revoke_table(int hash_size)
 		goto out;
 	}
 
-	for (i = 0; i < hash_size; i++)
-		INIT_LIST_HEAD(&table->hash_table[i]);
+	for (tmp = 0; tmp < hash_size; tmp++)
+		INIT_LIST_HEAD(&table->hash_table[tmp]);
 
 out:
 	return table;

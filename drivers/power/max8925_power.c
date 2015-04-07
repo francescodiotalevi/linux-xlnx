@@ -458,7 +458,6 @@ max8925_power_dt_init(struct platform_device *pdev)
 	of_property_read_u32(np, "fast-charge", &fast_charge);
 	of_property_read_u32(np, "no-insert-detect", &no_insert_detect);
 	of_property_read_u32(np, "no-temp-support", &no_temp_support);
-	of_node_put(np);
 
 	pdata->batt_detect = batt_detect;
 	pdata->fast_charge = fast_charge;
@@ -490,8 +489,7 @@ static int max8925_power_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	info = devm_kzalloc(&pdev->dev, sizeof(struct max8925_power_info),
-				GFP_KERNEL);
+	info = kzalloc(sizeof(struct max8925_power_info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 	info->chip = chip;
@@ -548,6 +546,7 @@ out_battery:
 out_usb:
 	power_supply_unregister(&info->ac);
 out:
+	kfree(info);
 	return ret;
 }
 
@@ -560,6 +559,7 @@ static int max8925_power_remove(struct platform_device *pdev)
 		power_supply_unregister(&info->usb);
 		power_supply_unregister(&info->battery);
 		max8925_deinit_charger(info);
+		kfree(info);
 	}
 	return 0;
 }

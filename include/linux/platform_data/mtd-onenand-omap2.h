@@ -1,4 +1,6 @@
 /*
+ * arch/arm/plat-omap/include/mach/onenand.h
+ *
  * Copyright (C) 2006 Nokia Corporation
  * Author: Juha Yrjola
  *
@@ -27,8 +29,5 @@ struct omap_onenand_platform_data {
 	u8			flags;
 	u8			regulator_can_sleep;
 	u8			skip_initial_unlocking;
-
-	/* for passing the partitions */
-	struct device_node	*of_node;
 };
 #endif

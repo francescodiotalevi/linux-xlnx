@@ -15,7 +15,6 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/spinlock.h>
-#include <video/vga.h>
 
 #include <asm/pgtable.h>
 #include <asm/page.h>
@@ -143,6 +142,11 @@ static struct map_desc fb_common_io_desc[] __initdata = {
 		.pfn		= __phys_to_pfn(DC21285_ARMCSR_BASE),
 		.length		= ARMCSR_SIZE,
 		.type		= MT_DEVICE,
+	}, {
+		.virtual	= XBUS_BASE,
+		.pfn		= __phys_to_pfn(0x40000000),
+		.length		= XBUS_SIZE,
+		.type		= MT_DEVICE,
 	}
 };
 
@@ -192,13 +196,11 @@ void __init footbridge_map_io(void)
 		iotable_init(ebsa285_host_io_desc, ARRAY_SIZE(ebsa285_host_io_desc));
 		pci_map_io_early(__phys_to_pfn(DC21285_PCI_IO));
 	}
-
-	vga_base = PCIMEM_BASE;
 }
 
-void footbridge_restart(enum reboot_mode mode, const char *cmd)
+void footbridge_restart(char mode, const char *cmd)
 {
-	if (mode == REBOOT_SOFT) {
+	if (mode == 's') {
 		/* Jump into the ROM */
 		soft_restart(0x41000000);
 	} else {

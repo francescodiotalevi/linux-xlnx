@@ -174,7 +174,7 @@ MACHINE_START(CERF, "Intrinsyc CerfBoard/CerfCube")
 	.map_io		= cerf_map_io,
 	.nr_irqs	= SA1100_NR_IRQS,
 	.init_irq	= cerf_init_irq,
-	.init_time	= sa1100_timer_init,
+	.timer		= &sa1100_timer,
 	.init_machine	= cerf_init,
 	.init_late	= sa11x0_init_late,
 	.restart	= sa11x0_restart,

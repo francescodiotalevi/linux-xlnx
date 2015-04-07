@@ -13,11 +13,8 @@
  *  Copyright (c) 2007-2010 Paul Mundt <lethal@linux-sh.org>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/export.h>
 #include <linux/mm.h>
-#include <linux/vmacache.h>
 #include <linux/mman.h>
 #include <linux/swap.h>
 #include <linux/file.h>
@@ -27,14 +24,11 @@
 #include <linux/vmalloc.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
-#include <linux/compiler.h>
 #include <linux/mount.h>
 #include <linux/personality.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/audit.h>
-#include <linux/sched/sysctl.h>
-#include <linux/printk.h>
 
 #include <asm/uaccess.h>
 #include <asm/tlb.h>
@@ -61,15 +55,13 @@
 void *high_memory;
 struct page *mem_map;
 unsigned long max_mapnr;
+unsigned long num_physpages;
 unsigned long highest_memmap_pfn;
 struct percpu_counter vm_committed_as;
 int sysctl_overcommit_memory = OVERCOMMIT_GUESS; /* heuristic overcommit */
 int sysctl_overcommit_ratio = 50; /* default is 50% */
-unsigned long sysctl_overcommit_kbytes __read_mostly;
 int sysctl_max_map_count = DEFAULT_MAX_MAP_COUNT;
 int sysctl_nr_trim_pages = CONFIG_NOMMU_INITIAL_TRIM_EXCESS;
-unsigned long sysctl_user_reserve_kbytes __read_mostly = 1UL << 17; /* 128MB */
-unsigned long sysctl_admin_reserve_kbytes __read_mostly = 1UL << 13; /* 8MB */
 int heap_stack_gap = 0;
 
 atomic_long_t mmap_pages_allocated;
@@ -90,6 +82,7 @@ unsigned long vm_memory_committed(void)
 EXPORT_SYMBOL_GPL(vm_memory_committed);
 
 EXPORT_SYMBOL(mem_map);
+EXPORT_SYMBOL(num_physpages);
 
 /* list of mapped, potentially shareable regions */
 static struct kmem_cache *vm_region_jar;
@@ -146,10 +139,10 @@ unsigned int kobjsize(const void *objp)
 	return PAGE_SIZE << compound_order(page);
 }
 
-long __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
-		      unsigned long start, unsigned long nr_pages,
-		      unsigned int foll_flags, struct page **pages,
-		      struct vm_area_struct **vmas, int *nonblocking)
+int __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
+		     unsigned long start, int nr_pages, unsigned int foll_flags,
+		     struct page **pages, struct vm_area_struct **vmas,
+		     int *retry)
 {
 	struct vm_area_struct *vma;
 	unsigned long vm_flags;
@@ -196,10 +189,9 @@ finish_or_fault:
  *   slab page or a secondary page from a compound page
  * - don't permit access to VMAs that don't support it, such as I/O mappings
  */
-long get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
-		    unsigned long start, unsigned long nr_pages,
-		    int write, int force, struct page **pages,
-		    struct vm_area_struct **vmas)
+int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
+	unsigned long start, int nr_pages, int write, int force,
+	struct page **pages, struct vm_area_struct **vmas)
 {
 	int flags = 0;
 
@@ -234,7 +226,8 @@ int follow_pfn(struct vm_area_struct *vma, unsigned long address,
 }
 EXPORT_SYMBOL(follow_pfn);
 
-LIST_HEAD(vmap_area_list);
+DEFINE_RWLOCK(vmlist_lock);
+struct vm_struct *vmlist;
 
 void vfree(const void *addr)
 {
@@ -286,10 +279,6 @@ EXPORT_SYMBOL(vmalloc_to_pfn);
 
 long vread(char *buf, char *addr, unsigned long count)
 {
-	/* Don't allow overflow */
-	if ((unsigned long) buf + count < count)
-		count = -(unsigned long) buf;
-
 	memcpy(buf, addr, count);
 	return count;
 }
@@ -301,7 +290,7 @@ long vwrite(char *buf, char *addr, unsigned long count)
 		count = -(unsigned long) addr;
 
 	memcpy(addr, buf, count);
-	return count;
+	return(count);
 }
 
 /*
@@ -464,7 +453,7 @@ EXPORT_SYMBOL_GPL(vm_unmap_aliases);
  * Implement a stub for vmalloc_sync_all() if the architecture chose not to
  * have one.
  */
-void __weak vmalloc_sync_all(void)
+void  __attribute__((weak)) vmalloc_sync_all(void)
 {
 }
 
@@ -773,23 +762,16 @@ static void add_vma_to_mm(struct mm_struct *mm, struct vm_area_struct *vma)
  */
 static void delete_vma_from_mm(struct vm_area_struct *vma)
 {
-	int i;
 	struct address_space *mapping;
 	struct mm_struct *mm = vma->vm_mm;
-	struct task_struct *curr = current;
 
 	kenter("%p", vma);
 
 	protect_vma(vma, 0);
 
 	mm->map_count--;
-	for (i = 0; i < VMACACHE_SIZE; i++) {
-		/* if the vma is cached, invalidate the entire cache */
-		if (curr->vmacache[i] == vma) {
-			vmacache_invalidate(mm);
-			break;
-		}
-	}
+	if (mm->mmap_cache == vma)
+		mm->mmap_cache = NULL;
 
 	/* remove the VMA from the mapping */
 	if (vma->vm_file) {
@@ -837,8 +819,8 @@ struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 	struct vm_area_struct *vma;
 
 	/* check the cache first */
-	vma = vmacache_find(mm, addr);
-	if (likely(vma))
+	vma = mm->mmap_cache;
+	if (vma && vma->vm_start <= addr && vma->vm_end > addr)
 		return vma;
 
 	/* trawl the list (there may be multiple mappings in which addr
@@ -847,7 +829,7 @@ struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 		if (vma->vm_start > addr)
 			return NULL;
 		if (vma->vm_end > addr) {
-			vmacache_update(addr, vma);
+			mm->mmap_cache = vma;
 			return vma;
 		}
 	}
@@ -886,8 +868,8 @@ static struct vm_area_struct *find_vma_exact(struct mm_struct *mm,
 	unsigned long end = addr + len;
 
 	/* check the cache first */
-	vma = vmacache_find_exact(mm, addr, end);
-	if (vma)
+	vma = mm->mmap_cache;
+	if (vma && vma->vm_start == addr && vma->vm_end == end)
 		return vma;
 
 	/* trawl the list (there may be multiple mappings in which addr
@@ -898,7 +880,7 @@ static struct vm_area_struct *find_vma_exact(struct mm_struct *mm,
 		if (vma->vm_start > addr)
 			return NULL;
 		if (vma->vm_end == end) {
-			vmacache_update(addr, vma);
+			mm->mmap_cache = vma;
 			return vma;
 		}
 	}
@@ -950,7 +932,7 @@ static int validate_mmap_request(struct file *file,
 		struct address_space *mapping;
 
 		/* files must support mmap */
-		if (!file->f_op->mmap)
+		if (!file->f_op || !file->f_op->mmap)
 			return -ENODEV;
 
 		/* work out if what we've got could possibly be shared
@@ -959,7 +941,7 @@ static int validate_mmap_request(struct file *file,
 		 */
 		mapping = file->f_mapping;
 		if (!mapping)
-			mapping = file_inode(file)->i_mapping;
+			mapping = file->f_path.dentry->d_inode->i_mapping;
 
 		capabilities = 0;
 		if (mapping && mapping->backing_dev_info)
@@ -968,7 +950,7 @@ static int validate_mmap_request(struct file *file,
 		if (!capabilities) {
 			/* no explicit capabilities set, so assume some
 			 * defaults */
-			switch (file_inode(file)->i_mode & S_IFMT) {
+			switch (file->f_path.dentry->d_inode->i_mode & S_IFMT) {
 			case S_IFREG:
 			case S_IFBLK:
 				capabilities = BDI_CAP_MAP_COPY;
@@ -1003,11 +985,11 @@ static int validate_mmap_request(struct file *file,
 			    !(file->f_mode & FMODE_WRITE))
 				return -EACCES;
 
-			if (IS_APPEND(file_inode(file)) &&
+			if (IS_APPEND(file->f_path.dentry->d_inode) &&
 			    (file->f_mode & FMODE_WRITE))
 				return -EACCES;
 
-			if (locks_verify_locked(file))
+			if (locks_verify_locked(file->f_path.dentry->d_inode))
 				return -EAGAIN;
 
 			if (!(capabilities & BDI_CAP_MAP_DIRECT))
@@ -1015,7 +997,8 @@ static int validate_mmap_request(struct file *file,
 
 			/* we mustn't privatise shared mappings */
 			capabilities &= ~BDI_CAP_MAP_COPY;
-		} else {
+		}
+		else {
 			/* we're going to read the file into private memory we
 			 * allocate */
 			if (!(capabilities & BDI_CAP_MAP_COPY))
@@ -1046,20 +1029,23 @@ static int validate_mmap_request(struct file *file,
 		if (file->f_path.mnt->mnt_flags & MNT_NOEXEC) {
 			if (prot & PROT_EXEC)
 				return -EPERM;
-		} else if ((prot & PROT_READ) && !(prot & PROT_EXEC)) {
+		}
+		else if ((prot & PROT_READ) && !(prot & PROT_EXEC)) {
 			/* handle implication of PROT_EXEC by PROT_READ */
 			if (current->personality & READ_IMPLIES_EXEC) {
 				if (capabilities & BDI_CAP_EXEC_MAP)
 					prot |= PROT_EXEC;
 			}
-		} else if ((prot & PROT_READ) &&
+		}
+		else if ((prot & PROT_READ) &&
 			 (prot & PROT_EXEC) &&
 			 !(capabilities & BDI_CAP_EXEC_MAP)
 			 ) {
 			/* backing file is not executable, try to copy */
 			capabilities &= ~BDI_CAP_MAP_DIRECT;
 		}
-	} else {
+	}
+	else {
 		/* anonymous mappings are always memory backed and can be
 		 * privately mapped
 		 */
@@ -1249,7 +1235,7 @@ error_free:
 	return ret;
 
 enomem:
-	pr_err("Allocation of length %lu from process %d (%s) failed\n",
+	printk("Allocation of length %lu from process %d (%s) failed\n",
 	       len, current->pid, current->comm);
 	show_free_areas(0);
 	return -ENOMEM;
@@ -1263,8 +1249,7 @@ unsigned long do_mmap_pgoff(struct file *file,
 			    unsigned long len,
 			    unsigned long prot,
 			    unsigned long flags,
-			    unsigned long pgoff,
-			    unsigned long *populate)
+			    unsigned long pgoff)
 {
 	struct vm_area_struct *vma;
 	struct vm_region *region;
@@ -1273,8 +1258,6 @@ unsigned long do_mmap_pgoff(struct file *file,
 	int ret;
 
 	kenter(",%lx,%lx,%lx,%lx,%lx", addr, len, prot, flags, pgoff);
-
-	*populate = 0;
 
 	/* decide whether we should attempt the mapping, and if so what sort of
 	 * mapping */
@@ -1339,8 +1322,8 @@ unsigned long do_mmap_pgoff(struct file *file,
 				continue;
 
 			/* search for overlapping mappings on the same file */
-			if (file_inode(pregion->vm_file) !=
-			    file_inode(file))
+			if (pregion->vm_file->f_path.dentry->d_inode !=
+			    file->f_path.dentry->d_inode)
 				continue;
 
 			if (pregion->vm_pgoff >= pgend)
@@ -1667,7 +1650,7 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 	/* find the first potentially overlapping VMA */
 	vma = find_vma(mm, start);
 	if (!vma) {
-		static int limit;
+		static int limit = 0;
 		if (limit < 5) {
 			printk(KERN_WARNING
 			       "munmap of memory not mmapped by process %d"
@@ -1782,7 +1765,7 @@ unsigned long vm_brk(unsigned long addr, unsigned long len)
  *
  * MREMAP_FIXED is not supported under NOMMU conditions
  */
-static unsigned long do_mremap(unsigned long addr,
+unsigned long do_mremap(unsigned long addr,
 			unsigned long old_len, unsigned long new_len,
 			unsigned long flags, unsigned long new_addr)
 {
@@ -1817,6 +1800,7 @@ static unsigned long do_mremap(unsigned long addr,
 	vma->vm_end = vma->vm_start + new_len;
 	return vma->vm_start;
 }
+EXPORT_SYMBOL(do_mremap);
 
 SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		unsigned long, new_len, unsigned long, flags,
@@ -1830,11 +1814,9 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	return ret;
 }
 
-struct page *follow_page_mask(struct vm_area_struct *vma,
-			      unsigned long address, unsigned int flags,
-			      unsigned int *page_mask)
+struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
+			unsigned int foll_flags)
 {
-	*page_mask = 0;
 	return NULL;
 }
 
@@ -1848,16 +1830,6 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	return 0;
 }
 EXPORT_SYMBOL(remap_pfn_range);
-
-int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
-{
-	unsigned long pfn = start >> PAGE_SHIFT;
-	unsigned long vm_len = vma->vm_end - vma->vm_start;
-
-	pfn += vma->vm_pgoff;
-	return io_remap_pfn_range(vma, vma->vm_start, pfn, vm_len, vma->vm_page_prot);
-}
-EXPORT_SYMBOL(vm_iomap_memory);
 
 int remap_vmalloc_range(struct vm_area_struct *vma, void *addr,
 			unsigned long pgoff)
@@ -1878,6 +1850,10 @@ unsigned long arch_get_unmapped_area(struct file *file, unsigned long addr,
 	unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	return -ENOMEM;
+}
+
+void arch_unmap_area(struct mm_struct *mm, unsigned long addr)
+{
 }
 
 void unmap_mapping_range(struct address_space *mapping,
@@ -1905,7 +1881,7 @@ EXPORT_SYMBOL(unmap_mapping_range);
  */
 int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 {
-	unsigned long free, allowed, reserve;
+	unsigned long free, allowed;
 
 	vm_acct_memory(pages);
 
@@ -1927,7 +1903,7 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		 */
 		free -= global_page_state(NR_SHMEM);
 
-		free += get_nr_swap_pages();
+		free += nr_swap_pages;
 
 		/*
 		 * Any slabs which are created with the
@@ -1946,10 +1922,10 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 			free -= totalreserve_pages;
 
 		/*
-		 * Reserve some for root
+		 * Leave the last 3% for root
 		 */
 		if (!cap_sys_admin)
-			free -= sysctl_admin_reserve_kbytes >> (PAGE_SHIFT - 10);
+			free -= free / 32;
 
 		if (free > pages)
 			return 0;
@@ -1957,20 +1933,18 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		goto error;
 	}
 
-	allowed = vm_commit_limit();
+	allowed = totalram_pages * sysctl_overcommit_ratio / 100;
 	/*
-	 * Reserve some 3% for root
+	 * Leave the last 3% for root
 	 */
 	if (!cap_sys_admin)
-		allowed -= sysctl_admin_reserve_kbytes >> (PAGE_SHIFT - 10);
+		allowed -= allowed / 32;
+	allowed += total_swap_pages;
 
-	/*
-	 * Don't let a single process grow so big a user can't recover
-	 */
-	if (mm) {
-		reserve = sysctl_user_reserve_kbytes >> (PAGE_SHIFT - 10);
-		allowed -= min(mm->total_vm / 32, reserve);
-	}
+	/* Don't let a single process grow too big:
+	   leave 3% of the size of this process for other processes */
+	if (mm)
+		allowed -= mm->total_vm / 32;
 
 	if (percpu_counter_read_positive(&vm_committed_as) < allowed)
 		return 0;
@@ -1981,18 +1955,17 @@ error:
 	return -ENOMEM;
 }
 
+int in_gate_area_no_mm(unsigned long addr)
+{
+	return 0;
+}
+
 int filemap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	BUG();
 	return 0;
 }
 EXPORT_SYMBOL(filemap_fault);
-
-void filemap_map_pages(struct vm_area_struct *vma, struct vm_fault *vmf)
-{
-	BUG();
-}
-EXPORT_SYMBOL(filemap_map_pages);
 
 int generic_file_remap_pages(struct vm_area_struct *vma, unsigned long addr,
 			     unsigned long size, pgoff_t pgoff)
@@ -2133,45 +2106,3 @@ int nommu_shrink_inode_mappings(struct inode *inode, size_t size,
 	up_write(&nommu_region_sem);
 	return 0;
 }
-
-/*
- * Initialise sysctl_user_reserve_kbytes.
- *
- * This is intended to prevent a user from starting a single memory hogging
- * process, such that they cannot recover (kill the hog) in OVERCOMMIT_NEVER
- * mode.
- *
- * The default value is min(3% of free memory, 128MB)
- * 128MB is enough to recover with sshd/login, bash, and top/kill.
- */
-static int __meminit init_user_reserve(void)
-{
-	unsigned long free_kbytes;
-
-	free_kbytes = global_page_state(NR_FREE_PAGES) << (PAGE_SHIFT - 10);
-
-	sysctl_user_reserve_kbytes = min(free_kbytes / 32, 1UL << 17);
-	return 0;
-}
-module_init(init_user_reserve)
-
-/*
- * Initialise sysctl_admin_reserve_kbytes.
- *
- * The purpose of sysctl_admin_reserve_kbytes is to allow the sys admin
- * to log in and kill a memory hogging process.
- *
- * Systems with more than 256MB will reserve 8MB, enough to recover
- * with sshd, bash, and top in OVERCOMMIT_GUESS. Smaller systems will
- * only reserve 3% of free pages by default.
- */
-static int __meminit init_admin_reserve(void)
-{
-	unsigned long free_kbytes;
-
-	free_kbytes = global_page_state(NR_FREE_PAGES) << (PAGE_SHIFT - 10);
-
-	sysctl_admin_reserve_kbytes = min(free_kbytes / 32, 1UL << 13);
-	return 0;
-}
-module_init(init_admin_reserve)

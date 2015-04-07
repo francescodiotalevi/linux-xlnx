@@ -24,6 +24,18 @@
 static int power_state_active_cnt; /* will initialize to zero */
 static DEFINE_SPINLOCK(power_state_active_lock);
 
+int power_state_active_get(void)
+{
+	unsigned long flags;
+	int cnt;
+
+	spin_lock_irqsave(&power_state_active_lock, flags);
+	cnt = power_state_active_cnt;
+	spin_unlock_irqrestore(&power_state_active_lock, flags);
+
+	return cnt;
+}
+
 void power_state_active_enable(void)
 {
 	unsigned long flags;
@@ -53,18 +65,6 @@ out:
 
 #ifdef CONFIG_REGULATOR_DEBUG
 
-static int power_state_active_get(void)
-{
-	unsigned long flags;
-	int cnt;
-
-	spin_lock_irqsave(&power_state_active_lock, flags);
-	cnt = power_state_active_cnt;
-	spin_unlock_irqrestore(&power_state_active_lock, flags);
-
-	return cnt;
-}
-
 static struct ux500_regulator_debug {
 	struct dentry *dir;
 	struct dentry *status_file;
@@ -78,7 +78,6 @@ static struct ux500_regulator_debug {
 void ux500_regulator_suspend_debug(void)
 {
 	int i;
-
 	for (i = 0; i < rdebug.num_regulators; i++)
 		rdebug.state_before_suspend[i] =
 			rdebug.regulator_array[i].is_enabled;
@@ -87,7 +86,6 @@ void ux500_regulator_suspend_debug(void)
 void ux500_regulator_resume_debug(void)
 {
 	int i;
-
 	for (i = 0; i < rdebug.num_regulators; i++)
 		rdebug.state_after_suspend[i] =
 			rdebug.regulator_array[i].is_enabled;
@@ -129,9 +127,9 @@ static int ux500_regulator_status_print(struct seq_file *s, void *p)
 	int i;
 
 	/* print dump header */
-	err = seq_puts(s, "ux500-regulator status:\n");
+	err = seq_printf(s, "ux500-regulator status:\n");
 	if (err < 0)
-		dev_err(dev, "seq_puts overflow\n");
+		dev_err(dev, "seq_printf overflow\n");
 
 	err = seq_printf(s, "%31s : %8s : %8s\n", "current",
 		"before", "after");
@@ -204,12 +202,18 @@ ux500_regulator_debug_init(struct platform_device *pdev,
 	rdebug.num_regulators = num_regulators;
 
 	rdebug.state_before_suspend = kzalloc(num_regulators, GFP_KERNEL);
-	if (!rdebug.state_before_suspend)
+	if (!rdebug.state_before_suspend) {
+		dev_err(&pdev->dev,
+			"could not allocate memory for saving state\n");
 		goto exit_destroy_power_state;
+	}
 
 	rdebug.state_after_suspend = kzalloc(num_regulators, GFP_KERNEL);
-	if (!rdebug.state_after_suspend)
+	if (!rdebug.state_after_suspend) {
+		dev_err(&pdev->dev,
+			"could not allocate memory for saving state\n");
 		goto exit_free;
+	}
 
 	dbx500_regulator_testcase(regulator_info, num_regulators);
 	return 0;

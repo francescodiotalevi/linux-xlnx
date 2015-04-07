@@ -25,7 +25,9 @@
  *     GNU General Public License for more details.
  *
  *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *     along with this program; if not, write to the Free Software
+ *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+ *     MA 02111-1307 USA
  *
  *     Linux-IrDA now supports four different types of IrDA sockets:
  *
@@ -303,7 +305,8 @@ static void irda_connect_response(struct irda_sock *self)
 
 	IRDA_DEBUG(2, "%s()\n", __func__);
 
-	skb = alloc_skb(TTP_MAX_HEADER + TTP_SAR_HEADER, GFP_KERNEL);
+	skb = alloc_skb(TTP_MAX_HEADER + TTP_SAR_HEADER,
+			GFP_ATOMIC);
 	if (skb == NULL) {
 		IRDA_DEBUG(0, "%s() Unable to allocate sk_buff!\n",
 			   __func__);
@@ -674,6 +677,7 @@ static int irda_discover_daddr_and_lsap_sel(struct irda_sock *self, char *name)
 			self->daddr = DEV_ADDR_ANY;
 			kfree(discoveries);
 			return -EHOSTUNREACH;
+			break;
 		}
 	}
 	/* Cleanup our copy of the discovery log */
@@ -1116,7 +1120,7 @@ static int irda_create(struct net *net, struct socket *sock, int protocol,
 	}
 
 	/* Allocate networking socket */
-	sk = sk_alloc(net, PF_IRDA, GFP_KERNEL, &irda_proto);
+	sk = sk_alloc(net, PF_IRDA, GFP_ATOMIC, &irda_proto);
 	if (sk == NULL)
 		return -ENOMEM;
 
@@ -1446,6 +1450,8 @@ static int irda_recvmsg_stream(struct kiocb *iocb, struct socket *sock,
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, size);
 	timeo = sock_rcvtimeo(sk, noblock);
 
+	msg->msg_namelen = 0;
+
 	do {
 		int chunk;
 		struct sk_buff *skb = skb_dequeue(&sk->sk_receive_queue);
@@ -1651,7 +1657,7 @@ static int irda_sendmsg_ultra(struct kiocb *iocb, struct socket *sock,
 
 	/* Check if an address was specified with sendto. Jean II */
 	if (msg->msg_name) {
-		DECLARE_SOCKADDR(struct sockaddr_irda *, addr, msg->msg_name);
+		struct sockaddr_irda *addr = (struct sockaddr_irda *) msg->msg_name;
 		err = -EINVAL;
 		/* Check address, extract pid. Jean II */
 		if (msg->msg_namelen < sizeof(*addr))
@@ -2556,11 +2562,13 @@ bed:
 				  jiffies + msecs_to_jiffies(val));
 
 			/* Wait for IR-LMP to call us back */
-			err = __wait_event_interruptible(self->query_wait,
-			      (self->cachedaddr != 0 || self->errno == -ETIME));
+			__wait_event_interruptible(self->query_wait,
+			      (self->cachedaddr != 0 || self->errno == -ETIME),
+						   err);
 
 			/* If watchdog is still activated, kill it! */
-			del_timer(&(self->watchdog));
+			if(timer_pending(&(self->watchdog)))
+				del_timer(&(self->watchdog));
 
 			IRDA_DEBUG(1, "%s(), ...waking up !\n", __func__);
 
@@ -2576,10 +2584,8 @@ bed:
 				    NULL, NULL, NULL);
 
 		/* Check if the we got some results */
-		if (!self->cachedaddr) {
-			err = -EAGAIN;		/* Didn't find any devices */
-			goto out;
-		}
+		if (!self->cachedaddr)
+			return -EAGAIN;		/* Didn't find any devices */
 		daddr = self->cachedaddr;
 		/* Cleanup */
 		self->cachedaddr = 0;

@@ -89,7 +89,7 @@ static int resize_info_buffer(struct snd_info_buffer *buffer,
 	char *nbuf;
 
 	nsize = PAGE_ALIGN(nsize);
-	nbuf = krealloc(buffer->buffer, nsize, GFP_KERNEL | __GFP_ZERO);
+	nbuf = krealloc(buffer->buffer, nsize, GFP_KERNEL);
 	if (! nbuf)
 		return -ENOMEM;
 
@@ -105,7 +105,7 @@ static int resize_info_buffer(struct snd_info_buffer *buffer,
  *
  * Outputs the string on the procfs buffer just like printf().
  *
- * Return: The size of output string, or a negative error code.
+ * Returns the size of output string.
  */
 int snd_iprintf(struct snd_info_buffer *buffer, const char *fmt, ...)
 {
@@ -152,6 +152,13 @@ EXPORT_SYMBOL(snd_seq_root);
 #ifdef CONFIG_SND_OSSEMUL
 struct snd_info_entry *snd_oss_root;
 #endif
+
+static void snd_remove_proc_entry(struct proc_dir_entry *parent,
+				  struct proc_dir_entry *de)
+{
+	if (de)
+		remove_proc_entry(de->name, parent);
+}
 
 static loff_t snd_info_entry_llseek(struct file *file, loff_t offset, int orig)
 {
@@ -303,10 +310,12 @@ static int snd_info_entry_open(struct inode *inode, struct file *file)
 	struct snd_info_entry *entry;
 	struct snd_info_private_data *data;
 	struct snd_info_buffer *buffer;
+	struct proc_dir_entry *p;
 	int mode, err;
 
 	mutex_lock(&info_mutex);
-	entry = PDE_DATA(inode);
+	p = PDE(inode);
+	entry = p == NULL ? NULL : (struct snd_info_entry *)p->data;
 	if (entry == NULL || ! entry->p) {
 		mutex_unlock(&info_mutex);
 		return -ENODEV;
@@ -344,7 +353,7 @@ static int snd_info_entry_open(struct inode *inode, struct file *file)
 				goto __nomem;
 			data->rbuffer = buffer;
 			buffer->len = PAGE_SIZE;
-			buffer->buffer = kzalloc(buffer->len, GFP_KERNEL);
+			buffer->buffer = kmalloc(buffer->len, GFP_KERNEL);
 			if (buffer->buffer == NULL)
 				goto __nomem;
 		}
@@ -418,14 +427,9 @@ static int snd_info_entry_release(struct inode *inode, struct file *file)
 			if (entry->c.text.write) {
 				entry->c.text.write(entry, data->wbuffer);
 				if (data->wbuffer->error) {
-					if (entry->card)
-						dev_warn(entry->card->dev, "info: data write error to %s (%i)\n",
-							 entry->name,
-							 data->wbuffer->error);
-					else
-						pr_warn("ALSA: info: data write error to %s (%i)\n",
-							entry->name,
-							data->wbuffer->error);
+					snd_printk(KERN_WARNING "data write error to %s (%i)\n",
+						entry->name,
+						data->wbuffer->error);
 				}
 			}
 			kfree(data->wbuffer->buffer);
@@ -492,7 +496,7 @@ static long snd_info_entry_ioctl(struct file *file, unsigned int cmd,
 
 static int snd_info_entry_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	struct snd_info_private_data *data;
 	struct snd_info_entry *entry;
 
@@ -545,7 +549,7 @@ int __init snd_info_init(void)
 		snd_oss_root = entry;
 	}
 #endif
-#if IS_ENABLED(CONFIG_SND_SEQUENCER)
+#if defined(CONFIG_SND_SEQUENCER) || defined(CONFIG_SND_SEQUENCER_MODULE)
 	{
 		struct snd_info_entry *entry;
 		if ((entry = snd_info_create_module_entry(THIS_MODULE, "seq", NULL)) == NULL)
@@ -572,13 +576,13 @@ int __exit snd_info_done(void)
 	snd_minor_info_done();
 	snd_info_version_done();
 	if (snd_proc_root) {
-#if IS_ENABLED(CONFIG_SND_SEQUENCER)
+#if defined(CONFIG_SND_SEQUENCER) || defined(CONFIG_SND_SEQUENCER_MODULE)
 		snd_info_free_entry(snd_seq_root);
 #endif
 #ifdef CONFIG_SND_OSSEMUL
 		snd_info_free_entry(snd_oss_root);
 #endif
-		proc_remove(snd_proc_root);
+		snd_remove_proc_entry(NULL, snd_proc_root);
 	}
 	return 0;
 }
@@ -640,7 +644,7 @@ void snd_info_card_id_change(struct snd_card *card)
 {
 	mutex_lock(&info_mutex);
 	if (card->proc_root_link) {
-		proc_remove(card->proc_root_link);
+		snd_remove_proc_entry(snd_proc_root, card->proc_root_link);
 		card->proc_root_link = NULL;
 	}
 	if (strcmp(card->id, card->proc_root->name))
@@ -659,8 +663,10 @@ void snd_info_card_disconnect(struct snd_card *card)
 	if (!card)
 		return;
 	mutex_lock(&info_mutex);
-	proc_remove(card->proc_root_link);
-	card->proc_root_link = NULL;
+	if (card->proc_root_link) {
+		snd_remove_proc_entry(snd_proc_root, card->proc_root_link);
+		card->proc_root_link = NULL;
+	}
 	if (card->proc_root)
 		snd_info_disconnect(card->proc_root);
 	mutex_unlock(&info_mutex);
@@ -684,30 +690,35 @@ int snd_info_card_free(struct snd_card *card)
  * snd_info_get_line - read one line from the procfs buffer
  * @buffer: the procfs buffer
  * @line: the buffer to store
- * @len: the max. buffer size
+ * @len: the max. buffer size - 1
  *
  * Reads one line from the buffer and stores the string.
  *
- * Return: Zero if successful, or 1 if error or EOF.
+ * Returns zero if successful, or 1 if error or EOF.
  */
 int snd_info_get_line(struct snd_info_buffer *buffer, char *line, int len)
 {
 	int c = -1;
 
-	if (snd_BUG_ON(!buffer || !buffer->buffer))
-		return 1;
 	if (len <= 0 || buffer->stop || buffer->error)
 		return 1;
-	while (!buffer->stop) {
+	while (--len > 0) {
+		c = buffer->buffer[buffer->curr++];
+		if (c == '\n') {
+			if (buffer->curr >= buffer->size)
+				buffer->stop = 1;
+			break;
+		}
+		*line++ = c;
+		if (buffer->curr >= buffer->size) {
+			buffer->stop = 1;
+			break;
+		}
+	}
+	while (c != '\n' && !buffer->stop) {
 		c = buffer->buffer[buffer->curr++];
 		if (buffer->curr >= buffer->size)
 			buffer->stop = 1;
-		if (c == '\n')
-			break;
-		if (len > 1) {
-			len--;
-			*line++ = c;
-		}
 	}
 	*line = '\0';
 	return 0;
@@ -724,7 +735,7 @@ EXPORT_SYMBOL(snd_info_get_line);
  * Parses the original string and copy a token to the given
  * string buffer.
  *
- * Return: The updated pointer of the original string so that
+ * Returns the updated pointer of the original string so that
  * it can be used for the next call.
  */
 const char *snd_info_get_str(char *dest, const char *src, int len)
@@ -763,7 +774,7 @@ EXPORT_SYMBOL(snd_info_get_str);
  * Usually called from other functions such as
  * snd_info_create_card_entry().
  *
- * Return: The pointer of the new instance, or %NULL on failure.
+ * Returns the pointer of the new instance, or NULL on failure.
  */
 static struct snd_info_entry *snd_info_create_entry(const char *name)
 {
@@ -792,7 +803,7 @@ static struct snd_info_entry *snd_info_create_entry(const char *name)
  *
  * Creates a new info entry and assigns it to the given module.
  *
- * Return: The pointer of the new instance, or %NULL on failure.
+ * Returns the pointer of the new instance, or NULL on failure.
  */
 struct snd_info_entry *snd_info_create_module_entry(struct module * module,
 					       const char *name,
@@ -816,7 +827,7 @@ EXPORT_SYMBOL(snd_info_create_module_entry);
  *
  * Creates a new info entry and assigns it to the given card.
  *
- * Return: The pointer of the new instance, or %NULL on failure.
+ * Returns the pointer of the new instance, or NULL on failure.
  */
 struct snd_info_entry *snd_info_create_card_entry(struct snd_card *card,
 					     const char *name,
@@ -847,7 +858,7 @@ static void snd_info_disconnect(struct snd_info_entry *entry)
 	list_del_init(&entry->list);
 	root = entry->parent == NULL ? snd_proc_root : entry->parent->p;
 	snd_BUG_ON(!root);
-	proc_remove(entry->p);
+	snd_remove_proc_entry(root, entry->p);
 	entry->p = NULL;
 }
 
@@ -882,7 +893,7 @@ static int snd_info_dev_register_entry(struct snd_device *device)
  * For releasing this entry, use snd_device_free() instead of
  * snd_info_free_entry(). 
  *
- * Return: Zero if successful, or a negative error code on failure.
+ * Returns zero if successful, or a negative error code on failure.
  */
 int snd_card_proc_new(struct snd_card *card, const char *name,
 		      struct snd_info_entry **entryp)
@@ -938,7 +949,7 @@ EXPORT_SYMBOL(snd_info_free_entry);
  *
  * Registers the proc info entry.
  *
- * Return: Zero if successful, or a negative error code on failure.
+ * Returns zero if successful, or a negative error code on failure.
  */
 int snd_info_register(struct snd_info_entry * entry)
 {
@@ -948,21 +959,15 @@ int snd_info_register(struct snd_info_entry * entry)
 		return -ENXIO;
 	root = entry->parent == NULL ? snd_proc_root : entry->parent->p;
 	mutex_lock(&info_mutex);
-	if (S_ISDIR(entry->mode)) {
-		p = proc_mkdir_mode(entry->name, entry->mode, root);
-		if (!p) {
-			mutex_unlock(&info_mutex);
-			return -ENOMEM;
-		}
-	} else {
-		p = proc_create_data(entry->name, entry->mode, root,
-					&snd_info_entry_operations, entry);
-		if (!p) {
-			mutex_unlock(&info_mutex);
-			return -ENOMEM;
-		}
-		proc_set_size(p, entry->size);
+	p = create_proc_entry(entry->name, entry->mode, root);
+	if (!p) {
+		mutex_unlock(&info_mutex);
+		return -ENOMEM;
 	}
+	if (!S_ISDIR(entry->mode))
+		p->proc_fops = &snd_info_entry_operations;
+	p->size = entry->size;
+	p->data = entry;
 	entry->p = p;
 	if (entry->parent)
 		list_add_tail(&entry->list, &entry->parent->children);

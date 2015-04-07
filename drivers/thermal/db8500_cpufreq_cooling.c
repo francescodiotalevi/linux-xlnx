@@ -21,7 +21,6 @@
 #include <linux/cpufreq.h>
 #include <linux/err.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -37,7 +36,7 @@ static int db8500_cpufreq_cooling_probe(struct platform_device *pdev)
 	cpumask_set_cpu(0, &mask_val);
 	cdev = cpufreq_cooling_register(&mask_val);
 
-	if (IS_ERR(cdev)) {
+	if (IS_ERR_OR_NULL(cdev)) {
 		dev_err(&pdev->dev, "Failed to register cooling device\n");
 		return PTR_ERR(cdev);
 	}
@@ -74,13 +73,15 @@ static const struct of_device_id db8500_cpufreq_cooling_match[] = {
 	{ .compatible = "stericsson,db8500-cpufreq-cooling" },
 	{},
 };
+#else
+#define db8500_cpufreq_cooling_match NULL
 #endif
 
 static struct platform_driver db8500_cpufreq_cooling_driver = {
 	.driver = {
 		.owner = THIS_MODULE,
 		.name = "db8500-cpufreq-cooling",
-		.of_match_table = of_match_ptr(db8500_cpufreq_cooling_match),
+		.of_match_table = db8500_cpufreq_cooling_match,
 	},
 	.probe = db8500_cpufreq_cooling_probe,
 	.suspend = db8500_cpufreq_cooling_suspend,

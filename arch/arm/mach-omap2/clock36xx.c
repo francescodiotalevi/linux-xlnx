@@ -20,12 +20,11 @@
 
 #include <linux/kernel.h>
 #include <linux/clk.h>
-#include <linux/clk-provider.h>
 #include <linux/io.h>
 
 #include "clock.h"
 #include "clock36xx.h"
-#define to_clk_divider(_hw) container_of(_hw, struct clk_divider, hw)
+
 
 /**
  * omap36xx_pwrdn_clk_enable_with_hsdiv_restore - enable clocks suffering
@@ -40,29 +39,29 @@
  */
 int omap36xx_pwrdn_clk_enable_with_hsdiv_restore(struct clk_hw *clk)
 {
-	struct clk_divider *parent;
+	struct clk_hw_omap *parent;
 	struct clk_hw *parent_hw;
-	u32 dummy_v, orig_v;
-	struct clk_hw_omap *omap_clk = to_clk_hw_omap(clk);
+	u32 dummy_v, orig_v, clksel_shift;
 	int ret;
 
 	/* Clear PWRDN bit of HSDIVIDER */
 	ret = omap2_dflt_clk_enable(clk);
 
 	parent_hw = __clk_get_hw(__clk_get_parent(clk->clk));
-	parent = to_clk_divider(parent_hw);
+	parent = to_clk_hw_omap(parent_hw);
 
 	/* Restore the dividers */
 	if (!ret) {
-		orig_v = omap2_clk_readl(omap_clk, parent->reg);
+		clksel_shift = __ffs(parent->clksel_mask);
+		orig_v = __raw_readl(parent->clksel_reg);
 		dummy_v = orig_v;
 
 		/* Write any other value different from the Read value */
-		dummy_v ^= (1 << parent->shift);
-		omap2_clk_writel(dummy_v, omap_clk, parent->reg);
+		dummy_v ^= (1 << clksel_shift);
+		__raw_writel(dummy_v, parent->clksel_reg);
 
 		/* Write the original divider */
-		omap2_clk_writel(orig_v, omap_clk, parent->reg);
+		__raw_writel(orig_v, parent->clksel_reg);
 	}
 
 	return ret;

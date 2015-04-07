@@ -23,7 +23,6 @@
 #ifndef LGS8GL5_H
 #define LGS8GL5_H
 
-#include <linux/kconfig.h>
 #include <linux/dvb/frontend.h>
 
 struct lgs8gl5_config {
@@ -31,7 +30,8 @@ struct lgs8gl5_config {
 	u8 demod_address;
 };
 
-#if IS_ENABLED(CONFIG_DVB_LGS8GL5)
+#if defined(CONFIG_DVB_LGS8GL5) || \
+	(defined(CONFIG_DVB_LGS8GL5_MODULE) && defined(MODULE))
 extern struct dvb_frontend *lgs8gl5_attach(
 	const struct lgs8gl5_config *config, struct i2c_adapter *i2c);
 #else

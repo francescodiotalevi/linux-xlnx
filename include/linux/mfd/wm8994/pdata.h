@@ -17,7 +17,6 @@
 
 #define WM8994_NUM_LDO   2
 #define WM8994_NUM_GPIO 11
-#define WM8994_NUM_AIF   3
 
 struct wm8994_ldo_pdata {
 	/** GPIOs to enable regulator, 0 or less if not available */
@@ -182,11 +181,6 @@ struct wm8994_pdata {
 	 */
 	int micdet_delay;
 
-	/* Delay between microphone detect completing and reporting on
-	 * insert (specified in ms)
-	 */
-	int mic_id_delay;
-
 	/* IRQ for microphone detection if brought out directly as a
 	 * signal.
 	 */
@@ -221,18 +215,6 @@ struct wm8994_pdata {
 	 * system.
 	 */
 	bool spkmode_pu;
-
-	/**
-	 * Maximum number of channels clocks will be generated for,
-	 * useful for systems where and I2S bus with multiple data
-	 * lines is mastered.
-	 */
-	int max_channels_clocked[WM8994_NUM_AIF];
-
-	/**
-	 * GPIO for the IRQ pin if host only supports edge triggering
-	 */
-	int irq_gpio;
 };
 
 #endif

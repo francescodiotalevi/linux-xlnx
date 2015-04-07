@@ -62,14 +62,14 @@ struct renesas_usbhs_platform_callback {
 	 * Hardware exit function for platform.
 	 * it is called when driver was removed
 	 */
-	int (*hardware_exit)(struct platform_device *pdev);
+	void (*hardware_exit)(struct platform_device *pdev);
 
 	/*
 	 * option:
 	 *
 	 * for board specific clock control
 	 */
-	int (*power_ctrl)(struct platform_device *pdev,
+	void (*power_ctrl)(struct platform_device *pdev,
 			   void __iomem *base, int enable);
 
 	/*
@@ -77,7 +77,7 @@ struct renesas_usbhs_platform_callback {
 	 *
 	 * Phy reset for platform
 	 */
-	int (*phy_reset)(struct platform_device *pdev);
+	void (*phy_reset)(struct platform_device *pdev);
 
 	/*
 	 * get USB ID function
@@ -153,18 +153,12 @@ struct renesas_usbhs_driver_param {
 	 */
 	int pio_dma_border; /* default is 64byte */
 
-	u32 type;
-	u32 enable_gpio;
-
 	/*
 	 * option:
 	 */
 	u32 has_otg:1; /* for controlling PWEN/EXTLP */
 	u32 has_sudmac:1; /* for SUDMAC */
 };
-
-#define USBHS_TYPE_R8A7790 1
-#define USBHS_TYPE_R8A7791 2
 
 /*
  * option:

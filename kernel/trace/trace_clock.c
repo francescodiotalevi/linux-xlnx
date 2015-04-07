@@ -21,6 +21,8 @@
 #include <linux/ktime.h>
 #include <linux/trace_clock.h>
 
+#include "trace.h"
+
 /*
  * trace_clock_local(): the simplest and least coherent tracing clock.
  *
@@ -42,7 +44,6 @@ u64 notrace trace_clock_local(void)
 
 	return clock;
 }
-EXPORT_SYMBOL_GPL(trace_clock_local);
 
 /*
  * trace_clock(): 'between' trace clock. Not completely serialized,
@@ -57,17 +58,6 @@ u64 notrace trace_clock(void)
 	return local_clock();
 }
 
-/*
- * trace_jiffy_clock(): Simply use jiffies as a clock counter.
- * Note that this use of jiffies_64 is not completely safe on
- * 32-bit systems. But the window is tiny, and the effect if
- * we are affected is that we will have an obviously bogus
- * timestamp on a trace event - i.e. not life threatening.
- */
-u64 notrace trace_clock_jiffies(void)
-{
-	return jiffies_64_to_clock_t(jiffies_64 - INITIAL_JIFFIES);
-}
 
 /*
  * trace_clock_global(): special globally coherent trace clock
@@ -93,10 +83,10 @@ u64 notrace trace_clock_global(void)
 	int this_cpu;
 	u64 now;
 
-	local_irq_save(flags);
+	flags = hard_local_irq_save_notrace();
 
 	this_cpu = raw_smp_processor_id();
-	now = sched_clock_cpu(this_cpu);
+	now = cpu_clock(this_cpu);
 	/*
 	 * If in an NMI context then dont risk lockups and return the
 	 * cpu_clock() time:
@@ -119,7 +109,7 @@ u64 notrace trace_clock_global(void)
 	arch_spin_unlock(&trace_clock_struct.lock);
 
  out:
-	local_irq_restore(flags);
+	hard_local_irq_restore_notrace(flags);
 
 	return now;
 }

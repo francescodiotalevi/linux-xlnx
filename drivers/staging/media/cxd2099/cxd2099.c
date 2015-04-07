@@ -26,6 +26,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
@@ -65,9 +66,8 @@ static int i2c_write_reg(struct i2c_adapter *adapter, u8 adr,
 	struct i2c_msg msg = {.addr = adr, .flags = 0, .buf = m, .len = 2};
 
 	if (i2c_transfer(adapter, &msg, 1) != 1) {
-		dev_err(&adapter->dev,
-			"Failed to write to I2C register %02x@%02x!\n",
-			reg, adr);
+		printk(KERN_ERR "Failed to write to I2C register %02x@%02x!\n",
+		       reg, adr);
 		return -1;
 	}
 	return 0;
@@ -79,7 +79,7 @@ static int i2c_write(struct i2c_adapter *adapter, u8 adr,
 	struct i2c_msg msg = {.addr = adr, .flags = 0, .buf = data, .len = len};
 
 	if (i2c_transfer(adapter, &msg, 1) != 1) {
-		dev_err(&adapter->dev, "Failed to write to I2C!\n");
+		printk(KERN_ERR "Failed to write to I2C!\n");
 		return -1;
 	}
 	return 0;
@@ -94,7 +94,7 @@ static int i2c_read_reg(struct i2c_adapter *adapter, u8 adr,
 				   .buf = val, .len = 1} };
 
 	if (i2c_transfer(adapter, msgs, 2) != 2) {
-		dev_err(&adapter->dev, "error in i2c_read_reg\n");
+		printk(KERN_ERR "error in i2c_read_reg\n");
 		return -1;
 	}
 	return 0;
@@ -109,7 +109,7 @@ static int i2c_read(struct i2c_adapter *adapter, u8 adr,
 				 .buf = data, .len = n} };
 
 	if (i2c_transfer(adapter, msgs, 2) != 2) {
-		dev_err(&adapter->dev, "error in i2c_read\n");
+		printk(KERN_ERR "error in i2c_read\n");
 		return -1;
 	}
 	return 0;
@@ -277,7 +277,7 @@ static void cam_mode(struct cxd *ci, int mode)
 #ifdef BUFFER_MODE
 		if (!ci->en.read_data)
 			return;
-		dev_info(&ci->i2c->dev, "enable cam buffer mode\n");
+		printk(KERN_INFO "enable cam buffer mode\n");
 		/* write_reg(ci, 0x0d, 0x00); */
 		/* write_reg(ci, 0x0e, 0x01); */
 		write_regm(ci, 0x08, 0x40, 0x40);
@@ -329,14 +329,11 @@ static int init(struct cxd *ci)
 			break;
 
 #if 0
-		/* Input Mode C, BYPass Serial, TIVAL = low, MSB */
-		status = write_reg(ci, 0x09, 0x4D);
+		status = write_reg(ci, 0x09, 0x4D); /* Input Mode C, BYPass Serial, TIVAL = low, MSB */
 		if (status < 0)
 			break;
 #endif
-		/* TOSTRT = 8, Mode B (gated clock), falling Edge,
-		 * Serial, POL=HIGH, MSB */
-		status = write_reg(ci, 0x0A, 0xA7);
+		status = write_reg(ci, 0x0A, 0xA7); /* TOSTRT = 8, Mode B (gated clock), falling Edge, Serial, POL=HIGH, MSB */
 		if (status < 0)
 			break;
 
@@ -527,7 +524,7 @@ static int slot_reset(struct dvb_ca_en50221 *ca, int slot)
 			msleep(10);
 #if 0
 			read_reg(ci, 0x06, &val);
-			dev_info(&ci->i2c->dev, "%d:%02x\n", i, val);
+			printk(KERN_INFO "%d:%02x\n", i, val);
 			if (!(val&0x10))
 				break;
 #else
@@ -545,7 +542,7 @@ static int slot_shutdown(struct dvb_ca_en50221 *ca, int slot)
 {
 	struct cxd *ci = ca->data;
 
-	dev_info(&ci->i2c->dev, "slot_shutdown\n");
+	printk(KERN_INFO "slot_shutdown\n");
 	mutex_lock(&ci->lock);
 	write_regm(ci, 0x09, 0x08, 0x08);
 	write_regm(ci, 0x20, 0x80, 0x80); /* Reset CAM Mode */
@@ -581,10 +578,10 @@ static int campoll(struct cxd *ci)
 
 	if (istat&0x40) {
 		ci->dr = 1;
-		dev_info(&ci->i2c->dev, "DR\n");
+		printk(KERN_INFO "DR\n");
 	}
 	if (istat&0x20)
-		dev_info(&ci->i2c->dev, "WC\n");
+		printk(KERN_INFO "WC\n");
 
 	if (istat&2) {
 		u8 slotstat;
@@ -592,7 +589,7 @@ static int campoll(struct cxd *ci)
 		read_reg(ci, 0x01, &slotstat);
 		if (!(2&slotstat)) {
 			if (!ci->slot_stat) {
-				ci->slot_stat = DVB_CA_EN50221_POLL_CAM_PRESENT;
+				ci->slot_stat |= DVB_CA_EN50221_POLL_CAM_PRESENT;
 				write_regm(ci, 0x03, 0x08, 0x08);
 			}
 
@@ -600,12 +597,11 @@ static int campoll(struct cxd *ci)
 			if (ci->slot_stat) {
 				ci->slot_stat = 0;
 				write_regm(ci, 0x03, 0x00, 0x08);
-				dev_info(&ci->i2c->dev, "NO CAM\n");
+				printk(KERN_INFO "NO CAM\n");
 				ci->ready = 0;
 			}
 		}
-		if (istat&8 &&
-		    ci->slot_stat == DVB_CA_EN50221_POLL_CAM_PRESENT) {
+		if (istat&8 && ci->slot_stat == DVB_CA_EN50221_POLL_CAM_PRESENT) {
 			ci->ready = 1;
 			ci->slot_stat |= DVB_CA_EN50221_POLL_CAM_READY;
 		}
@@ -638,7 +634,7 @@ static int read_data(struct dvb_ca_en50221 *ca, int slot, u8 *ebuf, int ecount)
 	campoll(ci);
 	mutex_unlock(&ci->lock);
 
-	dev_info(&ci->i2c->dev, "read_data\n");
+	printk(KERN_INFO "read_data\n");
 	if (!ci->dr)
 		return 0;
 
@@ -691,7 +687,7 @@ struct dvb_ca_en50221 *cxd2099_attach(struct cxd2099_cfg *cfg,
 	u8 val;
 
 	if (i2c_read_reg(i2c, cfg->adr, 0, &val) < 0) {
-		dev_info(&i2c->dev, "No CXD2099 detected at %02x\n", cfg->adr);
+		printk(KERN_INFO "No CXD2099 detected at %02x\n", cfg->adr);
 		return NULL;
 	}
 
@@ -709,7 +705,7 @@ struct dvb_ca_en50221 *cxd2099_attach(struct cxd2099_cfg *cfg,
 	ci->en = en_templ;
 	ci->en.data = ci;
 	init(ci);
-	dev_info(&i2c->dev, "Attached CXD2099AR at %02x\n", ci->cfg.adr);
+	printk(KERN_INFO "Attached CXD2099AR at %02x\n", ci->cfg.adr);
 	return &ci->en;
 }
 EXPORT_SYMBOL(cxd2099_attach);

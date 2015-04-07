@@ -151,12 +151,15 @@ do { \
 #endif /* __a29k__ */
 
 #if defined(__alpha) && W_TYPE_SIZE == 64
-#define umul_ppmm(ph, pl, m0, m1)			\
-do {							\
-	UDItype __m0 = (m0), __m1 = (m1);		\
-	(ph) = __builtin_alpha_umulh(__m0, __m1);	\
-	(pl) = __m0 * __m1;                             \
-} while (0)
+#define umul_ppmm(ph, pl, m0, m1) \
+do { \
+		UDItype __m0 = (m0), __m1 = (m1); \
+		__asm__ ("umulh %r1,%2,%0" \
+		: "=r" ((UDItype) ph) \
+		: "%rJ" (__m0), \
+			"rI" (__m1)); \
+		(pl) = __m0 * __m1; \
+	} while (0)
 #define UMUL_TIME 46
 #ifndef LONGLONG_STANDALONE
 #define udiv_qrnnd(q, r, n1, n0, d) \
@@ -164,7 +167,7 @@ do { UDItype __r; \
 	(q) = __udiv_qrnnd(&__r, (n1), (n0), (d)); \
 	(r) = __r; \
 } while (0)
-extern UDItype __udiv_qrnnd(UDItype *, UDItype, UDItype, UDItype);
+extern UDItype __udiv_qrnnd();
 #define UDIV_TIME 220
 #endif /* LONGLONG_STANDALONE */
 #endif /* __alpha */
@@ -315,8 +318,7 @@ extern UDItype __udiv_qrnnd(UDItype *, UDItype, UDItype, UDItype);
 	     "rM" ((USItype)(bh)), \
 	     "rM" ((USItype)(al)), \
 	     "rM" ((USItype)(bl)))
-#if 0 && defined(_PA_RISC1_1)
-/* xmpyu uses floating point register which is not allowed in Linux kernel. */
+#if defined(_PA_RISC1_1)
 #define umul_ppmm(wh, wl, u, v) \
 do { \
 	union {UDItype __ll; \
@@ -335,7 +337,7 @@ do { \
 #define UMUL_TIME 40
 #define UDIV_TIME 80
 #endif
-#if 0 /* #ifndef LONGLONG_STANDALONE */
+#ifndef LONGLONG_STANDALONE
 #define udiv_qrnnd(q, r, n1, n0, d) \
 do { USItype __r; \
 	(q) = __udiv_qrnnd(&__r, (n1), (n0), (d)); \

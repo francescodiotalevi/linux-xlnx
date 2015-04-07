@@ -54,7 +54,7 @@ extern ctxd_t *srmmu_ctx_table_phys;
 static int smp_processors_ready;
 extern volatile unsigned long cpu_callin_map[NR_CPUS];
 extern cpumask_t smp_commenced_mask;
-void leon_configure_cache_smp(void);
+void __cpuinit leon_configure_cache_smp(void);
 static void leon_ipi_init(void);
 
 /* IRQ number of LEON IPIs */
@@ -69,19 +69,31 @@ static inline unsigned long do_swap(volatile unsigned long *ptr,
 	return val;
 }
 
-void leon_cpu_pre_starting(void *arg)
-{
-	leon_configure_cache_smp();
-}
-
-void leon_cpu_pre_online(void *arg)
+void __cpuinit leon_callin(void)
 {
 	int cpuid = hard_smp_processor_id();
 
-	/* Allow master to continue. The master will then give us the
-	 * go-ahead by setting the smp_commenced_mask and will wait without
-	 * timeouts until our setup is completed fully (signified by
-	 * our bit being set in the cpu_online_mask).
+	local_ops->cache_all();
+	local_ops->tlb_all();
+	leon_configure_cache_smp();
+
+	notify_cpu_starting(cpuid);
+
+	/* Get our local ticker going. */
+	register_percpu_ce(cpuid);
+
+	calibrate_delay();
+	smp_store_cpu_info(cpuid);
+
+	local_ops->cache_all();
+	local_ops->tlb_all();
+
+	/*
+	 * Unblock the master CPU _only_ when the scheduler state
+	 * of all secondary CPUs will be up-to-date, so after
+	 * the SMP initialization the master will be just allowed
+	 * to call the scheduler code.
+	 * Allow master to continue.
 	 */
 	do_swap(&cpu_callin_map[cpuid], 1);
 
@@ -98,6 +110,9 @@ void leon_cpu_pre_online(void *arg)
 
 	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
 		mb();
+
+	local_irq_enable();
+	set_cpu_online(cpuid, true);
 }
 
 /*
@@ -106,7 +121,7 @@ void leon_cpu_pre_online(void *arg)
 
 extern struct linux_prom_registers smp_penguin_ctable;
 
-void leon_configure_cache_smp(void)
+void __cpuinit leon_configure_cache_smp(void)
 {
 	unsigned long cfg = sparc_leon3_get_dcachecfg();
 	int me = smp_processor_id();
@@ -130,7 +145,7 @@ void leon_configure_cache_smp(void)
 	local_ops->tlb_all();
 }
 
-static void leon_smp_setbroadcast(unsigned int mask)
+void leon_smp_setbroadcast(unsigned int mask)
 {
 	int broadcast =
 	    ((LEON3_BYPASS_LOAD_PA(&(leon3_irqctrl_regs->mpstatus)) >>
@@ -146,6 +161,13 @@ static void leon_smp_setbroadcast(unsigned int mask)
 		}
 	}
 	LEON_BYPASS_STORE_PA(&(leon3_irqctrl_regs->mpbroadcast), mask);
+}
+
+unsigned int leon_smp_getbroadcast(void)
+{
+	unsigned int mask;
+	mask = LEON_BYPASS_LOAD_PA(&(leon3_irqctrl_regs->mpbroadcast));
+	return mask;
 }
 
 int leon_smp_nrcpus(void)
@@ -179,7 +201,7 @@ void __init leon_boot_cpus(void)
 
 }
 
-int leon_boot_one_cpu(int i, struct task_struct *idle)
+int __cpuinit leon_boot_one_cpu(int i, struct task_struct *idle)
 {
 	int timeout;
 
@@ -246,17 +268,33 @@ void __init leon_smp_done(void)
 
 	/* Free unneeded trap tables */
 	if (!cpu_present(1)) {
-		free_reserved_page(virt_to_page(&trapbase_cpu1));
+		ClearPageReserved(virt_to_page(&trapbase_cpu1));
+		init_page_count(virt_to_page(&trapbase_cpu1));
+		free_page((unsigned long)&trapbase_cpu1);
+		totalram_pages++;
+		num_physpages++;
 	}
 	if (!cpu_present(2)) {
-		free_reserved_page(virt_to_page(&trapbase_cpu2));
+		ClearPageReserved(virt_to_page(&trapbase_cpu2));
+		init_page_count(virt_to_page(&trapbase_cpu2));
+		free_page((unsigned long)&trapbase_cpu2);
+		totalram_pages++;
+		num_physpages++;
 	}
 	if (!cpu_present(3)) {
-		free_reserved_page(virt_to_page(&trapbase_cpu3));
+		ClearPageReserved(virt_to_page(&trapbase_cpu3));
+		init_page_count(virt_to_page(&trapbase_cpu3));
+		free_page((unsigned long)&trapbase_cpu3);
+		totalram_pages++;
+		num_physpages++;
 	}
 	/* Ok, they are spinning and ready to go. */
 	smp_processors_ready = 1;
 
+}
+
+void leon_irq_rotate(int cpu)
+{
 }
 
 struct leon_ipi_work {

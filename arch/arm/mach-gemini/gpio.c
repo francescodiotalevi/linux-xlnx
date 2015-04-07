@@ -23,7 +23,6 @@
 #include <mach/irqs.h>
 
 #define GPIO_BASE(x)		IO_ADDRESS(GEMINI_GPIO_BASE(x))
-#define irq_to_gpio(x)		((x) - GPIO_IRQ_BASE)
 
 /* GPIO registers definition */
 #define GPIO_DATA_OUT		0x0
@@ -45,7 +44,7 @@
 
 #define GPIO_PORT_NUM		3
 
-static void _set_gpio_irqenable(void __iomem *base, unsigned int index,
+static void _set_gpio_irqenable(unsigned int base, unsigned int index,
 				int enable)
 {
 	unsigned int reg;
@@ -58,7 +57,7 @@ static void _set_gpio_irqenable(void __iomem *base, unsigned int index,
 static void gpio_ack_irq(struct irq_data *d)
 {
 	unsigned int gpio = irq_to_gpio(d->irq);
-	void __iomem *base = GPIO_BASE(gpio / 32);
+	unsigned int base = GPIO_BASE(gpio / 32);
 
 	__raw_writel(1 << (gpio % 32), base + GPIO_INT_CLR);
 }
@@ -66,7 +65,7 @@ static void gpio_ack_irq(struct irq_data *d)
 static void gpio_mask_irq(struct irq_data *d)
 {
 	unsigned int gpio = irq_to_gpio(d->irq);
-	void __iomem *base = GPIO_BASE(gpio / 32);
+	unsigned int base = GPIO_BASE(gpio / 32);
 
 	_set_gpio_irqenable(base, gpio % 32, 0);
 }
@@ -74,7 +73,7 @@ static void gpio_mask_irq(struct irq_data *d)
 static void gpio_unmask_irq(struct irq_data *d)
 {
 	unsigned int gpio = irq_to_gpio(d->irq);
-	void __iomem *base = GPIO_BASE(gpio / 32);
+	unsigned int base = GPIO_BASE(gpio / 32);
 
 	_set_gpio_irqenable(base, gpio % 32, 1);
 }
@@ -83,7 +82,7 @@ static int gpio_set_irq_type(struct irq_data *d, unsigned int type)
 {
 	unsigned int gpio = irq_to_gpio(d->irq);
 	unsigned int gpio_mask = 1 << (gpio % 32);
-	void __iomem *base = GPIO_BASE(gpio / 32);
+	unsigned int base = GPIO_BASE(gpio / 32);
 	unsigned int reg_both, reg_level, reg_type;
 
 	reg_type = __raw_readl(base + GPIO_INT_TYPE);
@@ -121,7 +120,7 @@ static int gpio_set_irq_type(struct irq_data *d, unsigned int type)
 	__raw_writel(reg_level, base + GPIO_INT_LEVEL);
 	__raw_writel(reg_both, base + GPIO_INT_BOTH_EDGE);
 
-	gpio_ack_irq(d);
+	gpio_ack_irq(d->irq);
 
 	return 0;
 }
@@ -154,7 +153,7 @@ static struct irq_chip gpio_irq_chip = {
 static void _set_gpio_direction(struct gpio_chip *chip, unsigned offset,
 				int dir)
 {
-	void __iomem *base = GPIO_BASE(offset / 32);
+	unsigned int base = GPIO_BASE(offset / 32);
 	unsigned int reg;
 
 	reg = __raw_readl(base + GPIO_DIR);
@@ -167,7 +166,7 @@ static void _set_gpio_direction(struct gpio_chip *chip, unsigned offset,
 
 static void gemini_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
-	void __iomem *base = GPIO_BASE(offset / 32);
+	unsigned int base = GPIO_BASE(offset / 32);
 
 	if (value)
 		__raw_writel(1 << (offset % 32), base + GPIO_DATA_SET);
@@ -177,7 +176,7 @@ static void gemini_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 static int gemini_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	void __iomem *base = GPIO_BASE(offset / 32);
+	unsigned int base = GPIO_BASE(offset / 32);
 
 	return (__raw_readl(base + GPIO_DATA_IN) >> (offset % 32)) & 1;
 }

@@ -22,8 +22,6 @@
  */
 #define AUOK190X_RESOLUTION_800_600		0
 #define AUOK190X_RESOLUTION_1024_768		1
-#define AUOK190X_RESOLUTION_600_800		4
-#define AUOK190X_RESOLUTION_768_1024		5
 
 /*
  * struct used by auok190x. board specific stuff comes from *board
@@ -100,6 +98,7 @@ struct auok190x_board {
 	int gpio_nbusy;
 
 	int resolution;
+	int rotation;
 	int quirks;
 	int fps;
 };

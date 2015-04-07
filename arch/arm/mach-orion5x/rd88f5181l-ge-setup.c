@@ -130,10 +130,8 @@ static void __init rd88f5181l_ge_init(void)
 	orion5x_i2c_init();
 	orion5x_uart0_init();
 
-	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
-				    ORION_MBUS_DEVBUS_BOOT_ATTR,
-				    RD88F5181L_GE_NOR_BOOT_BASE,
-				    RD88F5181L_GE_NOR_BOOT_SIZE);
+	orion5x_setup_dev_boot_win(RD88F5181L_GE_NOR_BOOT_BASE,
+				   RD88F5181L_GE_NOR_BOOT_SIZE);
 	platform_device_register(&rd88f5181l_ge_nor_boot_flash);
 
 	i2c_register_board_info(0, &rd88f5181l_ge_i2c_rtc, 1);
@@ -185,7 +183,7 @@ MACHINE_START(RD88F5181L_GE, "Marvell Orion-VoIP GE Reference Design")
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,
 	.init_irq	= orion5x_init_irq,
-	.init_time	= orion5x_timer_init,
+	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32,
 	.restart	= orion5x_restart,
 MACHINE_END

@@ -34,10 +34,13 @@
 #include "tether.h"
 #include "device.h"
 
+/*---------------------  Export Definitions -------------------------*/
+
 //
 // Registers in the BASEBAND
 //
 #define BB_MAX_CONTEXT_SIZE 256
+
 
 //
 // Baseband RF pair definition in eeprom (Bits 6..0)
@@ -45,6 +48,7 @@
 
 #define PREAMBLE_LONG   0
 #define PREAMBLE_SHORT  1
+
 
 #define F5G             0
 #define F2_4G           1
@@ -62,66 +66,82 @@
 #define TOP_RATE_2M         0x00200000
 #define TOP_RATE_1M         0x00100000
 
-#define BBvClearFOE(dwIoBase)				\
-	BBbWriteEmbedded(dwIoBase, 0xB1, 0)
 
-#define BBvSetFOE(dwIoBase)				\
-	BBbWriteEmbedded(dwIoBase, 0xB1, 0x0C)
+/*---------------------  Export Types  ------------------------------*/
+
+/*---------------------  Export Macros ------------------------------*/
+
+#define BBvClearFOE(dwIoBase)                               \
+{                                                           \
+    BBbWriteEmbedded(dwIoBase, 0xB1, 0);                     \
+}
+
+#define BBvSetFOE(dwIoBase)                                 \
+{                                                           \
+    BBbWriteEmbedded(dwIoBase, 0xB1, 0x0C);                  \
+}
+
+
+/*---------------------  Export Classes  ----------------------------*/
+
+/*---------------------  Export Variables  --------------------------*/
+
+/*---------------------  Export Functions  --------------------------*/
 
 unsigned int
 BBuGetFrameTime(
-	unsigned char byPreambleType,
-	unsigned char byPktType,
-	unsigned int cbFrameLength,
-	unsigned short wRate
-);
+    unsigned char byPreambleType,
+    unsigned char byPktType,
+    unsigned int cbFrameLength,
+    unsigned short wRate
+    );
 
 void
-BBvCalculateParameter(
-	PSDevice pDevice,
-	unsigned int cbFrameLength,
-	unsigned short wRate,
-	unsigned char byPacketType,
-	unsigned short *pwPhyLen,
-	unsigned char *pbyPhySrv,
-	unsigned char *pbyPhySgn
-);
+BBvCalculateParameter (
+    PSDevice pDevice,
+    unsigned int cbFrameLength,
+    unsigned short wRate,
+    unsigned char byPacketType,
+    unsigned short *pwPhyLen,
+    unsigned char *pbyPhySrv,
+    unsigned char *pbyPhySgn
+    );
 
-bool BBbReadEmbedded(void __iomem *dwIoBase, unsigned char byBBAddr, unsigned char *pbyData);
-bool BBbWriteEmbedded(void __iomem *dwIoBase, unsigned char byBBAddr, unsigned char byData);
+bool BBbReadEmbedded(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char *pbyData);
+bool BBbWriteEmbedded(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byData);
 
-void BBvReadAllRegs(void __iomem *dwIoBase, unsigned char *pbyBBRegs);
+void BBvReadAllRegs(unsigned long dwIoBase, unsigned char *pbyBBRegs);
 void BBvLoopbackOn(PSDevice pDevice);
 void BBvLoopbackOff(PSDevice pDevice);
 void BBvSetShortSlotTime(PSDevice pDevice);
-bool BBbIsRegBitsOn(void __iomem *dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
-bool BBbIsRegBitsOff(void __iomem *dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
+bool BBbIsRegBitsOn(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
+bool BBbIsRegBitsOff(unsigned long dwIoBase, unsigned char byBBAddr, unsigned char byTestBits);
 void BBvSetVGAGainOffset(PSDevice pDevice, unsigned char byData);
 
 // VT3253 Baseband
 bool BBbVT3253Init(PSDevice pDevice);
-void BBvSoftwareReset(void __iomem *dwIoBase);
-void BBvPowerSaveModeON(void __iomem *dwIoBase);
-void BBvPowerSaveModeOFF(void __iomem *dwIoBase);
-void BBvSetTxAntennaMode(void __iomem *dwIoBase, unsigned char byAntennaMode);
-void BBvSetRxAntennaMode(void __iomem *dwIoBase, unsigned char byAntennaMode);
-void BBvSetDeepSleep(void __iomem *dwIoBase, unsigned char byLocalID);
-void BBvExitDeepSleep(void __iomem *dwIoBase, unsigned char byLocalID);
+void BBvSoftwareReset(unsigned long dwIoBase);
+void BBvPowerSaveModeON(unsigned long dwIoBase);
+void BBvPowerSaveModeOFF(unsigned long dwIoBase);
+void BBvSetTxAntennaMode(unsigned long dwIoBase, unsigned char byAntennaMode);
+void BBvSetRxAntennaMode(unsigned long dwIoBase, unsigned char byAntennaMode);
+void BBvSetDeepSleep(unsigned long dwIoBase, unsigned char byLocalID);
+void BBvExitDeepSleep(unsigned long dwIoBase, unsigned char byLocalID);
 
 // timer for antenna diversity
 
 void
-TimerSQ3CallBack(
-	void *hDeviceContext
-);
+TimerSQ3CallBack (
+    void *hDeviceContext
+    );
 
 void
 TimerState1CallBack(
-	void *hDeviceContext
-);
+    void *hDeviceContext
+    );
 
 void BBvAntennaDiversity(PSDevice pDevice, unsigned char byRxRate, unsigned char bySQ3);
 void
-BBvClearAntDivSQ3Value(PSDevice pDevice);
+BBvClearAntDivSQ3Value (PSDevice pDevice);
 
 #endif // __BASEBAND_H__

@@ -26,14 +26,12 @@
 #include <plat/pm.h>
 #include <plat/wakeup-mask.h>
 
+#include <mach/regs-sys.h>
 #include <mach/regs-gpio.h>
 #include <mach/regs-clock.h>
-#include <mach/gpio-samsung.h>
-
-#include "regs-gpio-memport.h"
-#include "regs-modem.h"
-#include "regs-sys.h"
-#include "regs-syscon-power.h"
+#include <mach/regs-syscon-power.h>
+#include <mach/regs-gpio-memport.h>
+#include <mach/regs-modem.h>
 
 struct s3c64xx_pm_domain {
 	char *const name;
@@ -195,8 +193,29 @@ void s3c_pm_debug_smdkled(u32 set, u32 clear)
 #endif
 
 static struct sleep_save core_save[] = {
+	SAVE_ITEM(S3C_APLL_LOCK),
+	SAVE_ITEM(S3C_MPLL_LOCK),
+	SAVE_ITEM(S3C_EPLL_LOCK),
+	SAVE_ITEM(S3C_CLK_SRC),
+	SAVE_ITEM(S3C_CLK_DIV0),
+	SAVE_ITEM(S3C_CLK_DIV1),
+	SAVE_ITEM(S3C_CLK_DIV2),
+	SAVE_ITEM(S3C_CLK_OUT),
+	SAVE_ITEM(S3C_HCLK_GATE),
+	SAVE_ITEM(S3C_PCLK_GATE),
+	SAVE_ITEM(S3C_SCLK_GATE),
+	SAVE_ITEM(S3C_MEM0_GATE),
+
+	SAVE_ITEM(S3C_EPLL_CON1),
+	SAVE_ITEM(S3C_EPLL_CON0),
+
 	SAVE_ITEM(S3C64XX_MEM0DRVCON),
 	SAVE_ITEM(S3C64XX_MEM1DRVCON),
+
+#ifndef CONFIG_CPU_FREQ
+	SAVE_ITEM(S3C_APLL_CON),
+	SAVE_ITEM(S3C_MPLL_CON),
+#endif
 };
 
 static struct sleep_save misc_save[] = {
@@ -277,8 +296,7 @@ static int s3c64xx_cpu_suspend(unsigned long arg)
 
 	/* we should never get past here */
 
-	pr_info("Failed to suspend the system\n");
-	return 1; /* Aborting suspend */
+	panic("sleep resumed to originator?");
 }
 
 /* mapping of interrupts to parts of the wakeup mask */
@@ -332,6 +350,7 @@ static __init int s3c64xx_pm_initcall(void)
 {
 	pm_cpu_prep = s3c64xx_pm_prepare;
 	pm_cpu_sleep = s3c64xx_cpu_suspend;
+	pm_uart_udivslot = 1;
 
 #ifdef CONFIG_S3C_PM_DEBUG_LED_SMDK
 	gpio_request(S3C64XX_GPN(12), "DEBUG_LED0");

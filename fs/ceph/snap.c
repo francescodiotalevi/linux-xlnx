@@ -332,9 +332,10 @@ static int build_snap_context(struct ceph_snap_realm *realm)
 	err = -ENOMEM;
 	if (num > (SIZE_MAX - sizeof(*snapc)) / sizeof(u64))
 		goto fail;
-	snapc = ceph_create_snap_context(num, GFP_NOFS);
+	snapc = kzalloc(sizeof(*snapc) + num*sizeof(u64), GFP_NOFS);
 	if (!snapc)
 		goto fail;
+	atomic_set(&snapc->nref, 1);
 
 	/* build (reverse sorted) snap vector */
 	num = 0;

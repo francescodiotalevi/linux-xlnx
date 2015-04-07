@@ -118,10 +118,22 @@ static void scm_request_done(struct scm_request *scmrq)
 	spin_unlock_irqrestore(&list_lock, flags);
 }
 
-static bool scm_permit_request(struct scm_blk_dev *bdev, struct request *req)
+static int scm_open(struct block_device *blkdev, fmode_t mode)
 {
-	return rq_data_dir(req) != WRITE || bdev->state != SCM_WR_PROHIBIT;
+	return scm_get_ref();
 }
+
+static int scm_release(struct gendisk *gendisk, fmode_t mode)
+{
+	scm_put_ref();
+	return 0;
+}
+
+static const struct block_device_operations scm_blk_devops = {
+	.owner = THIS_MODULE,
+	.open = scm_open,
+	.release = scm_release,
+};
 
 static void scm_request_prepare(struct scm_request *scmrq)
 {
@@ -130,7 +142,7 @@ static void scm_request_prepare(struct scm_request *scmrq)
 	struct aidaw *aidaw = scmrq->aidaw;
 	struct msb *msb = &scmrq->aob->msb[0];
 	struct req_iterator iter;
-	struct bio_vec bv;
+	struct bio_vec *bv;
 
 	msb->bs = MSB_BS_4K;
 	scmrq->aob->request.msb_count = 1;
@@ -142,9 +154,9 @@ static void scm_request_prepare(struct scm_request *scmrq)
 	msb->data_addr = (u64) aidaw;
 
 	rq_for_each_segment(bv, scmrq->request, iter) {
-		WARN_ON(bv.bv_offset);
-		msb->blk_count += bv.bv_len >> 12;
-		aidaw->data_addr = (u64) page_address(bv.bv_page);
+		WARN_ON(bv->bv_offset);
+		msb->blk_count += bv->bv_len >> 12;
+		aidaw->data_addr = (u64) page_address(bv->bv_page);
 		aidaw++;
 	}
 }
@@ -183,18 +195,14 @@ void scm_request_requeue(struct scm_request *scmrq)
 
 	scm_release_cluster(scmrq);
 	blk_requeue_request(bdev->rq, scmrq->request);
-	atomic_dec(&bdev->queued_reqs);
 	scm_request_done(scmrq);
 	scm_ensure_queue_restart(bdev);
 }
 
 void scm_request_finish(struct scm_request *scmrq)
 {
-	struct scm_blk_dev *bdev = scmrq->bdev;
-
 	scm_release_cluster(scmrq);
 	blk_end_request_all(scmrq->request, scmrq->error);
-	atomic_dec(&bdev->queued_reqs);
 	scm_request_done(scmrq);
 }
 
@@ -207,17 +215,9 @@ static void scm_blk_request(struct request_queue *rq)
 	int ret;
 
 	while ((req = blk_peek_request(rq))) {
-		if (req->cmd_type != REQ_TYPE_FS) {
-			blk_start_request(req);
-			blk_dump_rq_flags(req, KMSG_COMPONENT " bad request");
-			blk_end_request_all(req, -EIO);
+		if (req->cmd_type != REQ_TYPE_FS)
 			continue;
-		}
 
-		if (!scm_permit_request(bdev, req)) {
-			scm_ensure_queue_restart(bdev);
-			return;
-		}
 		scmrq = scm_request_fetch();
 		if (!scmrq) {
 			SCM_LOG(5, "no request");
@@ -231,21 +231,20 @@ static void scm_blk_request(struct request_queue *rq)
 			return;
 		}
 		if (scm_need_cluster_request(scmrq)) {
-			atomic_inc(&bdev->queued_reqs);
 			blk_start_request(req);
 			scm_initiate_cluster_request(scmrq);
 			return;
 		}
 		scm_request_prepare(scmrq);
-		atomic_inc(&bdev->queued_reqs);
 		blk_start_request(req);
 
-		ret = eadm_start_aob(scmrq->aob);
+		ret = scm_start_aob(scmrq->aob);
 		if (ret) {
 			SCM_LOG(5, "no subchannel");
 			scm_request_requeue(scmrq);
 			return;
 		}
+		atomic_inc(&bdev->queued_reqs);
 	}
 }
 
@@ -281,38 +280,6 @@ void scm_blk_irq(struct scm_device *scmdev, void *data, int error)
 	tasklet_hi_schedule(&bdev->tasklet);
 }
 
-static void scm_blk_handle_error(struct scm_request *scmrq)
-{
-	struct scm_blk_dev *bdev = scmrq->bdev;
-	unsigned long flags;
-
-	if (scmrq->error != -EIO)
-		goto restart;
-
-	/* For -EIO the response block is valid. */
-	switch (scmrq->aob->response.eqc) {
-	case EQC_WR_PROHIBIT:
-		spin_lock_irqsave(&bdev->lock, flags);
-		if (bdev->state != SCM_WR_PROHIBIT)
-			pr_info("%lx: Write access to the SCM increment is suspended\n",
-				(unsigned long) bdev->scmdev->address);
-		bdev->state = SCM_WR_PROHIBIT;
-		spin_unlock_irqrestore(&bdev->lock, flags);
-		goto requeue;
-	default:
-		break;
-	}
-
-restart:
-	if (!eadm_start_aob(scmrq->aob))
-		return;
-
-requeue:
-	spin_lock_irqsave(&bdev->rq_lock, flags);
-	scm_request_requeue(scmrq);
-	spin_unlock_irqrestore(&bdev->rq_lock, flags);
-}
-
 static void scm_blk_tasklet(struct scm_blk_dev *bdev)
 {
 	struct scm_request *scmrq;
@@ -326,8 +293,11 @@ static void scm_blk_tasklet(struct scm_blk_dev *bdev)
 		spin_unlock_irqrestore(&bdev->lock, flags);
 
 		if (scmrq->error && scmrq->retries-- > 0) {
-			scm_blk_handle_error(scmrq);
-
+			if (scm_start_aob(scmrq->aob)) {
+				spin_lock_irqsave(&bdev->rq_lock, flags);
+				scm_request_requeue(scmrq);
+				spin_unlock_irqrestore(&bdev->rq_lock, flags);
+			}
 			/* Request restarted or requeued, handle next. */
 			spin_lock_irqsave(&bdev->lock, flags);
 			continue;
@@ -340,16 +310,13 @@ static void scm_blk_tasklet(struct scm_blk_dev *bdev)
 		}
 
 		scm_request_finish(scmrq);
+		atomic_dec(&bdev->queued_reqs);
 		spin_lock_irqsave(&bdev->lock, flags);
 	}
 	spin_unlock_irqrestore(&bdev->lock, flags);
 	/* Look out for more requests. */
 	blk_run_queue(bdev->rq);
 }
-
-static const struct block_device_operations scm_blk_devops = {
-	.owner = THIS_MODULE,
-};
 
 int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 {
@@ -365,7 +332,6 @@ int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 	}
 
 	bdev->scmdev = scmdev;
-	bdev->state = SCM_OPER;
 	spin_lock_init(&bdev->rq_lock);
 	spin_lock_init(&bdev->lock);
 	INIT_LIST_HEAD(&bdev->finished_requests);
@@ -430,18 +396,6 @@ void scm_blk_dev_cleanup(struct scm_blk_dev *bdev)
 	put_disk(bdev->gendisk);
 }
 
-void scm_blk_set_available(struct scm_blk_dev *bdev)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&bdev->lock, flags);
-	if (bdev->state == SCM_WR_PROHIBIT)
-		pr_info("%lx: Write access to the SCM increment is restored\n",
-			(unsigned long) bdev->scmdev->address);
-	bdev->state = SCM_OPER;
-	spin_unlock_irqrestore(&bdev->lock, flags);
-}
-
 static int __init scm_blk_init(void)
 {
 	int ret = -EINVAL;
@@ -454,15 +408,12 @@ static int __init scm_blk_init(void)
 		goto out;
 
 	scm_major = ret;
-	ret = scm_alloc_rqs(nr_requests);
-	if (ret)
-		goto out_free;
+	if (scm_alloc_rqs(nr_requests))
+		goto out_unreg;
 
 	scm_debug = debug_register("scm_log", 16, 1, 16);
-	if (!scm_debug) {
-		ret = -ENOMEM;
+	if (!scm_debug)
 		goto out_free;
-	}
 
 	debug_register_view(scm_debug, &debug_hex_ascii_view);
 	debug_set_level(scm_debug, 2);
@@ -477,6 +428,7 @@ out_dbf:
 	debug_unregister(scm_debug);
 out_free:
 	scm_free_rqs();
+out_unreg:
 	unregister_blkdev(scm_major, "scm");
 out:
 	return ret;

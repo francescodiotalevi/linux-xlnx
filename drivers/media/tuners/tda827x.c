@@ -479,10 +479,10 @@ static void tda827xa_lna_gain(struct dvb_frontend *fe, int high,
 			dprintk("setting LNA to low gain\n");
 	}
 	switch (priv->cfg->config) {
-	case TDA8290_LNA_OFF: /* no LNA */
+	case 0: /* no LNA */
 		break;
-	case TDA8290_LNA_GP0_HIGH_ON: /* switch is GPIO 0 of tda8290 */
-	case TDA8290_LNA_GP0_HIGH_OFF:
+	case 1: /* switch is GPIO 0 of tda8290 */
+	case 2:
 		if (params == NULL) {
 			gp_func = 0;
 			arg  = 0;
@@ -499,11 +499,11 @@ static void tda827xa_lna_gain(struct dvb_frontend *fe, int high,
 				     DVB_FRONTEND_COMPONENT_TUNER,
 				     gp_func, arg);
 		buf[1] = high ? 0 : 1;
-		if (priv->cfg->config == TDA8290_LNA_GP0_HIGH_OFF)
+		if (priv->cfg->config == 2)
 			buf[1] = high ? 1 : 0;
 		tuner_transfer(fe, &msg, 1);
 		break;
-	case TDA8290_LNA_ON_BRIDGE: /* switch with GPIO of saa713x */
+	case 3: /* switch with GPIO of saa713x */
 		if (fe->callback)
 			fe->callback(priv->i2c_adap->algo_data,
 				     DVB_FRONTEND_COMPONENT_TUNER, 0, high);

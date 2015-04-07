@@ -28,6 +28,7 @@
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/bitops.h>
 
 #include <asm/uaccess.h>
@@ -137,7 +138,7 @@ static int link_status(struct xircom_private *card);
 
 
 
-static const struct pci_device_id xircom_pci_table[] = {
+static DEFINE_PCI_DEVICE_TABLE(xircom_pci_table) = {
 	{ PCI_VDEVICE(XIRCOM, 0x0003), },
 	{0,},
 };
@@ -235,14 +236,17 @@ static int xircom_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	private->rx_buffer = dma_alloc_coherent(d, 8192,
 						&private->rx_dma_handle,
 						GFP_KERNEL);
-	if (private->rx_buffer == NULL)
+	if (private->rx_buffer == NULL) {
+		pr_err("%s: no memory for rx buffer\n", __func__);
 		goto rx_buf_fail;
-
+	}
 	private->tx_buffer = dma_alloc_coherent(d, 8192,
 						&private->tx_dma_handle,
 						GFP_KERNEL);
-	if (private->tx_buffer == NULL)
+	if (private->tx_buffer == NULL) {
+		pr_err("%s: no memory for tx buffer\n", __func__);
 		goto tx_buf_fail;
+	}
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
@@ -288,6 +292,7 @@ out:
 err_unmap:
 	pci_iounmap(pdev, private->ioaddr);
 reg_fail:
+	pci_set_drvdata(pdev, NULL);
 	dma_free_coherent(d, 8192, private->tx_buffer, private->tx_dma_handle);
 tx_buf_fail:
 	dma_free_coherent(d, 8192, private->rx_buffer, private->rx_dma_handle);
@@ -315,6 +320,7 @@ static void xircom_remove(struct pci_dev *pdev)
 
 	unregister_netdev(dev);
 	pci_iounmap(pdev, card->ioaddr);
+	pci_set_drvdata(pdev, NULL);
 	dma_free_coherent(d, 8192, card->tx_buffer, card->tx_dma_handle);
 	dma_free_coherent(d, 8192, card->rx_buffer, card->rx_dma_handle);
 	free_netdev(dev);
@@ -1168,4 +1174,16 @@ investigate_write_descriptor(struct net_device *dev,
 	}
 }
 
-module_pci_driver(xircom_ops);
+static int __init xircom_init(void)
+{
+	return pci_register_driver(&xircom_ops);
+}
+
+static void __exit xircom_exit(void)
+{
+	pci_unregister_driver(&xircom_ops);
+}
+
+module_init(xircom_init)
+module_exit(xircom_exit)
+

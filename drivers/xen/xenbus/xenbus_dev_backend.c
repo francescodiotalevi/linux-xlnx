@@ -1,5 +1,3 @@
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/mm.h>
@@ -72,21 +70,22 @@ static long xenbus_alloc(domid_t domid)
 	return err;
 }
 
-static long xenbus_backend_ioctl(struct file *file, unsigned int cmd,
-				 unsigned long data)
+static long xenbus_backend_ioctl(struct file *file, unsigned int cmd, unsigned long data)
 {
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	switch (cmd) {
-	case IOCTL_XENBUS_BACKEND_EVTCHN:
-		if (xen_store_evtchn > 0)
-			return xen_store_evtchn;
-		return -ENODEV;
-	case IOCTL_XENBUS_BACKEND_SETUP:
-		return xenbus_alloc(data);
-	default:
-		return -ENOTTY;
+		case IOCTL_XENBUS_BACKEND_EVTCHN:
+			if (xen_store_evtchn > 0)
+				return xen_store_evtchn;
+			return -ENODEV;
+
+		case IOCTL_XENBUS_BACKEND_SETUP:
+			return xenbus_alloc(data);
+
+		default:
+			return -ENOTTY;
 	}
 }
 
@@ -129,7 +128,7 @@ static int __init xenbus_backend_init(void)
 
 	err = misc_register(&xenbus_backend_dev);
 	if (err)
-		pr_err("Could not register xenbus backend device\n");
+		printk(KERN_ERR "Could not register xenbus backend device\n");
 	return err;
 }
 

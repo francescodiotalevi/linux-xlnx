@@ -2,14 +2,13 @@
 #include "evsel.h"
 #include "parse-events.h"
 #include "tests.h"
-#include "debug.h"
 
 static int perf_evsel__roundtrip_cache_name_test(void)
 {
 	char name[128];
 	int type, op, err = 0, ret = 0, i, idx;
 	struct perf_evsel *evsel;
-	struct perf_evlist *evlist = perf_evlist__new();
+        struct perf_evlist *evlist = perf_evlist__new(NULL, NULL);
 
         if (evlist == NULL)
                 return -ENOMEM;
@@ -23,7 +22,7 @@ static int perf_evsel__roundtrip_cache_name_test(void)
 			for (i = 0; i < PERF_COUNT_HW_CACHE_RESULT_MAX; i++) {
 				__perf_evsel__hw_cache_type_op_res_name(type, op, i,
 									name, sizeof(name));
-				err = parse_events(evlist, name);
+				err = parse_events(evlist, name, 0);
 				if (err)
 					ret = err;
 			}
@@ -65,13 +64,13 @@ static int __perf_evsel__name_array_test(const char *names[], int nr_names)
 {
 	int i, err;
 	struct perf_evsel *evsel;
-	struct perf_evlist *evlist = perf_evlist__new();
+        struct perf_evlist *evlist = perf_evlist__new(NULL, NULL);
 
         if (evlist == NULL)
                 return -ENOMEM;
 
 	for (i = 0; i < nr_names; ++i) {
-		err = parse_events(evlist, names[i]);
+		err = parse_events(evlist, names[i], 0);
 		if (err) {
 			pr_debug("failed to parse event '%s', err %d\n",
 				 names[i], err);
@@ -80,7 +79,7 @@ static int __perf_evsel__name_array_test(const char *names[], int nr_names)
 	}
 
 	err = 0;
-	evlist__for_each(evlist, evsel) {
+	list_for_each_entry(evsel, &evlist->entries, node) {
 		if (strcmp(perf_evsel__name(evsel), names[evsel->idx])) {
 			--err;
 			pr_debug("%s != %s\n", perf_evsel__name(evsel), names[evsel->idx]);

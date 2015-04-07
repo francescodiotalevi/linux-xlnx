@@ -17,7 +17,6 @@
  *
  */
 
-#include <linux/err.h>
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
@@ -27,9 +26,10 @@
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/irqdomain.h>
-#include <linux/irqchip/chained_irq.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm.h>
+
+#include <asm/mach/irq.h>
 
 #define GPIO_BANK(x)		((x) >> 5)
 #define GPIO_PORT(x)		(((x) >> 3) & 0x3)
@@ -71,11 +71,9 @@ struct tegra_gpio_bank {
 	u32 oe[4];
 	u32 int_enb[4];
 	u32 int_lvl[4];
-	u32 wake_enb[4];
 #endif
 };
 
-static struct device *dev;
 static struct irq_domain *irq_domain;
 static void __iomem *regs;
 static u32 tegra_gpio_bank_count;
@@ -206,7 +204,6 @@ static int tegra_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	int lvl_type;
 	int val;
 	unsigned long flags;
-	int ret;
 
 	switch (type & IRQ_TYPE_SENSE_MASK) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -233,12 +230,6 @@ static int tegra_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 		return -EINVAL;
 	}
 
-	ret = gpio_lock_as_irq(&tegra_gpio_chip, gpio);
-	if (ret) {
-		dev_err(dev, "unable to lock Tegra GPIO %d as IRQ\n", gpio);
-		return ret;
-	}
-
 	spin_lock_irqsave(&bank->lvl_lock[port], flags);
 
 	val = tegra_gpio_readl(GPIO_INT_LVL(gpio));
@@ -257,13 +248,6 @@ static int tegra_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 		__irq_set_handler_locked(d->irq, handle_edge_irq);
 
 	return 0;
-}
-
-static void tegra_gpio_irq_shutdown(struct irq_data *d)
-{
-	int gpio = d->hwirq;
-
-	gpio_unlock_as_irq(&tegra_gpio_chip, gpio);
 }
 
 static void tegra_gpio_irq_handler(unsigned int irq, struct irq_desc *desc)
@@ -348,31 +332,15 @@ static int tegra_gpio_suspend(struct device *dev)
 			bank->oe[p] = tegra_gpio_readl(GPIO_OE(gpio));
 			bank->int_enb[p] = tegra_gpio_readl(GPIO_INT_ENB(gpio));
 			bank->int_lvl[p] = tegra_gpio_readl(GPIO_INT_LVL(gpio));
-
-			/* Enable gpio irq for wake up source */
-			tegra_gpio_writel(bank->wake_enb[p],
-					  GPIO_INT_ENB(gpio));
 		}
 	}
 	local_irq_restore(flags);
 	return 0;
 }
 
-static int tegra_gpio_irq_set_wake(struct irq_data *d, unsigned int enable)
+static int tegra_gpio_wake_enable(struct irq_data *d, unsigned int enable)
 {
 	struct tegra_gpio_bank *bank = irq_data_get_irq_chip_data(d);
-	int gpio = d->hwirq;
-	u32 port, bit, mask;
-
-	port = GPIO_PORT(gpio);
-	bit = GPIO_BIT(gpio);
-	mask = BIT(bit);
-
-	if (enable)
-		bank->wake_enb[port] |= mask;
-	else
-		bank->wake_enb[port] &= ~mask;
-
 	return irq_set_irq_wake(bank->irq, enable);
 }
 #endif
@@ -383,9 +351,8 @@ static struct irq_chip tegra_gpio_irq_chip = {
 	.irq_mask	= tegra_gpio_irq_mask,
 	.irq_unmask	= tegra_gpio_irq_unmask,
 	.irq_set_type	= tegra_gpio_irq_set_type,
-	.irq_shutdown	= tegra_gpio_irq_shutdown,
 #ifdef CONFIG_PM_SLEEP
-	.irq_set_wake	= tegra_gpio_irq_set_wake,
+	.irq_set_wake	= tegra_gpio_wake_enable,
 #endif
 };
 
@@ -408,7 +375,7 @@ static struct tegra_gpio_soc_config tegra30_gpio_config = {
 	.upper_offset = 0x80,
 };
 
-static const struct of_device_id tegra_gpio_of_match[] = {
+static struct of_device_id tegra_gpio_of_match[] = {
 	{ .compatible = "nvidia,tegra30-gpio", .data = &tegra30_gpio_config },
 	{ .compatible = "nvidia,tegra20-gpio", .data = &tegra20_gpio_config },
 	{ },
@@ -425,19 +392,15 @@ static int tegra_gpio_probe(struct platform_device *pdev)
 	struct tegra_gpio_soc_config *config;
 	struct resource *res;
 	struct tegra_gpio_bank *bank;
-	int ret;
 	int gpio;
 	int i;
 	int j;
 
-	dev = &pdev->dev;
-
 	match = of_match_device(tegra_gpio_of_match, &pdev->dev);
-	if (!match) {
-		dev_err(&pdev->dev, "Error: No device match found\n");
-		return -ENODEV;
-	}
-	config = (struct tegra_gpio_soc_config *)match->data;
+	if (match)
+		config = (struct tegra_gpio_soc_config *)match->data;
+	else
+		config = &tegra20_gpio_config;
 
 	tegra_gpio_bank_stride = config->bank_stride;
 	tegra_gpio_upper_offset = config->upper_offset;
@@ -458,8 +421,10 @@ static int tegra_gpio_probe(struct platform_device *pdev)
 	tegra_gpio_banks = devm_kzalloc(&pdev->dev,
 			tegra_gpio_bank_count * sizeof(*tegra_gpio_banks),
 			GFP_KERNEL);
-	if (!tegra_gpio_banks)
+	if (!tegra_gpio_banks) {
+		dev_err(&pdev->dev, "Couldn't allocate bank structure\n");
 		return -ENODEV;
+	}
 
 	irq_domain = irq_domain_add_linear(pdev->dev.of_node,
 					   tegra_gpio_chip.ngpio,
@@ -480,9 +445,16 @@ static int tegra_gpio_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(regs))
-		return PTR_ERR(regs);
+	if (!res) {
+		dev_err(&pdev->dev, "Missing MEM resource\n");
+		return -ENODEV;
+	}
+
+	regs = devm_request_and_ioremap(&pdev->dev, res);
+	if (!regs) {
+		dev_err(&pdev->dev, "Couldn't ioremap regs\n");
+		return -ENODEV;
+	}
 
 	for (i = 0; i < tegra_gpio_bank_count; i++) {
 		for (j = 0; j < 4; j++) {
@@ -491,13 +463,11 @@ static int tegra_gpio_probe(struct platform_device *pdev)
 		}
 	}
 
+#ifdef CONFIG_OF_GPIO
 	tegra_gpio_chip.of_node = pdev->dev.of_node;
+#endif
 
-	ret = gpiochip_add(&tegra_gpio_chip);
-	if (ret < 0) {
-		irq_domain_remove(irq_domain);
-		return ret;
-	}
+	gpiochip_add(&tegra_gpio_chip);
 
 	for (gpio = 0; gpio < tegra_gpio_chip.ngpio; gpio++) {
 		int irq = irq_create_mapping(irq_domain, gpio);

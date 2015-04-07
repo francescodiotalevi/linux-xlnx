@@ -9,10 +9,11 @@
 #define _LINUX_EVENTFD_H
 
 #include <linux/fcntl.h>
+#include <linux/file.h>
 #include <linux/wait.h>
 
 /*
- * CAREFUL: Check include/uapi/asm-generic/fcntl.h when defining
+ * CAREFUL: Check include/asm-generic/fcntl.h when defining
  * new flags, since they might collide with O_* ones. We want
  * to re-use O_* flags that couldn't possibly have a meaning
  * from eventfd, in order to leave a free define-space for
@@ -24,8 +25,6 @@
 
 #define EFD_SHARED_FCNTL_FLAGS (O_CLOEXEC | O_NONBLOCK)
 #define EFD_FLAGS_SET (EFD_SHARED_FCNTL_FLAGS | EFD_SEMAPHORE)
-
-struct file;
 
 #ifdef CONFIG_EVENTFD
 

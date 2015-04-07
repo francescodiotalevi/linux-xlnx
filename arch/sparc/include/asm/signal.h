@@ -21,8 +21,10 @@
  */
 #define SA_STATIC_ALLOC         0x8000
 
-#define __ARCH_HAS_KA_RESTORER
-#define __ARCH_HAS_SA_RESTORER
+struct k_sigaction {
+	struct			__new_sigaction sa;
+	void			__user *ka_restorer;
+};
 
 #endif /* !(__ASSEMBLY__) */
 #endif /* !(__SPARC_SIGNAL_H) */

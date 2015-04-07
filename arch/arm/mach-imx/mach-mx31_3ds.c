@@ -18,6 +18,7 @@
 #include <linux/init.h>
 #include <linux/clk.h>
 #include <linux/irq.h>
+#include <linux/ipipe.h>
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/mfd/mc13783.h>
@@ -40,7 +41,6 @@
 #include "3ds_debugboard.h"
 #include "common.h"
 #include "devices-imx31.h"
-#include "ehci.h"
 #include "hardware.h"
 #include "iomux-mx3.h"
 #include "ulpi.h"
@@ -312,7 +312,7 @@ static int mx31_3ds_sdhc1_init(struct device *dev,
 	}
 
 	ret = request_irq(gpio_to_irq(IOMUX_TO_GPIO(MX31_PIN_GPIO3_1)),
-			  detect_irq,
+			  detect_irq, IRQF_DISABLED |
 			  IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
 			  "sdhc1-detect", data);
 	if (ret) {
@@ -763,6 +763,10 @@ static void __init mx31_3ds_timer_init(void)
 	mx31_clocks_init(26000000);
 }
 
+static struct sys_timer mx31_3ds_timer = {
+	.init	= mx31_3ds_timer_init,
+};
+
 static void __init mx31_3ds_reserve(void)
 {
 	/* reserve MX31_3DS_CAMERA_BUF_SIZE bytes for mx3-camera */
@@ -776,7 +780,8 @@ MACHINE_START(MX31_3DS, "Freescale MX31PDK (3DS)")
 	.map_io = mx31_map_io,
 	.init_early = imx31_init_early,
 	.init_irq = mx31_init_irq,
-	.init_time	= mx31_3ds_timer_init,
+	.handle_irq = imx31_handle_irq,
+	.timer = &mx31_3ds_timer,
 	.init_machine = mx31_3ds_init,
 	.reserve = mx31_3ds_reserve,
 	.restart	= mxc_restart,

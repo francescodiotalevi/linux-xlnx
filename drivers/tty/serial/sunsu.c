@@ -315,10 +315,10 @@ static void sunsu_enable_ms(struct uart_port *port)
 	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
-static void
+static struct tty_struct *
 receive_chars(struct uart_sunsu_port *up, unsigned char *status)
 {
-	struct tty_port *port = &up->port.state->port;
+	struct tty_struct *tty = up->port.state->port.tty;
 	unsigned char ch, flag;
 	int max_count = 256;
 	int saw_console_brk = 0;
@@ -376,20 +376,22 @@ receive_chars(struct uart_sunsu_port *up, unsigned char *status)
 		if (uart_handle_sysrq_char(&up->port, ch))
 			goto ignore_char;
 		if ((*status & up->port.ignore_status_mask) == 0)
-			tty_insert_flip_char(port, ch, flag);
+			tty_insert_flip_char(tty, ch, flag);
 		if (*status & UART_LSR_OE)
 			/*
 			 * Overrun is special, since it's reported
 			 * immediately, and doesn't affect the current
 			 * character.
 			 */
-			 tty_insert_flip_char(port, 0, TTY_OVERRUN);
+			 tty_insert_flip_char(tty, 0, TTY_OVERRUN);
 	ignore_char:
 		*status = serial_inp(up, UART_LSR);
 	} while ((*status & UART_LSR_DR) && (max_count-- > 0));
 
 	if (saw_console_brk)
 		sun_do_break();
+
+	return tty;
 }
 
 static void transmit_chars(struct uart_sunsu_port *up)
@@ -458,16 +460,20 @@ static irqreturn_t sunsu_serial_interrupt(int irq, void *dev_id)
 	spin_lock_irqsave(&up->port.lock, flags);
 
 	do {
+		struct tty_struct *tty;
+
 		status = serial_inp(up, UART_LSR);
+		tty = NULL;
 		if (status & UART_LSR_DR)
-			receive_chars(up, &status);
+			tty = receive_chars(up, &status);
 		check_modem_status(up);
 		if (status & UART_LSR_THRE)
 			transmit_chars(up);
 
 		spin_unlock_irqrestore(&up->port.lock, flags);
 
-		tty_flip_buffer_push(&up->port.state->port);
+		if (tty)
+			tty_flip_buffer_push(tty);
 
 		spin_lock_irqsave(&up->port.lock, flags);
 
@@ -522,7 +528,7 @@ static void receive_kbd_ms_chars(struct uart_sunsu_port *up, int is_break)
 				serio_interrupt(&up->serio, ch, 0);
 #endif
 				break;
-			}
+			};
 		}
 	} while (serial_in(up, UART_LSR) & UART_LSR_DR);
 }
@@ -834,7 +840,7 @@ sunsu_change_speed(struct uart_port *port, unsigned int cflag,
 	up->port.read_status_mask = UART_LSR_OE | UART_LSR_THRE | UART_LSR_DR;
 	if (iflag & INPCK)
 		up->port.read_status_mask |= UART_LSR_FE | UART_LSR_PE;
-	if (iflag & (IGNBRK | BRKINT | PARMRK))
+	if (iflag & (BRKINT | PARMRK))
 		up->port.read_status_mask |= UART_LSR_BI;
 
 	/*
@@ -968,7 +974,6 @@ static struct uart_ops sunsu_pops = {
 #define UART_NR	4
 
 static struct uart_sunsu_port sunsu_ports[UART_NR];
-static int nr_inst; /* Number of already registered ports */
 
 #ifdef CONFIG_SERIO
 
@@ -1295,10 +1300,13 @@ static void sunsu_console_write(struct console *co, const char *s,
 	unsigned int ier;
 	int locked = 1;
 
-	if (up->port.sysrq || oops_in_progress)
-		locked = spin_trylock_irqsave(&up->port.lock, flags);
-	else
-		spin_lock_irqsave(&up->port.lock, flags);
+	local_irq_save(flags);
+	if (up->port.sysrq) {
+		locked = 0;
+	} else if (oops_in_progress) {
+		locked = spin_trylock(&up->port.lock);
+	} else
+		spin_lock(&up->port.lock);
 
 	/*
 	 *	First save the UER then disable the interrupts
@@ -1316,7 +1324,8 @@ static void sunsu_console_write(struct console *co, const char *s,
 	serial_out(up, UART_IER, ier);
 
 	if (locked)
-		spin_unlock_irqrestore(&up->port.lock, flags);
+		spin_unlock(&up->port.lock);
+	local_irq_restore(flags);
 }
 
 /*
@@ -1334,8 +1343,13 @@ static int __init sunsu_console_setup(struct console *co, char *options)
 	printk("Console: ttyS%d (SU)\n",
 	       (sunsu_reg.minor - 64) + co->index);
 
-	if (co->index > nr_inst)
-		return -ENODEV;
+	/*
+	 * Check whether an invalid uart number has been specified, and
+	 * if so, search for the first available port that does have
+	 * console support.
+	 */
+	if (co->index >= UART_NR)
+		co->index = 0;
 	port = &sunsu_ports[co->index].port;
 
 	/*
@@ -1400,6 +1414,7 @@ static enum su_type su_get_type(struct device_node *dp)
 
 static int su_probe(struct platform_device *op)
 {
+	static int inst;
 	struct device_node *dp = op->dev.of_node;
 	struct uart_sunsu_port *up;
 	struct resource *rp;
@@ -1409,16 +1424,16 @@ static int su_probe(struct platform_device *op)
 
 	type = su_get_type(dp);
 	if (type == SU_PORT_PORT) {
-		if (nr_inst >= UART_NR)
+		if (inst >= UART_NR)
 			return -EINVAL;
-		up = &sunsu_ports[nr_inst];
+		up = &sunsu_ports[inst];
 	} else {
 		up = kzalloc(sizeof(*up), GFP_KERNEL);
 		if (!up)
 			return -ENOMEM;
 	}
 
-	up->port.line = nr_inst;
+	up->port.line = inst;
 
 	spin_lock_init(&up->port.lock);
 
@@ -1450,9 +1465,7 @@ static int su_probe(struct platform_device *op)
 			kfree(up);
 			return err;
 		}
-		platform_set_drvdata(op, up);
-
-		nr_inst++;
+		dev_set_drvdata(&op->dev, up);
 
 		return 0;
 	}
@@ -1479,9 +1492,9 @@ static int su_probe(struct platform_device *op)
 	if (err)
 		goto out_unmap;
 
-	platform_set_drvdata(op, up);
+	dev_set_drvdata(&op->dev, up);
 
-	nr_inst++;
+	inst++;
 
 	return 0;
 
@@ -1492,7 +1505,7 @@ out_unmap:
 
 static int su_remove(struct platform_device *op)
 {
-	struct uart_sunsu_port *up = platform_get_drvdata(op);
+	struct uart_sunsu_port *up = dev_get_drvdata(&op->dev);
 	bool kbdms = false;
 
 	if (up->su_type == SU_PORT_MS ||
@@ -1511,6 +1524,8 @@ static int su_remove(struct platform_device *op)
 
 	if (kbdms)
 		kfree(up);
+
+	dev_set_drvdata(&op->dev, NULL);
 
 	return 0;
 }
@@ -1586,7 +1601,6 @@ static int __init sunsu_init(void)
 
 static void __exit sunsu_exit(void)
 {
-	platform_driver_unregister(&su_driver);
 	if (sunsu_reg.nr)
 		sunserial_unregister_minors(&sunsu_reg, sunsu_reg.nr);
 }

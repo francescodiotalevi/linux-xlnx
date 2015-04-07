@@ -191,7 +191,6 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 		memcpy((void __force *)to, from, n);
 	else
 		return n;
-	SSYNC();
 	return 0;
 }
 

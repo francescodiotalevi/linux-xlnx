@@ -198,7 +198,7 @@ register_client(void)
 	int i;
 
 	if (ports < 1) {
-		pr_err("ALSA: seq_dummy: invalid number of ports %d\n", ports);
+		snd_printk(KERN_ERR "invalid number of ports %d\n", ports);
 		return -EINVAL;
 	}
 

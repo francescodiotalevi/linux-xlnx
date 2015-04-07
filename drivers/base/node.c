@@ -7,7 +7,6 @@
 #include <linux/mm.h>
 #include <linux/memory.h>
 #include <linux/vmstat.h>
-#include <linux/notifier.h>
 #include <linux/node.h>
 #include <linux/hugetlb.h>
 #include <linux/compaction.h>
@@ -125,8 +124,14 @@ static ssize_t node_read_meminfo(struct device *dev,
 		       nid, K(node_page_state(nid, NR_WRITEBACK)),
 		       nid, K(node_page_state(nid, NR_FILE_PAGES)),
 		       nid, K(node_page_state(nid, NR_FILE_MAPPED)),
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+		       nid, K(node_page_state(nid, NR_ANON_PAGES)
+			+ node_page_state(nid, NR_ANON_TRANSPARENT_HUGEPAGES) *
+			HPAGE_PMD_NR),
+#else
 		       nid, K(node_page_state(nid, NR_ANON_PAGES)),
-		       nid, K(i.sharedram),
+#endif
+		       nid, K(node_page_state(nid, NR_SHMEM)),
 		       nid, node_page_state(nid, NR_KERNEL_STACK) *
 				THREAD_SIZE / 1024,
 		       nid, K(node_page_state(nid, NR_PAGETABLE)),
@@ -599,11 +604,7 @@ int register_one_node(int nid)
 
 void unregister_one_node(int nid)
 {
-	if (!node_devices[nid])
-		return;
-
 	unregister_node(node_devices[nid]);
-	kfree(node_devices[nid]);
 	node_devices[nid] = NULL;
 }
 
@@ -682,11 +683,8 @@ static int __init register_node_type(void)
 
 	ret = subsys_system_register(&node_subsys, cpu_root_attr_groups);
 	if (!ret) {
-		static struct notifier_block node_memory_callback_nb = {
-			.notifier_call = node_memory_callback,
-			.priority = NODE_CALLBACK_PRI,
-		};
-		register_hotmemory_notifier(&node_memory_callback_nb);
+		hotplug_memory_notifier(node_memory_callback,
+					NODE_CALLBACK_PRI);
 	}
 
 	/*

@@ -12,6 +12,7 @@
 
 #include <linux/clk.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/input.h>
 #include <linux/io.h>
@@ -190,6 +191,12 @@ static int spear_kbd_probe(struct platform_device *pdev)
 	int irq;
 	int error;
 
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "no keyboard resource defined\n");
+		return -EBUSY;
+	}
+
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		dev_err(&pdev->dev, "not able to get irq for the device\n");
@@ -221,10 +228,11 @@ static int spear_kbd_probe(struct platform_device *pdev)
 		kbd->suspended_rate = pdata->suspended_rate;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	kbd->io_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(kbd->io_base))
-		return PTR_ERR(kbd->io_base);
+	kbd->io_base = devm_request_and_ioremap(&pdev->dev, res);
+	if (!kbd->io_base) {
+		dev_err(&pdev->dev, "request-ioremap failed for kbd_region\n");
+		return -ENOMEM;
+	}
 
 	kbd->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(kbd->clk))
@@ -284,6 +292,7 @@ static int spear_kbd_remove(struct platform_device *pdev)
 	clk_unprepare(kbd->clk);
 
 	device_init_wakeup(&pdev->dev, 0);
+	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }

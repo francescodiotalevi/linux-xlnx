@@ -153,7 +153,6 @@ struct sigstack {
 
 #include <asm-generic/signal-defs.h>
 
-#ifndef __KERNEL__
 struct __new_sigaction {
 	__sighandler_t		sa_handler;
 	unsigned long		sa_flags;
@@ -167,7 +166,6 @@ struct __old_sigaction {
 	unsigned long		sa_flags;
 	void			(*sa_restorer)(void);  /* not used by Linux/SPARC yet */
 };
-#endif
 
 typedef struct sigaltstack {
 	void			__user *ss_sp;

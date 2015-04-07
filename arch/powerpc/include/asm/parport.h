@@ -21,7 +21,9 @@ static int parport_pc_find_nonpci_ports (int autoirq, int autodma)
 	int count = 0;
 	int virq;
 
-	for_each_compatible_node(np, "parallel", "pnpPNP,400") {
+	for (np = NULL; (np = of_find_compatible_node(np,
+						      "parallel",
+						      "pnpPNP,400")) != NULL;) {
 		prop = of_get_property(np, "reg", &propsize);
 		if (!prop || propsize > 6*sizeof(u32))
 			continue;

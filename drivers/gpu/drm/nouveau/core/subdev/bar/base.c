@@ -23,11 +23,7 @@
  */
 
 #include <core/object.h>
-
-#include <subdev/fb.h>
-#include <subdev/vm.h>
-
-#include "priv.h"
+#include <subdev/bar.h>
 
 struct nouveau_barobj {
 	struct nouveau_object base;
@@ -99,13 +95,8 @@ nouveau_bar_alloc(struct nouveau_bar *bar, struct nouveau_object *parent,
 		  struct nouveau_mem *mem, struct nouveau_object **pobject)
 {
 	struct nouveau_object *engine = nv_object(bar);
-	int ret = -ENOMEM;
-	if (bar->iomem) {
-		ret = nouveau_object_ctor(parent, engine,
-					  &nouveau_barobj_oclass,
-					  mem, 0, pobject);
-	}
-	return ret;
+	return nouveau_object_ctor(parent, engine, &nouveau_barobj_oclass,
+				   mem, 0, pobject);
 }
 
 int
@@ -123,13 +114,8 @@ nouveau_bar_create_(struct nouveau_object *parent,
 	if (ret)
 		return ret;
 
-	if (nv_device_resource_len(device, 3) != 0) {
-		bar->iomem = ioremap(nv_device_resource_start(device, 3),
-				     nv_device_resource_len(device, 3));
-		if (!bar->iomem)
-			nv_warn(bar, "PRAMIN ioremap failed\n");
-	}
-
+	bar->iomem = ioremap(pci_resource_start(device->pdev, 3),
+			     pci_resource_len(device->pdev, 3));
 	return 0;
 }
 

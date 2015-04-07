@@ -53,7 +53,6 @@
 		power-isa-mmc;		// Memory Coherence
 		power-isa-scpm;		// Store Conditional Page Mobility
 		power-isa-wt;		// Wait
-		fsl,eref-deo;		// Data Cache Extended Operations
 		mmu-type = "power-embedded";
 	};
 };

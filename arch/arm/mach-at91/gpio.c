@@ -22,14 +22,23 @@
 #include <linux/module.h>
 #include <linux/io.h>
 #include <linux/irqdomain.h>
-#include <linux/irqchip/chained_irq.h>
 #include <linux/of_address.h>
+#include <linux/ipipe.h>
+
+#include <asm/mach/irq.h>
 
 #include <mach/hardware.h>
 #include <mach/at91_pio.h>
+#include "at91_ipipe.h"
+#ifdef CONFIG_IPIPE
+#include "at91_aic.h"
+#include <asm/irq.h>
+
+static unsigned aic_root;
+static unsigned aic_muted;
+#endif /* CONFIG_IPIPE */
 
 #include "generic.h"
-#include "gpio.h"
 
 #define MAX_NB_GPIO_PER_BANK	32
 
@@ -42,6 +51,12 @@ struct at91_gpio_chip {
 	void __iomem		*regbase;	/* PIO bank virtual address */
 	struct clk		*clock;		/* associated clock */
 	struct irq_domain	*domain;	/* associated irq domain */
+#ifdef CONFIG_IPIPE
+	unsigned *nr_nonroot;
+	unsigned nr_nonroot_storage;
+	unsigned root;
+	unsigned muted;
+#endif
 };
 
 #define to_at91_gpio_chip(c) container_of(c, struct at91_gpio_chip, chip)
@@ -50,7 +65,6 @@ static int at91_gpiolib_request(struct gpio_chip *chip, unsigned offset);
 static void at91_gpiolib_dbg_show(struct seq_file *s, struct gpio_chip *chip);
 static void at91_gpiolib_set(struct gpio_chip *chip, unsigned offset, int val);
 static int at91_gpiolib_get(struct gpio_chip *chip, unsigned offset);
-static int at91_gpiolib_get_direction(struct gpio_chip *chip, unsigned offset);
 static int at91_gpiolib_direction_output(struct gpio_chip *chip,
 					 unsigned offset, int val);
 static int at91_gpiolib_direction_input(struct gpio_chip *chip,
@@ -62,7 +76,6 @@ static int at91_gpiolib_to_irq(struct gpio_chip *chip, unsigned offset);
 		.chip = {						\
 			.label		  = name,			\
 			.request	  = at91_gpiolib_request,	\
-			.get_direction    = at91_gpiolib_get_direction, \
 			.direction_input  = at91_gpiolib_direction_input, \
 			.direction_output = at91_gpiolib_direction_output, \
 			.get		  = at91_gpiolib_get,		\
@@ -583,6 +596,10 @@ static int alt_gpio_irq_type(struct irq_data *d, unsigned type)
 static struct irq_chip gpio_irqchip = {
 	.name		= "GPIO",
 	.irq_disable	= gpio_irq_mask,
+#ifdef CONFIG_IPIPE
+	.irq_ack        = gpio_irq_mask,
+	.irq_mask_ack   = gpio_irq_mask,
+#endif /* CONFIG_IPIPE */
 	.irq_mask	= gpio_irq_mask,
 	.irq_unmask	= gpio_irq_unmask,
 	/* .irq_set_type is set dynamically */
@@ -615,7 +632,7 @@ static void gpio_irq_handler(unsigned irq, struct irq_desc *desc)
 
 		n = find_first_bit(&isr, BITS_PER_LONG);
 		while (n < BITS_PER_LONG) {
-			generic_handle_irq(irq_find_mapping(at91_gpio->domain, n));
+			ipipe_handle_demuxed_irq(irq_find_mapping(at91_gpio->domain, n));
 			n = find_next_bit(&isr, BITS_PER_LONG, n + 1);
 		}
 	}
@@ -802,17 +819,6 @@ static int at91_gpiolib_request(struct gpio_chip *chip, unsigned offset)
 	return 0;
 }
 
-static int at91_gpiolib_get_direction(struct gpio_chip *chip, unsigned offset)
-{
-	struct at91_gpio_chip *at91_gpio = to_at91_gpio_chip(chip);
-	void __iomem *pio = at91_gpio->regbase;
-	unsigned mask = 1 << offset;
-	u32 osr;
-
-	osr = __raw_readl(pio + PIO_OSR);
-	return !(osr & mask);
-}
-
 static int at91_gpiolib_direction_input(struct gpio_chip *chip,
 					unsigned offset)
 {
@@ -969,14 +975,121 @@ void __init at91_gpio_init(struct at91_gpio_bank *data, int nr_banks)
 	for (i = 0; i < gpio_banks; i++) {
 		at91_gpio = &gpio_chip[i];
 
+#ifdef CONFIG_IPIPE
+		at91_gpio->nr_nonroot = &at91_gpio->nr_nonroot_storage;
+#endif
 		/*
 		 * GPIO controller are grouped on some SoC:
 		 * PIOC, PIOD and PIOE can share the same IRQ line
 		 */
-		if (last && last->pioc_hwirq == at91_gpio->pioc_hwirq)
+		if (last && last->pioc_hwirq == at91_gpio->pioc_hwirq) {
 			last->next = at91_gpio;
+#ifdef CONFIG_IPIPE
+			at91_gpio->nr_nonroot = last->nr_nonroot;
+#endif
+		}
 		last = at91_gpio;
 
 		gpiochip_add(&at91_gpio->chip);
 	}
 }
+
+#if defined(CONFIG_IPIPE)
+static void at91_enable_irqdesc(struct ipipe_domain *ipd, unsigned irq)
+{
+	struct irq_desc *desc = irq_to_desc(irq);
+	struct irq_data *idata;
+	struct irq_chip *chip;
+
+	idata = irq_desc_get_irq_data(desc);
+	chip = irq_data_get_irq_chip(idata);
+
+	if (chip == &gpio_irqchip) {
+		struct at91_gpio_chip *chip = irq_data_get_irq_chip_data(idata);
+
+		if (ipd == &ipipe_root) 
+			chip->root |= (1 << idata->hwirq);
+		else
+			chip->root &= ~(1 << idata->hwirq);			
+
+		if (ipd != &ipipe_root && ++(*chip->nr_nonroot) == 1)
+			aic_root &= ~(1 << chip->pioc_hwirq);
+	} else {
+		if (ipd == &ipipe_root) 
+			aic_root |= (1 << idata->hwirq);
+		else
+			aic_root &= ~(1 << idata->hwirq);
+	}	
+}
+
+static void at91_disable_irqdesc(struct ipipe_domain *ipd, unsigned irq)
+{
+	struct irq_desc *desc = irq_to_desc(irq);
+	struct irq_data *idata = irq_desc_get_irq_data(desc);
+	struct irq_chip *chip = irq_data_get_irq_chip(idata);
+
+	if (chip == &gpio_irqchip) {
+		struct at91_gpio_chip *chip = irq_data_get_irq_chip_data(idata);
+
+		if (ipd != &ipipe_root) 
+			chip->root |= (1 << idata->hwirq);
+
+		if (ipd != &ipipe_root && --(*chip->nr_nonroot) == 0)
+			aic_root |= (1 << chip->pioc_hwirq);
+	} else 
+		if (ipd != &ipipe_root)
+			aic_root |= (1 << idata->hwirq);
+}
+
+static void at91_mute_pic(void)
+{
+	struct at91_gpio_chip *prev, *chip = NULL;
+	unsigned long unmasked, muted;
+	unsigned i;
+
+	for (i = 0; i < gpio_banks; i++) {
+		prev = chip;
+		chip = &gpio_chip[i];
+		if (!(*chip->nr_nonroot))
+			continue;
+
+		unmasked = __raw_readl(chip->regbase + PIO_IMR);
+		muted = unmasked & chip->root;
+		chip->muted = muted;
+		__raw_writel(muted, chip->regbase + PIO_IDR);
+	}
+
+	unmasked = at91_aic_read(AT91_AIC_IMR);
+	aic_muted = muted = unmasked & aic_root;
+	at91_aic_write(AT91_AIC_IDCR, muted);
+}
+
+static void at91_unmute_pic(void)
+{
+	struct at91_gpio_chip *prev, *chip = NULL;
+	unsigned i;
+
+	at91_aic_write(AT91_AIC_IECR, aic_muted);
+
+	for (i = 0; i < gpio_banks; i++) {
+		prev = chip;
+		chip = &gpio_chip[i];
+		if (!(*chip->nr_nonroot))
+			continue;
+
+		__raw_writel(chip->muted, chip->regbase + PIO_IER);
+	}
+}
+
+void at91_pic_muter_register(void)
+{
+	struct ipipe_mach_pic_muter at91_pic_muter = {
+		.enable_irqdesc = at91_enable_irqdesc,
+		.disable_irqdesc = at91_disable_irqdesc,
+		.mute = at91_mute_pic,
+		.unmute = at91_unmute_pic,
+	};
+
+	ipipe_pic_muter_register(&at91_pic_muter);
+}
+#endif /* CONFIG_IPIPE */

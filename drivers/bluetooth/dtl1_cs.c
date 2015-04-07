@@ -153,8 +153,7 @@ static void dtl1_write_wakeup(dtl1_info_t *info)
 		if (!pcmcia_dev_present(info->p_dev))
 			return;
 
-		skb = skb_dequeue(&(info->txq));
-		if (!skb)
+		if (!(skb = skb_dequeue(&(info->txq))))
 			break;
 
 		/* Send frame */
@@ -216,15 +215,13 @@ static void dtl1_receive(dtl1_info_t *info)
 		info->hdev->stat.byte_rx++;
 
 		/* Allocate packet */
-		if (info->rx_skb == NULL) {
-			info->rx_skb = bt_skb_alloc(HCI_MAX_FRAME_SIZE, GFP_ATOMIC);
-			if (!info->rx_skb) {
+		if (info->rx_skb == NULL)
+			if (!(info->rx_skb = bt_skb_alloc(HCI_MAX_FRAME_SIZE, GFP_ATOMIC))) {
 				BT_ERR("Can't allocate mem for new packet");
 				info->rx_state = RECV_WAIT_NSH;
 				info->rx_count = NSHL;
 				return;
 			}
-		}
 
 		*skb_put(info->rx_skb, 1) = inb(iobase + UART_RX);
 		nsh = (nsh_t *)info->rx_skb->data;
@@ -259,8 +256,9 @@ static void dtl1_receive(dtl1_info_t *info)
 				case 0x83:
 				case 0x84:
 					/* send frame to the HCI layer */
+					info->rx_skb->dev = (void *) info->hdev;
 					bt_cb(info->rx_skb)->pkt_type &= 0x0f;
-					hci_recv_frame(info->hdev, info->rx_skb);
+					hci_recv_frame(info->rx_skb);
 					break;
 				default:
 					/* unknown packet */
@@ -385,11 +383,19 @@ static int dtl1_hci_close(struct hci_dev *hdev)
 }
 
 
-static int dtl1_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
+static int dtl1_hci_send_frame(struct sk_buff *skb)
 {
-	dtl1_info_t *info = hci_get_drvdata(hdev);
+	dtl1_info_t *info;
+	struct hci_dev *hdev = (struct hci_dev *)(skb->dev);
 	struct sk_buff *s;
 	nsh_t nsh;
+
+	if (!hdev) {
+		BT_ERR("Frame for unknown HCI device (hdev=NULL)");
+		return -ENODEV;
+	}
+
+	info = hci_get_drvdata(hdev);
 
 	switch (bt_cb(skb)->pkt_type) {
 	case HCI_COMMAND_PKT:
@@ -432,6 +438,12 @@ static int dtl1_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 }
 
 
+static int dtl1_hci_ioctl(struct hci_dev *hdev, unsigned int cmd,  unsigned long arg)
+{
+	return -ENOIOCTLCMD;
+}
+
+
 
 /* ======================== Card services HCI interaction ======================== */
 
@@ -465,10 +477,11 @@ static int dtl1_open(dtl1_info_t *info)
 	hci_set_drvdata(hdev, info);
 	SET_HCIDEV_DEV(hdev, &info->p_dev->dev);
 
-	hdev->open  = dtl1_hci_open;
-	hdev->close = dtl1_hci_close;
-	hdev->flush = dtl1_hci_flush;
-	hdev->send  = dtl1_hci_send_frame;
+	hdev->open     = dtl1_hci_open;
+	hdev->close    = dtl1_hci_close;
+	hdev->flush    = dtl1_hci_flush;
+	hdev->send     = dtl1_hci_send_frame;
+	hdev->ioctl    = dtl1_hci_ioctl;
 
 	spin_lock_irqsave(&(info->lock), flags);
 
@@ -615,4 +628,17 @@ static struct pcmcia_driver dtl1_driver = {
 	.remove		= dtl1_detach,
 	.id_table	= dtl1_ids,
 };
-module_pcmcia_driver(dtl1_driver);
+
+static int __init init_dtl1_cs(void)
+{
+	return pcmcia_register_driver(&dtl1_driver);
+}
+
+
+static void __exit exit_dtl1_cs(void)
+{
+	pcmcia_unregister_driver(&dtl1_driver);
+}
+
+module_init(init_dtl1_cs);
+module_exit(exit_dtl1_cs);

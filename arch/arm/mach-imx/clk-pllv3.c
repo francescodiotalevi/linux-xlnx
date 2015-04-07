@@ -12,7 +12,6 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
-#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -46,47 +45,24 @@ struct clk_pllv3 {
 
 #define to_clk_pllv3(_hw) container_of(_hw, struct clk_pllv3, hw)
 
-static int clk_pllv3_wait_lock(struct clk_pllv3 *pll)
-{
-	unsigned long timeout = jiffies + msecs_to_jiffies(10);
-	u32 val = readl_relaxed(pll->base) & BM_PLL_POWER;
-
-	/* No need to wait for lock when pll is not powered up */
-	if ((pll->powerup_set && !val) || (!pll->powerup_set && val))
-		return 0;
-
-	/* Wait for PLL to lock */
-	do {
-		if (readl_relaxed(pll->base) & BM_PLL_LOCK)
-			break;
-		if (time_after(jiffies, timeout))
-			break;
-		usleep_range(50, 500);
-	} while (1);
-
-	return readl_relaxed(pll->base) & BM_PLL_LOCK ? 0 : -ETIMEDOUT;
-}
-
 static int clk_pllv3_prepare(struct clk_hw *hw)
 {
 	struct clk_pllv3 *pll = to_clk_pllv3(hw);
+	unsigned long timeout = jiffies + msecs_to_jiffies(10);
 	u32 val;
-	int ret;
 
 	val = readl_relaxed(pll->base);
+	val &= ~BM_PLL_BYPASS;
 	if (pll->powerup_set)
 		val |= BM_PLL_POWER;
 	else
 		val &= ~BM_PLL_POWER;
 	writel_relaxed(val, pll->base);
 
-	ret = clk_pllv3_wait_lock(pll);
-	if (ret)
-		return ret;
-
-	val = readl_relaxed(pll->base);
-	val &= ~BM_PLL_BYPASS;
-	writel_relaxed(val, pll->base);
+	/* Wait for PLL to lock */
+	while (!(readl_relaxed(pll->base) & BM_PLL_LOCK))
+		if (time_after(jiffies, timeout))
+			return -ETIMEDOUT;
 
 	return 0;
 }
@@ -163,7 +139,7 @@ static int clk_pllv3_set_rate(struct clk_hw *hw, unsigned long rate,
 	val |= div;
 	writel_relaxed(val, pll->base);
 
-	return clk_pllv3_wait_lock(pll);
+	return 0;
 }
 
 static const struct clk_ops clk_pllv3_ops = {
@@ -219,7 +195,7 @@ static int clk_pllv3_sys_set_rate(struct clk_hw *hw, unsigned long rate,
 	val |= div;
 	writel_relaxed(val, pll->base);
 
-	return clk_pllv3_wait_lock(pll);
+	return 0;
 }
 
 static const struct clk_ops clk_pllv3_sys_ops = {
@@ -293,7 +269,7 @@ static int clk_pllv3_av_set_rate(struct clk_hw *hw, unsigned long rate,
 	writel_relaxed(mfn, pll->base + PLL_NUM_OFFSET);
 	writel_relaxed(mfd, pll->base + PLL_DENOM_OFFSET);
 
-	return clk_pllv3_wait_lock(pll);
+	return 0;
 }
 
 static const struct clk_ops clk_pllv3_av_ops = {
@@ -318,6 +294,13 @@ static const struct clk_ops clk_pllv3_enet_ops = {
 	.enable		= clk_pllv3_enable,
 	.disable	= clk_pllv3_disable,
 	.recalc_rate	= clk_pllv3_enet_recalc_rate,
+};
+
+static const struct clk_ops clk_pllv3_mlb_ops = {
+	.prepare	= clk_pllv3_prepare,
+	.unprepare	= clk_pllv3_unprepare,
+	.enable		= clk_pllv3_enable,
+	.disable	= clk_pllv3_disable,
 };
 
 struct clk *imx_clk_pllv3(enum imx_pllv3_type type, const char *name,
@@ -346,6 +329,9 @@ struct clk *imx_clk_pllv3(enum imx_pllv3_type type, const char *name,
 		break;
 	case IMX_PLLV3_ENET:
 		ops = &clk_pllv3_enet_ops;
+		break;
+	case IMX_PLLV3_MLB:
+		ops = &clk_pllv3_mlb_ops;
 		break;
 	default:
 		ops = &clk_pllv3_ops;

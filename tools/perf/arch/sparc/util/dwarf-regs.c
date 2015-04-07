@@ -9,7 +9,7 @@
  * 2 of the License, or (at your option) any later version.
  */
 
-#include <stddef.h>
+#include <libio.h>
 #include <dwarf-regs.h>
 
 #define SPARC_MAX_REGS	96

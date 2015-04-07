@@ -52,7 +52,13 @@
 #define LOAD_OFFSET 0
 #endif
 
-#include <linux/export.h>
+#ifndef SYMBOL_PREFIX
+#define VMLINUX_SYMBOL(sym) sym
+#else
+#define PASTE2(x,y) x##y
+#define PASTE(x,y) PASTE2(x,y)
+#define VMLINUX_SYMBOL(sym) PASTE(SYMBOL_PREFIX, sym)
+#endif
 
 /* Align . to a 8 byte boundary equals to maximum function alignment. */
 #define ALIGN_FUNCTION()  . = ALIGN(8)
@@ -68,6 +74,14 @@
  * are handled as text/data or they can be discarded (which
  * often happens at runtime)
  */
+#ifdef CONFIG_HOTPLUG
+#define DEV_KEEP(sec)    *(.dev##sec)
+#define DEV_DISCARD(sec)
+#else
+#define DEV_KEEP(sec)
+#define DEV_DISCARD(sec) *(.dev##sec)
+#endif
+
 #ifdef CONFIG_HOTPLUG_CPU
 #define CPU_KEEP(sec)    *(.cpu##sec)
 #define CPU_DISCARD(sec)
@@ -109,15 +123,6 @@
 #define BRANCH_PROFILE()
 #endif
 
-#ifdef CONFIG_KPROBES
-#define KPROBE_BLACKLIST()	. = ALIGN(8);				      \
-				VMLINUX_SYMBOL(__start_kprobe_blacklist) = .; \
-				*(_kprobe_blacklist)			      \
-				VMLINUX_SYMBOL(__stop_kprobe_blacklist) = .;
-#else
-#define KPROBE_BLACKLIST()
-#endif
-
 #ifdef CONFIG_EVENT_TRACING
 #define FTRACE_EVENTS()	. = ALIGN(8);					\
 			VMLINUX_SYMBOL(__start_ftrace_events) = .;	\
@@ -131,12 +136,8 @@
 #define TRACE_PRINTKS() VMLINUX_SYMBOL(__start___trace_bprintk_fmt) = .;      \
 			 *(__trace_printk_fmt) /* Trace_printk fmt' pointer */ \
 			 VMLINUX_SYMBOL(__stop___trace_bprintk_fmt) = .;
-#define TRACEPOINT_STR() VMLINUX_SYMBOL(__start___tracepoint_str) = .;	\
-			 *(__tracepoint_str) /* Trace_printk fmt' pointer */ \
-			 VMLINUX_SYMBOL(__stop___tracepoint_str) = .;
 #else
 #define TRACE_PRINTKS()
-#define TRACEPOINT_STR()
 #endif
 
 #ifdef CONFIG_FTRACE_SYSCALLS
@@ -149,23 +150,6 @@
 #endif
 
 
-#define ___OF_TABLE(cfg, name)	_OF_TABLE_##cfg(name)
-#define __OF_TABLE(cfg, name)	___OF_TABLE(cfg, name)
-#define OF_TABLE(cfg, name)	__OF_TABLE(config_enabled(cfg), name)
-#define _OF_TABLE_0(name)
-#define _OF_TABLE_1(name)						\
-	. = ALIGN(8);							\
-	VMLINUX_SYMBOL(__##name##_of_table) = .;			\
-	*(__##name##_of_table)						\
-	*(__##name##_of_table_end)
-
-#define CLKSRC_OF_TABLES()	OF_TABLE(CONFIG_CLKSRC_OF, clksrc)
-#define IRQCHIP_OF_MATCH_TABLE() OF_TABLE(CONFIG_IRQCHIP, irqchip)
-#define CLK_OF_TABLES()		OF_TABLE(CONFIG_COMMON_CLK, clk)
-#define RESERVEDMEM_OF_TABLES()	OF_TABLE(CONFIG_OF_RESERVED_MEM, reservedmem)
-#define CPU_METHOD_OF_TABLES()	OF_TABLE(CONFIG_SMP, cpu_method)
-#define EARLYCON_OF_TABLES()	OF_TABLE(CONFIG_SERIAL_EARLYCON, earlycon)
-
 #define KERNEL_DTB()							\
 	STRUCT_ALIGN();							\
 	VMLINUX_SYMBOL(__dtb_start) = .;				\
@@ -177,6 +161,10 @@
 	*(.data)							\
 	*(.ref.data)							\
 	*(.data..shared_aligned) /* percpu related */			\
+	DEV_KEEP(init.data)						\
+	DEV_KEEP(exit.data)						\
+	CPU_KEEP(init.data)						\
+	CPU_KEEP(exit.data)						\
 	MEM_KEEP(init.data)						\
 	MEM_KEEP(exit.data)						\
 	*(.data.unlikely)						\
@@ -193,8 +181,7 @@
 	VMLINUX_SYMBOL(__stop___verbose) = .;				\
 	LIKELY_PROFILE()		       				\
 	BRANCH_PROFILE()						\
-	TRACE_PRINTKS()							\
-	TRACEPOINT_STR()
+	TRACE_PRINTKS()
 
 /*
  * Data section helpers
@@ -268,9 +255,6 @@
 		VMLINUX_SYMBOL(__start_pci_fixups_suspend) = .;		\
 		*(.pci_fixup_suspend)					\
 		VMLINUX_SYMBOL(__end_pci_fixups_suspend) = .;		\
-		VMLINUX_SYMBOL(__start_pci_fixups_suspend_late) = .;	\
-		*(.pci_fixup_suspend_late)				\
-		VMLINUX_SYMBOL(__end_pci_fixups_suspend_late) = .;	\
 	}								\
 									\
 	/* Built-in firmware blobs */					\
@@ -278,6 +262,13 @@
 		VMLINUX_SYMBOL(__start_builtin_fw) = .;			\
 		*(.builtin_fw)						\
 		VMLINUX_SYMBOL(__end_builtin_fw) = .;			\
+	}								\
+									\
+	/* RapidIO route ops */						\
+	.rio_ops        : AT(ADDR(.rio_ops) - LOAD_OFFSET) {		\
+		VMLINUX_SYMBOL(__start_rio_switch_ops) = .;		\
+		*(.rio_switch_ops)					\
+		VMLINUX_SYMBOL(__end_rio_switch_ops) = .;		\
 	}								\
 									\
 	TRACEDATA							\
@@ -360,6 +351,10 @@
 	/* __*init sections */						\
 	__init_rodata : AT(ADDR(__init_rodata) - LOAD_OFFSET) {		\
 		*(.ref.rodata)						\
+		DEV_KEEP(init.rodata)					\
+		DEV_KEEP(exit.rodata)					\
+		CPU_KEEP(init.rodata)					\
+		CPU_KEEP(exit.rodata)					\
 		MEM_KEEP(init.rodata)					\
 		MEM_KEEP(exit.rodata)					\
 	}								\
@@ -400,6 +395,10 @@
 		*(.text.hot)						\
 		*(.text)						\
 		*(.ref.text)						\
+	DEV_KEEP(init.text)						\
+	DEV_KEEP(exit.text)						\
+	CPU_KEEP(init.text)						\
+	CPU_KEEP(exit.text)						\
 	MEM_KEEP(init.text)						\
 	MEM_KEEP(exit.text)						\
 		*(.text.unlikely)
@@ -472,10 +471,9 @@
 	}
 
 #ifdef CONFIG_CONSTRUCTORS
-#define KERNEL_CTORS()	. = ALIGN(8);					\
-			VMLINUX_SYMBOL(__ctors_start) = .;		\
-			*(CONFIG_CONSTRUCTORS_NAME)			\
-			*(.init_array)			   \
+#define KERNEL_CTORS()	. = ALIGN(8);			   \
+			VMLINUX_SYMBOL(__ctors_start) = .; \
+			*(.ctors)			   \
 			VMLINUX_SYMBOL(__ctors_end) = .;
 #else
 #define KERNEL_CTORS()
@@ -484,33 +482,38 @@
 /* init and exit section handling */
 #define INIT_DATA							\
 	*(.init.data)							\
+	DEV_DISCARD(init.data)						\
+	CPU_DISCARD(init.data)						\
 	MEM_DISCARD(init.data)						\
 	KERNEL_CTORS()							\
 	MCOUNT_REC()							\
 	*(.init.rodata)							\
 	FTRACE_EVENTS()							\
 	TRACE_SYSCALLS()						\
-	KPROBE_BLACKLIST()						\
+	DEV_DISCARD(init.rodata)					\
+	CPU_DISCARD(init.rodata)					\
 	MEM_DISCARD(init.rodata)					\
-	CLK_OF_TABLES()							\
-	RESERVEDMEM_OF_TABLES()						\
-	CLKSRC_OF_TABLES()						\
-	CPU_METHOD_OF_TABLES()						\
-	KERNEL_DTB()							\
-	IRQCHIP_OF_MATCH_TABLE()					\
-	EARLYCON_OF_TABLES()
+	KERNEL_DTB()
 
 #define INIT_TEXT							\
 	*(.init.text)							\
+	DEV_DISCARD(init.text)						\
+	CPU_DISCARD(init.text)						\
 	MEM_DISCARD(init.text)
 
 #define EXIT_DATA							\
 	*(.exit.data)							\
+	DEV_DISCARD(exit.data)						\
+	DEV_DISCARD(exit.rodata)					\
+	CPU_DISCARD(exit.data)						\
+	CPU_DISCARD(exit.rodata)					\
 	MEM_DISCARD(exit.data)						\
 	MEM_DISCARD(exit.rodata)
 
 #define EXIT_TEXT							\
 	*(.exit.text)							\
+	DEV_DISCARD(exit.text)						\
+	CPU_DISCARD(exit.text)						\
 	MEM_DISCARD(exit.text)
 
 #define EXIT_CALL							\
@@ -696,7 +699,7 @@
 	. = ALIGN(PAGE_SIZE);						\
 	*(.data..percpu..page_aligned)					\
 	. = ALIGN(cacheline);						\
-	*(.data..percpu..read_mostly)					\
+	*(.data..percpu..readmostly)					\
 	. = ALIGN(cacheline);						\
 	*(.data..percpu)						\
 	*(.data..percpu..shared_aligned)				\

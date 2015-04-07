@@ -263,6 +263,9 @@ static int gab_probe(struct platform_device *pdev)
 	psy->external_power_changed = gab_ext_power_changed;
 	adc_bat->pdata = pdata;
 
+	/* calculate the total number of channels */
+	chan = ARRAY_SIZE(gab_chan_name);
+
 	/*
 	 * copying the static properties and allocating extra memory for holding
 	 * the extra configurable properties received from platform data.
@@ -284,11 +287,10 @@ static int gab_probe(struct platform_device *pdev)
 	 * based on the channel supported by consumer device.
 	 */
 	for (chan = 0; chan < ARRAY_SIZE(gab_chan_name); chan++) {
-		adc_bat->channel[chan] = iio_channel_get(&pdev->dev,
-							 gab_chan_name[chan]);
+		adc_bat->channel[chan] = iio_channel_get(dev_name(&pdev->dev),
+						gab_chan_name[chan]);
 		if (IS_ERR(adc_bat->channel[chan])) {
 			ret = PTR_ERR(adc_bat->channel[chan]);
-			adc_bat->channel[chan] = NULL;
 		} else {
 			/* copying properties for supported channels only */
 			memcpy(properties + sizeof(*(psy->properties)) * index,
@@ -299,10 +301,8 @@ static int gab_probe(struct platform_device *pdev)
 	}
 
 	/* none of the channels are supported so let's bail out */
-	if (index == 0) {
-		ret = -ENODEV;
+	if (index == ARRAY_SIZE(gab_chan_name))
 		goto second_mem_fail;
-	}
 
 	/*
 	 * Total number of properties is equal to static properties
@@ -344,10 +344,8 @@ err_gpio:
 gpio_req_fail:
 	power_supply_unregister(psy);
 err_reg_fail:
-	for (chan = 0; chan < ARRAY_SIZE(gab_chan_name); chan++) {
-		if (adc_bat->channel[chan])
-			iio_channel_release(adc_bat->channel[chan]);
-	}
+	for (chan = 0; ARRAY_SIZE(gab_chan_name); chan++)
+		iio_channel_release(adc_bat->channel[chan]);
 second_mem_fail:
 	kfree(psy->properties);
 first_mem_fail:
@@ -367,10 +365,8 @@ static int gab_remove(struct platform_device *pdev)
 		gpio_free(pdata->gpio_charge_finished);
 	}
 
-	for (chan = 0; chan < ARRAY_SIZE(gab_chan_name); chan++) {
-		if (adc_bat->channel[chan])
-			iio_channel_release(adc_bat->channel[chan]);
-	}
+	for (chan = 0; ARRAY_SIZE(gab_chan_name); chan++)
+		iio_channel_release(adc_bat->channel[chan]);
 
 	kfree(adc_bat->psy.properties);
 	cancel_delayed_work(&adc_bat->bat_work);

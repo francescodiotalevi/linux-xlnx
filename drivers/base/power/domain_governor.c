@@ -6,6 +6,7 @@
  * This file is released under the GPLv2.
  */
 
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_qos.h>

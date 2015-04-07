@@ -452,20 +452,22 @@ ia32_badsys:
 
 	CFI_ENDPROC
 	
-	.macro PTREGSCALL label, func
+	.macro PTREGSCALL label, func, arg
 	ALIGN
 GLOBAL(\label)
 	leaq \func(%rip),%rax
+	leaq -ARGOFFSET+8(%rsp),\arg	/* 8 for return address */
 	jmp  ia32_ptregs_common	
 	.endm
 
 	CFI_STARTPROC32
 
-	PTREGSCALL stub32_rt_sigreturn, sys32_rt_sigreturn
-	PTREGSCALL stub32_sigreturn, sys32_sigreturn
-	PTREGSCALL stub32_execve, compat_sys_execve
-	PTREGSCALL stub32_fork, sys_fork
-	PTREGSCALL stub32_vfork, sys_vfork
+	PTREGSCALL stub32_rt_sigreturn, sys32_rt_sigreturn, %rdi
+	PTREGSCALL stub32_sigreturn, sys32_sigreturn, %rdi
+	PTREGSCALL stub32_execve, compat_sys_execve, %rcx
+	PTREGSCALL stub32_fork, sys_fork, %rdi
+	PTREGSCALL stub32_vfork, sys_vfork, %rdi
+	PTREGSCALL stub32_iopl, sys_iopl, %rsi
 
 	ALIGN
 GLOBAL(stub32_clone)

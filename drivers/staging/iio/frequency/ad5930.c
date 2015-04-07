@@ -44,6 +44,7 @@ static ssize_t ad5930_set_parameter(struct device *dev,
 					const char *buf,
 					size_t len)
 {
+	struct spi_message msg;
 	struct spi_transfer xfer;
 	int ret;
 	struct ad5903_config *config = (struct ad5903_config *)buf;
@@ -63,7 +64,9 @@ static ssize_t ad5930_set_parameter(struct device *dev,
 	xfer.tx_buf = config;
 	mutex_lock(&st->lock);
 
-	ret = spi_sync_transfer(st->sdev, &xfer, 1);
+	spi_message_init(&msg);
+	spi_message_add_tail(&xfer, &msg);
+	ret = spi_sync(st->sdev, &msg);
 	if (ret)
 		goto error_ret;
 error_ret:
@@ -94,9 +97,11 @@ static int ad5930_probe(struct spi_device *spi)
 	struct iio_dev *idev;
 	int ret = 0;
 
-	idev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
-	if (!idev)
-		return -ENOMEM;
+	idev = iio_device_alloc(sizeof(*st));
+	if (idev == NULL) {
+		ret = -ENOMEM;
+		goto error_ret;
+	}
 	spi_set_drvdata(spi, idev);
 	st = iio_priv(idev);
 
@@ -108,18 +113,24 @@ static int ad5930_probe(struct spi_device *spi)
 
 	ret = iio_device_register(idev);
 	if (ret)
-		return ret;
+		goto error_free_dev;
 	spi->max_speed_hz = 2000000;
 	spi->mode = SPI_MODE_3;
 	spi->bits_per_word = 16;
 	spi_setup(spi);
 
 	return 0;
+
+error_free_dev:
+	iio_device_free(idev);
+error_ret:
+	return ret;
 }
 
 static int ad5930_remove(struct spi_device *spi)
 {
 	iio_device_unregister(spi_get_drvdata(spi));
+	iio_device_free(spi_get_drvdata(spi));
 
 	return 0;
 }

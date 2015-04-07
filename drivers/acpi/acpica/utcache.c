@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -65,7 +65,7 @@ ACPI_MODULE_NAME("utcache")
 acpi_status
 acpi_os_create_cache(char *cache_name,
 		     u16 object_size,
-		     u16 max_depth, struct acpi_memory_list **return_cache)
+		     u16 max_depth, struct acpi_memory_list ** return_cache)
 {
 	struct acpi_memory_list *cache;
 
@@ -85,6 +85,7 @@ acpi_os_create_cache(char *cache_name,
 	/* Populate the cache object and return it */
 
 	ACPI_MEMSET(cache, 0, sizeof(struct acpi_memory_list));
+	cache->link_offset = 8;
 	cache->list_name = cache_name;
 	cache->object_size = object_size;
 	cache->max_depth = max_depth;
@@ -107,7 +108,7 @@ acpi_os_create_cache(char *cache_name,
 
 acpi_status acpi_os_purge_cache(struct acpi_memory_list * cache)
 {
-	void *next;
+	char *next;
 	acpi_status status;
 
 	ACPI_FUNCTION_ENTRY();
@@ -127,7 +128,10 @@ acpi_status acpi_os_purge_cache(struct acpi_memory_list * cache)
 
 		/* Delete and unlink one cached state object */
 
-		next = ACPI_GET_DESCRIPTOR_PTR(cache->list_head);
+		next = *(ACPI_CAST_INDIRECT_PTR(char,
+						&(((char *)cache->
+						   list_head)[cache->
+							      link_offset])));
 		ACPI_FREE(cache->list_head);
 
 		cache->list_head = next;
@@ -217,7 +221,10 @@ acpi_os_release_object(struct acpi_memory_list * cache, void *object)
 
 		/* Put the object at the head of the cache list */
 
-		ACPI_SET_DESCRIPTOR_PTR(object, cache->list_head);
+		*(ACPI_CAST_INDIRECT_PTR(char,
+					 &(((char *)object)[cache->
+							    link_offset]))) =
+		    cache->list_head;
 		cache->list_head = object;
 		cache->current_depth++;
 
@@ -248,12 +255,12 @@ void *acpi_os_acquire_object(struct acpi_memory_list *cache)
 	ACPI_FUNCTION_NAME(os_acquire_object);
 
 	if (!cache) {
-		return_PTR(NULL);
+		return (NULL);
 	}
 
 	status = acpi_ut_acquire_mutex(ACPI_MTX_CACHES);
 	if (ACPI_FAILURE(status)) {
-		return_PTR(NULL);
+		return (NULL);
 	}
 
 	ACPI_MEM_TRACKING(cache->requests++);
@@ -265,7 +272,10 @@ void *acpi_os_acquire_object(struct acpi_memory_list *cache)
 		/* There is an object available, use it */
 
 		object = cache->list_head;
-		cache->list_head = ACPI_GET_DESCRIPTOR_PTR(object);
+		cache->list_head = *(ACPI_CAST_INDIRECT_PTR(char,
+							    &(((char *)
+							       object)[cache->
+								       link_offset])));
 
 		cache->current_depth--;
 
@@ -276,7 +286,7 @@ void *acpi_os_acquire_object(struct acpi_memory_list *cache)
 
 		status = acpi_ut_release_mutex(ACPI_MTX_CACHES);
 		if (ACPI_FAILURE(status)) {
-			return_PTR(NULL);
+			return (NULL);
 		}
 
 		/* Clear (zero) the previously used Object */
@@ -299,15 +309,15 @@ void *acpi_os_acquire_object(struct acpi_memory_list *cache)
 
 		status = acpi_ut_release_mutex(ACPI_MTX_CACHES);
 		if (ACPI_FAILURE(status)) {
-			return_PTR(NULL);
+			return (NULL);
 		}
 
 		object = ACPI_ALLOCATE_ZEROED(cache->object_size);
 		if (!object) {
-			return_PTR(NULL);
+			return (NULL);
 		}
 	}
 
-	return_PTR(object);
+	return (object);
 }
 #endif				/* ACPI_USE_LOCAL_CACHE */

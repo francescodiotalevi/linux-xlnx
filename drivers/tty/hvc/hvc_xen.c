@@ -183,7 +183,7 @@ static int dom0_write_console(uint32_t vtermno, const char *str, int len)
 {
 	int rc = HYPERVISOR_console_io(CONSOLEIO_write, len, (char *)str);
 	if (rc < 0)
-		return rc;
+		return 0;
 
 	return len;
 }
@@ -208,7 +208,7 @@ static int xen_hvm_console_init(void)
 
 	info = vtermno_to_xencons(HVC_COOKIE);
 	if (!info) {
-		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL);
+		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL | __GFP_ZERO);
 		if (!info)
 			return -ENOMEM;
 	} else if (info->intf != NULL) {
@@ -230,7 +230,7 @@ static int xen_hvm_console_init(void)
 	if (r < 0 || v == 0)
 		goto err;
 	mfn = v;
-	info->intf = xen_remap(mfn << PAGE_SHIFT, PAGE_SIZE);
+	info->intf = ioremap(mfn << PAGE_SHIFT, PAGE_SIZE);
 	if (info->intf == NULL)
 		goto err;
 	info->vtermno = HVC_COOKIE;
@@ -257,7 +257,7 @@ static int xen_pv_console_init(void)
 
 	info = vtermno_to_xencons(HVC_COOKIE);
 	if (!info) {
-		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL);
+		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL | __GFP_ZERO);
 		if (!info)
 			return -ENOMEM;
 	} else if (info->intf != NULL) {
@@ -284,7 +284,7 @@ static int xen_initial_domain_console_init(void)
 
 	info = vtermno_to_xencons(HVC_COOKIE);
 	if (!info) {
-		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL);
+		info = kzalloc(sizeof(struct xencons_info), GFP_KERNEL | __GFP_ZERO);
 		if (!info)
 			return -ENOMEM;
 	}
@@ -561,7 +561,18 @@ static int __init xen_hvc_init(void)
 #endif
 	return r;
 }
-device_initcall(xen_hvc_init);
+
+static void __exit xen_hvc_fini(void)
+{
+	struct xencons_info *entry, *next;
+
+	if (list_empty(&xenconsoles))
+			return;
+
+	list_for_each_entry_safe(entry, next, &xenconsoles, list) {
+		xen_console_remove(entry);
+	}
+}
 
 static int xen_cons_init(void)
 {
@@ -587,6 +598,10 @@ static int xen_cons_init(void)
 	hvc_instantiate(HVC_COOKIE, 0, ops);
 	return 0;
 }
+
+
+module_init(xen_hvc_init);
+module_exit(xen_hvc_fini);
 console_initcall(xen_cons_init);
 
 #ifdef CONFIG_EARLY_PRINTK
@@ -621,28 +636,12 @@ struct console xenboot_console = {
 	.name		= "xenboot",
 	.write		= xenboot_write_console,
 	.flags		= CON_PRINTBUFFER | CON_BOOT | CON_ANYTIME,
-	.index		= -1,
 };
 #endif	/* CONFIG_EARLY_PRINTK */
 
 void xen_raw_console_write(const char *str)
 {
-	ssize_t len = strlen(str);
-	int rc = 0;
-
-	if (xen_domain()) {
-		rc = dom0_write_console(0, str, len);
-#ifdef CONFIG_X86
-		if (rc == -ENOSYS && xen_hvm_domain())
-			goto outb_print;
-
-	} else if (xen_cpuid_base()) {
-		int i;
-outb_print:
-		for (i = 0; i < len; i++)
-			outb(str[i], 0xe9);
-#endif
-	}
+	dom0_write_console(0, str, strlen(str));
 }
 
 void xen_raw_printk(const char *fmt, ...)

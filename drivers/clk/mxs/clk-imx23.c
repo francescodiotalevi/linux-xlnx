@@ -10,22 +10,17 @@
  */
 
 #include <linux/clk.h>
-#include <linux/clk/mxs.h>
 #include <linux/clkdev.h>
-#include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
+#include <mach/common.h>
+#include <mach/mx23.h>
 #include "clk.h"
 
-static void __iomem *clkctrl;
-static void __iomem *digctrl;
-
-#define CLKCTRL clkctrl
-#define DIGCTRL digctrl
-
+#define DIGCTRL			MX23_IO_ADDRESS(MX23_DIGCTL_BASE_ADDR)
+#define CLKCTRL			MX23_IO_ADDRESS(MX23_CLKCTRL_BASE_ADDR)
 #define PLLCTRL0		(CLKCTRL + 0x0000)
 #define CPU			(CLKCTRL + 0x0020)
 #define HBUS			(CLKCTRL + 0x0030)
@@ -53,10 +48,10 @@ static void __init clk_misc_init(void)
 	u32 val;
 
 	/* Gate off cpu clock in WFI for power saving */
-	writel_relaxed(1 << BP_CPU_INTERRUPT_WAIT, CPU + SET);
+	__mxs_setl(1 << BP_CPU_INTERRUPT_WAIT, CPU);
 
 	/* Clear BYPASS for SAIF */
-	writel_relaxed(1 << BP_CLKSEQ_BYPASS_SAIF, CLKSEQ + CLR);
+	__mxs_clrl(1 << BP_CLKSEQ_BYPASS_SAIF, CLKSEQ);
 
 	/* SAIF has to use frac div for functional operation */
 	val = readl_relaxed(SAIF);
@@ -67,14 +62,14 @@ static void __init clk_misc_init(void)
 	 * Source ssp clock from ref_io than ref_xtal,
 	 * as ref_xtal only provides 24 MHz as maximum.
 	 */
-	writel_relaxed(1 << BP_CLKSEQ_BYPASS_SSP, CLKSEQ + CLR);
+	__mxs_clrl(1 << BP_CLKSEQ_BYPASS_SSP, CLKSEQ);
 
 	/*
 	 * 480 MHz seems too high to be ssp clock source directly,
 	 * so set frac to get a 288 MHz ref_io.
 	 */
-	writel_relaxed(0x3f << BP_FRAC_IOFRAC, FRAC + CLR);
-	writel_relaxed(30 << BP_FRAC_IOFRAC, FRAC + SET);
+	__mxs_clrl(0x3f << BP_FRAC_IOFRAC, FRAC);
+	__mxs_setl(30 << BP_FRAC_IOFRAC, FRAC);
 }
 
 static const char *sel_pll[]  __initconst = { "pll", "ref_xtal", };
@@ -101,18 +96,10 @@ static enum imx23_clk clks_init_on[] __initdata = {
 	cpu, hbus, xbus, emi, uart,
 };
 
-static void __init mx23_clocks_init(struct device_node *np)
+int __init mx23_clocks_init(void)
 {
-	struct device_node *dcnp;
-	u32 i;
-
-	dcnp = of_find_compatible_node(NULL, NULL, "fsl,imx23-digctl");
-	digctrl = of_iomap(dcnp, 0);
-	WARN_ON(!digctrl);
-	of_node_put(dcnp);
-
-	clkctrl = of_iomap(np, 0);
-	WARN_ON(!clkctrl);
+	struct device_node *np;
+	int i;
 
 	clk_misc_init();
 
@@ -163,15 +150,22 @@ static void __init mx23_clocks_init(struct device_node *np)
 		if (IS_ERR(clks[i])) {
 			pr_err("i.MX23 clk %d: register failed with %ld\n",
 				i, PTR_ERR(clks[i]));
-			return;
+			return PTR_ERR(clks[i]);
 		}
 
-	clk_data.clks = clks;
-	clk_data.clk_num = ARRAY_SIZE(clks);
-	of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx23-clkctrl");
+	if (np) {
+		clk_data.clks = clks;
+		clk_data.clk_num = ARRAY_SIZE(clks);
+		of_clk_add_provider(np, of_clk_src_onecell_get, &clk_data);
+	}
+
+	clk_register_clkdev(clks[clk32k], NULL, "timrot");
 
 	for (i = 0; i < ARRAY_SIZE(clks_init_on); i++)
 		clk_prepare_enable(clks[clks_init_on[i]]);
 
+	mxs_timer_init();
+
+	return 0;
 }
-CLK_OF_DECLARE(imx23_clkctrl, "fsl,imx23-clkctrl", mx23_clocks_init);

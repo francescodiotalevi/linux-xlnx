@@ -17,7 +17,6 @@
 #include <linux/types.h>
 #include <asm/spr-regs.h>
 #include <asm/cmpxchg.h>
-#include <asm/barrier.h>
 
 #ifdef CONFIG_SMP
 #error not SMP safe
@@ -29,6 +28,12 @@
  *
  * We do not have SMP systems, so we don't have to deal with that.
  */
+
+/* Atomic operations are already serializing */
+#define smp_mb__before_atomic_dec()	barrier()
+#define smp_mb__after_atomic_dec()	barrier()
+#define smp_mb__before_atomic_inc()	barrier()
+#define smp_mb__after_atomic_inc()	barrier()
 
 #define ATOMIC_INIT(i)		{ (i) }
 #define atomic_read(v)		(*(volatile int *)&(v)->counter)

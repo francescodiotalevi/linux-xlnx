@@ -1,7 +1,8 @@
 /*
  * Copyright (C) ST-Ericsson AB 2010
- * Author:  Daniel Martensson
- *	    Dmitry.Tarnyagin  / dmitry.tarnyagin@lockless.no
+ * Contact: Sjur Brendeland / sjur.brandeland@stericsson.com
+ * Author:  Daniel Martensson / daniel.martensson@stericsson.com
+ *	    Dmitry.Tarnyagin  / dmitry.tarnyagin@stericsson.com
  * License terms: GNU General Public License (GPL) version 2.
  */
 
@@ -24,7 +25,7 @@
 #include <net/caif/caif_hsi.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Daniel Martensson");
+MODULE_AUTHOR("Daniel Martensson<daniel.martensson@stericsson.com>");
 MODULE_DESCRIPTION("CAIF HSI driver");
 
 /* Returns the number of padding bytes for alignment. */

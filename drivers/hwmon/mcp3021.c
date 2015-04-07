@@ -143,13 +143,12 @@ static int mcp3021_probe(struct i2c_client *client,
 		break;
 	}
 
-	if (dev_get_platdata(&client->dev)) {
-		data->vdd = *(u32 *)dev_get_platdata(&client->dev);
+	if (client->dev.platform_data) {
+		data->vdd = *(u32 *)client->dev.platform_data;
 		if (data->vdd > MCP3021_VDD_MAX || data->vdd < MCP3021_VDD_MIN)
 			return -EINVAL;
-	} else {
+	} else
 		data->vdd = MCP3021_VDD_REF;
-	}
 
 	err = sysfs_create_file(&client->dev.kobj, &dev_attr_in0_input.attr);
 	if (err)

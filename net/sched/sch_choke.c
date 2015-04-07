@@ -14,6 +14,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
+#include <linux/reciprocal_div.h>
 #include <linux/vmalloc.h>
 #include <net/pkt_sched.h>
 #include <net/inet_ecn.h>
@@ -76,6 +77,12 @@ struct choke_sched_data {
 	struct sk_buff **tab;
 };
 
+/* deliver a random number between 0 and N - 1 */
+static u32 random_N(unsigned int N)
+{
+	return reciprocal_divide(random32(), N);
+}
+
 /* number of elements in queue including holes */
 static unsigned int choke_len(const struct choke_sched_data *q)
 {
@@ -133,16 +140,10 @@ static void choke_drop_by_idx(struct Qdisc *sch, unsigned int idx)
 	--sch->q.qlen;
 }
 
-/* private part of skb->cb[] that a qdisc is allowed to use
- * is limited to QDISC_CB_PRIV_LEN bytes.
- * As a flow key might be too large, we store a part of it only.
- */
-#define CHOKE_K_LEN min_t(u32, sizeof(struct flow_keys), QDISC_CB_PRIV_LEN - 3)
-
 struct choke_skb_cb {
 	u16			classid;
 	u8			keys_valid;
-	u8			keys[QDISC_CB_PRIV_LEN - 3];
+	struct flow_keys	keys;
 };
 
 static inline struct choke_skb_cb *choke_skb_cb(const struct sk_buff *skb)
@@ -169,26 +170,22 @@ static u16 choke_get_classid(const struct sk_buff *skb)
 static bool choke_match_flow(struct sk_buff *skb1,
 			     struct sk_buff *skb2)
 {
-	struct flow_keys temp;
-
 	if (skb1->protocol != skb2->protocol)
 		return false;
 
 	if (!choke_skb_cb(skb1)->keys_valid) {
 		choke_skb_cb(skb1)->keys_valid = 1;
-		skb_flow_dissect(skb1, &temp);
-		memcpy(&choke_skb_cb(skb1)->keys, &temp, CHOKE_K_LEN);
+		skb_flow_dissect(skb1, &choke_skb_cb(skb1)->keys);
 	}
 
 	if (!choke_skb_cb(skb2)->keys_valid) {
 		choke_skb_cb(skb2)->keys_valid = 1;
-		skb_flow_dissect(skb2, &temp);
-		memcpy(&choke_skb_cb(skb2)->keys, &temp, CHOKE_K_LEN);
+		skb_flow_dissect(skb2, &choke_skb_cb(skb2)->keys);
 	}
 
 	return !memcmp(&choke_skb_cb(skb1)->keys,
 		       &choke_skb_cb(skb2)->keys,
-		       CHOKE_K_LEN);
+		       sizeof(struct flow_keys));
 }
 
 /*
@@ -236,7 +233,7 @@ static struct sk_buff *choke_peek_random(const struct choke_sched_data *q,
 	int retrys = 3;
 
 	do {
-		*pidx = (q->head + prandom_u32_max(choke_len(q))) & q->tab_mask;
+		*pidx = (q->head + random_N(choke_len(q))) & q->tab_mask;
 		skb = q->tab[*pidx];
 		if (skb)
 			return skb;
@@ -401,7 +398,12 @@ static const struct nla_policy choke_policy[TCA_CHOKE_MAX + 1] = {
 
 static void choke_free(void *addr)
 {
-	kvfree(addr);
+	if (addr) {
+		if (is_vmalloc_addr(addr))
+			vfree(addr);
+		else
+			kfree(addr);
+	}
 }
 
 static int choke_change(struct Qdisc *sch, struct nlattr *opt)
@@ -436,8 +438,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt)
 	if (mask != q->tab_mask) {
 		struct sk_buff **ntab;
 
-		ntab = kcalloc(mask + 1, sizeof(struct sk_buff *),
-			       GFP_KERNEL | __GFP_NOWARN);
+		ntab = kcalloc(mask + 1, sizeof(struct sk_buff *), GFP_KERNEL);
 		if (!ntab)
 			ntab = vzalloc((mask + 1) * sizeof(struct sk_buff *));
 		if (!ntab)

@@ -41,7 +41,7 @@ const struct file_operations autofs4_root_operations = {
 	.open		= dcache_dir_open,
 	.release	= dcache_dir_close,
 	.read		= generic_read_dir,
-	.iterate	= dcache_readdir,
+	.readdir	= dcache_readdir,
 	.llseek		= dcache_dir_lseek,
 	.unlocked_ioctl	= autofs4_root_ioctl,
 #ifdef CONFIG_COMPAT
@@ -53,7 +53,7 @@ const struct file_operations autofs4_dir_operations = {
 	.open		= autofs4_dir_open,
 	.release	= dcache_dir_close,
 	.read		= generic_read_dir,
-	.iterate	= dcache_readdir,
+	.readdir	= dcache_readdir,
 	.llseek		= dcache_dir_lseek,
 };
 
@@ -166,10 +166,8 @@ static struct dentry *autofs4_lookup_active(struct dentry *dentry)
 	const unsigned char *str = name->name;
 	struct list_head *p, *head;
 
-	head = &sbi->active_list;
-	if (list_empty(head))
-		return NULL;
 	spin_lock(&sbi->lookup_lock);
+	head = &sbi->active_list;
 	list_for_each(p, head) {
 		struct autofs_info *ino;
 		struct dentry *active;
@@ -181,7 +179,7 @@ static struct dentry *autofs4_lookup_active(struct dentry *dentry)
 		spin_lock(&active->d_lock);
 
 		/* Already gone? */
-		if ((int) d_count(active) <= 0)
+		if (active->d_count == 0)
 			goto next;
 
 		qstr = &active->d_name;
@@ -220,10 +218,8 @@ static struct dentry *autofs4_lookup_expiring(struct dentry *dentry)
 	const unsigned char *str = name->name;
 	struct list_head *p, *head;
 
-	head = &sbi->expiring_list;
-	if (list_empty(head))
-		return NULL;
 	spin_lock(&sbi->lookup_lock);
+	head = &sbi->expiring_list;
 	list_for_each(p, head) {
 		struct autofs_info *ino;
 		struct dentry *expiring;
@@ -234,7 +230,7 @@ static struct dentry *autofs4_lookup_expiring(struct dentry *dentry)
 
 		spin_lock(&expiring->d_lock);
 
-		/* We've already been dentry_iput or unlinked */
+		/* Bad luck, we've already been dentry_iput */
 		if (!expiring->d_inode)
 			goto next;
 
@@ -377,7 +373,7 @@ static struct vfsmount *autofs4_d_automount(struct path *path)
 		 * this because the leaves of the directory tree under the
 		 * mount never trigger mounts themselves (they have an autofs
 		 * trigger mount mounted on them). But v4 pseudo direct mounts
-		 * do need the leaves to trigger mounts. In this case we
+		 * do need the leaves to to trigger mounts. In this case we
 		 * have no choice but to use the list_empty() check and
 		 * require user space behave.
 		 */
@@ -387,10 +383,8 @@ static struct vfsmount *autofs4_d_automount(struct path *path)
 				goto done;
 			}
 		} else {
-			if (!simple_empty(dentry)) {
-				spin_unlock(&sbi->fs_lock);
+			if (!simple_empty(dentry))
 				goto done;
-			}
 		}
 		ino->flags |= AUTOFS_INF_PENDING;
 		spin_unlock(&sbi->fs_lock);
@@ -412,7 +406,7 @@ done:
 	return NULL;
 }
 
-static int autofs4_d_manage(struct dentry *dentry, bool rcu_walk)
+int autofs4_d_manage(struct dentry *dentry, bool rcu_walk)
 {
 	struct autofs_sb_info *sbi = autofs4_sbi(dentry->d_sb);
 	struct autofs_info *ino = autofs4_dentry_ino(dentry);
@@ -562,7 +556,7 @@ static int autofs4_dir_symlink(struct inode *dir,
 	dget(dentry);
 	atomic_inc(&ino->count);
 	p_ino = autofs4_dentry_ino(dentry->d_parent);
-	if (p_ino && !IS_ROOT(dentry))
+	if (p_ino && dentry->d_parent != dentry)
 		atomic_inc(&p_ino->count);
 
 	dir->i_mtime = CURRENT_TIME;
@@ -593,11 +587,11 @@ static int autofs4_dir_unlink(struct inode *dir, struct dentry *dentry)
 	
 	/* This allows root to remove symlinks */
 	if (!autofs4_oz_mode(sbi) && !capable(CAP_SYS_ADMIN))
-		return -EPERM;
+		return -EACCES;
 
 	if (atomic_dec_and_test(&ino->count)) {
 		p_ino = autofs4_dentry_ino(dentry->d_parent);
-		if (p_ino && !IS_ROOT(dentry))
+		if (p_ino && dentry->d_parent != dentry)
 			atomic_dec(&p_ino->count);
 	}
 	dput(ino->dentry);
@@ -736,7 +730,7 @@ static int autofs4_dir_mkdir(struct inode *dir, struct dentry *dentry, umode_t m
 	dget(dentry);
 	atomic_inc(&ino->count);
 	p_ino = autofs4_dentry_ino(dentry->d_parent);
-	if (p_ino && !IS_ROOT(dentry))
+	if (p_ino && dentry->d_parent != dentry)
 		atomic_inc(&p_ino->count);
 	inc_nlink(dir);
 	dir->i_mtime = CURRENT_TIME;
@@ -880,7 +874,7 @@ static int autofs4_root_ioctl_unlocked(struct inode *inode, struct file *filp,
 static long autofs4_root_ioctl(struct file *filp,
 			       unsigned int cmd, unsigned long arg)
 {
-	struct inode *inode = file_inode(filp);
+	struct inode *inode = filp->f_dentry->d_inode;
 	return autofs4_root_ioctl_unlocked(inode, filp, cmd, arg);
 }
 
@@ -888,7 +882,7 @@ static long autofs4_root_ioctl(struct file *filp,
 static long autofs4_root_compat_ioctl(struct file *filp,
 			     unsigned int cmd, unsigned long arg)
 {
-	struct inode *inode = file_inode(filp);
+	struct inode *inode = filp->f_path.dentry->d_inode;
 	int ret;
 
 	if (cmd == AUTOFS_IOC_READY || cmd == AUTOFS_IOC_FAIL)

@@ -70,7 +70,6 @@ struct xenbus_device {
 	struct device dev;
 	enum xenbus_state state;
 	struct completion down;
-	struct work_struct work;
 };
 
 static inline struct xenbus_device *to_xenbus_device(struct device *dev)
@@ -207,6 +206,7 @@ int xenbus_unmap_ring(struct xenbus_device *dev,
 		      grant_handle_t handle, void *vaddr);
 
 int xenbus_alloc_evtchn(struct xenbus_device *dev, int *port);
+int xenbus_bind_evtchn(struct xenbus_device *dev, int remote_port, int *port);
 int xenbus_free_evtchn(struct xenbus_device *dev, int port);
 
 enum xenbus_state xenbus_read_driver_state(const char *path);

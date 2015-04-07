@@ -1,3 +1,4 @@
+#include <newt.h>
 #include <signal.h>
 #include <stdbool.h>
 
@@ -9,7 +10,6 @@
 #include "../util.h"
 #include "../libslang.h"
 #include "../keysyms.h"
-#include "tui.h"
 
 static volatile int ui__need_resize;
 
@@ -88,6 +88,13 @@ int ui__getch(int delay_secs)
 	return SLkp_getkey();
 }
 
+static void newt_suspend(void *d __maybe_unused)
+{
+	newtSuspend();
+	raise(SIGTSTP);
+	newtResume();
+}
+
 static void ui__signal(int sig)
 {
 	ui__exit(false);
@@ -99,17 +106,7 @@ int ui__init(void)
 {
 	int err;
 
-	SLutf8_enable(-1);
-	SLtt_get_terminfo();
-	SLtt_get_screen_size();
-
-	err = SLsmg_init_smg();
-	if (err < 0)
-		goto out;
-	err = SLang_init_tty(0, 0, 0);
-	if (err < 0)
-		goto out;
-
+	newtInit();
 	err = SLkp_init();
 	if (err < 0) {
 		pr_err("TUI initialization failed.\n");
@@ -118,9 +115,10 @@ int ui__init(void)
 
 	SLkp_define_keysym((char *)"^(kB)", SL_KEY_UNTAB);
 
+	newtSetSuspendCallback(newt_suspend, NULL);
 	ui_helpline__init();
 	ui_browser__init();
-	tui_progress__init();
+	ui_progress__init();
 
 	signal(SIGSEGV, ui__signal);
 	signal(SIGFPE, ui__signal);

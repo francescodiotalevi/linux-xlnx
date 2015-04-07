@@ -19,6 +19,12 @@
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+************************************************************************
 */
 /*
 Driver: cb_pcidas
@@ -61,18 +67,16 @@ TODO:
 analog triggering on 1602 series
 */
 
-#include <linux/module.h>
-#include <linux/pci.h>
+#include "../comedidev.h"
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-
-#include "../comedidev.h"
 
 #include "8253.h"
 #include "8255.h"
 #include "amcc_s5933.h"
 #include "comedi_fc.h"
 
+#define TIMER_BASE		100	/* 10MHz master clock */
 #define AI_BUFFER_SIZE		1024	/* max ai fifo size */
 #define AO_BUFFER_SIZE		1024	/* max ao fifo size */
 #define NUM_CHANNELS_8800	8
@@ -181,40 +185,43 @@ static inline unsigned int DAC_DATA_REG(unsigned int channel)
 
 /* analog input ranges for most boards */
 static const struct comedi_lrange cb_pcidas_ranges = {
-	8, {
-		BIP_RANGE(10),
-		BIP_RANGE(5),
-		BIP_RANGE(2.5),
-		BIP_RANGE(1.25),
-		UNI_RANGE(10),
-		UNI_RANGE(5),
-		UNI_RANGE(2.5),
-		UNI_RANGE(1.25)
-	}
+	8,
+	{
+	 BIP_RANGE(10),
+	 BIP_RANGE(5),
+	 BIP_RANGE(2.5),
+	 BIP_RANGE(1.25),
+	 UNI_RANGE(10),
+	 UNI_RANGE(5),
+	 UNI_RANGE(2.5),
+	 UNI_RANGE(1.25)
+	 }
 };
 
 /* pci-das1001 input ranges */
 static const struct comedi_lrange cb_pcidas_alt_ranges = {
-	8, {
-		BIP_RANGE(10),
-		BIP_RANGE(1),
-		BIP_RANGE(0.1),
-		BIP_RANGE(0.01),
-		UNI_RANGE(10),
-		UNI_RANGE(1),
-		UNI_RANGE(0.1),
-		UNI_RANGE(0.01)
-	}
+	8,
+	{
+	 BIP_RANGE(10),
+	 BIP_RANGE(1),
+	 BIP_RANGE(0.1),
+	 BIP_RANGE(0.01),
+	 UNI_RANGE(10),
+	 UNI_RANGE(1),
+	 UNI_RANGE(0.1),
+	 UNI_RANGE(0.01)
+	 }
 };
 
 /* analog output ranges */
 static const struct comedi_lrange cb_pcidas_ao_ranges = {
-	4, {
-		BIP_RANGE(5),
-		BIP_RANGE(10),
-		UNI_RANGE(5),
-		UNI_RANGE(10)
-	}
+	4,
+	{
+	 BIP_RANGE(5),
+	 BIP_RANGE(10),
+	 UNI_RANGE(5),
+	 UNI_RANGE(10),
+	 }
 };
 
 enum trimpot_model {
@@ -222,19 +229,9 @@ enum trimpot_model {
 	AD8402,
 };
 
-enum cb_pcidas_boardid {
-	BOARD_PCIDAS1602_16,
-	BOARD_PCIDAS1200,
-	BOARD_PCIDAS1602_12,
-	BOARD_PCIDAS1200_JR,
-	BOARD_PCIDAS1602_16_JR,
-	BOARD_PCIDAS1000,
-	BOARD_PCIDAS1001,
-	BOARD_PCIDAS1002,
-};
-
 struct cb_pcidas_board {
 	const char *name;
+	unsigned short device_id;
 	int ai_nchan;		/*  Inputs in single-ended mode */
 	int ai_bits;		/*  analog input resolution */
 	int ai_speed;		/*  fastest conversion period in ns */
@@ -249,8 +246,9 @@ struct cb_pcidas_board {
 };
 
 static const struct cb_pcidas_board cb_pcidas_boards[] = {
-	[BOARD_PCIDAS1602_16] = {
+	{
 		.name		= "pci-das1602/16",
+		.device_id	= 0x1,
 		.ai_nchan	= 16,
 		.ai_bits	= 16,
 		.ai_speed	= 5000,
@@ -262,9 +260,9 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.trimpot	= AD8402,
 		.has_dac08	= 1,
 		.is_1602	= 1,
-	},
-	[BOARD_PCIDAS1200] = {
+	}, {
 		.name		= "pci-das1200",
+		.device_id	= 0xF,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 3200,
@@ -272,9 +270,9 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.fifo_size	= 1024,
 		.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
-	},
-	[BOARD_PCIDAS1602_12] = {
+	}, {
 		.name		= "pci-das1602/12",
+		.device_id	= 0x10,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 3200,
@@ -285,18 +283,18 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
 		.is_1602	= 1,
-	},
-	[BOARD_PCIDAS1200_JR] = {
+	}, {
 		.name		= "pci-das1200/jr",
+		.device_id	= 0x19,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 3200,
 		.fifo_size	= 1024,
 		.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
-	},
-	[BOARD_PCIDAS1602_16_JR] = {
+	}, {
 		.name		= "pci-das1602/16/jr",
+		.device_id	= 0x1C,
 		.ai_nchan	= 16,
 		.ai_bits	= 16,
 		.ai_speed	= 5000,
@@ -305,18 +303,18 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.trimpot	= AD8402,
 		.has_dac08	= 1,
 		.is_1602	= 1,
-	},
-	[BOARD_PCIDAS1000] = {
+	}, {
 		.name		= "pci-das1000",
+		.device_id	= 0x4C,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 4000,
 		.fifo_size	= 1024,
 		.ranges		= &cb_pcidas_ranges,
 		.trimpot	= AD7376,
-	},
-	[BOARD_PCIDAS1001] = {
+	}, {
 		.name		= "pci-das1001",
+		.device_id	= 0x1a,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 6800,
@@ -324,9 +322,9 @@ static const struct cb_pcidas_board cb_pcidas_boards[] = {
 		.fifo_size	= 1024,
 		.ranges		= &cb_pcidas_alt_ranges,
 		.trimpot	= AD7376,
-	},
-	[BOARD_PCIDAS1002] = {
+	}, {
 		.name		= "pci-das1002",
+		.device_id	= 0x1b,
 		.ai_nchan	= 16,
 		.ai_bits	= 12,
 		.ai_speed	= 6800,
@@ -354,15 +352,15 @@ struct cb_pcidas_private {
 	unsigned int s5933_intcsr_bits;
 	unsigned int ao_control_bits;
 	/* fifo buffers */
-	unsigned short ai_buffer[AI_BUFFER_SIZE];
-	unsigned short ao_buffer[AO_BUFFER_SIZE];
+	short ai_buffer[AI_BUFFER_SIZE];
+	short ao_buffer[AO_BUFFER_SIZE];
 	/* divisors of master clock for analog output pacing */
 	unsigned int ao_divisor1;
 	unsigned int ao_divisor2;
 	/* number of analog output samples remaining */
 	unsigned int ao_count;
 	/* cached values for readback */
-	unsigned short ao_value[2];
+	int ao_value[2];
 	unsigned int caldac_value[NUM_CHANNELS_8800];
 	unsigned int trimpot_value[NUM_CHANNELS_8402];
 	unsigned int dac08_value;
@@ -376,20 +374,6 @@ static inline unsigned int cal_enable_bits(struct comedi_device *dev)
 	return CAL_EN_BIT | CAL_SRC_BITS(devpriv->calibration_source);
 }
 
-static int cb_pcidas_ai_eoc(struct comedi_device *dev,
-			    struct comedi_subdevice *s,
-			    struct comedi_insn *insn,
-			    unsigned long context)
-{
-	struct cb_pcidas_private *devpriv = dev->private;
-	unsigned int status;
-
-	status = inw(devpriv->control_status + ADCMUX_CONT);
-	if (status & EOC)
-		return 0;
-	return -EBUSY;
-}
-
 static int cb_pcidas_ai_rinsn(struct comedi_device *dev,
 			      struct comedi_subdevice *s,
 			      struct comedi_insn *insn, unsigned int *data)
@@ -399,8 +383,7 @@ static int cb_pcidas_ai_rinsn(struct comedi_device *dev,
 	unsigned int range = CR_RANGE(insn->chanspec);
 	unsigned int aref = CR_AREF(insn->chanspec);
 	unsigned int bits;
-	int ret;
-	int n;
+	int n, i;
 
 	/* enable calibration input if appropriate */
 	if (insn->chanspec & CR_ALT_SOURCE) {
@@ -430,9 +413,13 @@ static int cb_pcidas_ai_rinsn(struct comedi_device *dev,
 		outw(0, devpriv->adc_fifo + ADCDATA);
 
 		/* wait for conversion to end */
-		ret = comedi_timeout(dev, s, insn, cb_pcidas_ai_eoc, 0);
-		if (ret)
-			return ret;
+		/* return -ETIMEDOUT if there is a timeout */
+		for (i = 0; i < 10000; i++) {
+			if (inw(devpriv->control_status + ADCMUX_CONT) & EOC)
+				break;
+		}
+		if (i == 10000)
+			return -ETIMEDOUT;
 
 		/* read data */
 		data[n] = inw(devpriv->adc_fifo + ADCDATA);
@@ -461,6 +448,7 @@ static int ai_config_insn(struct comedi_device *dev, struct comedi_subdevice *s,
 		break;
 	default:
 		return -EINVAL;
+		break;
 	}
 	return insn->n;
 }
@@ -621,7 +609,7 @@ static int caldac_8800_write(struct comedi_device *dev, unsigned int address,
 	static const int caldac_8800_udelay = 1;
 
 	if (address >= num_caldac_channels) {
-		dev_err(dev->class_dev, "illegal caldac channel\n");
+		comedi_error(dev, "illegal caldac channel");
 		return -1;
 	}
 
@@ -773,8 +761,9 @@ static int cb_pcidas_trimpot_write(struct comedi_device *dev,
 		trimpot_8402_write(dev, channel, value);
 		break;
 	default:
-		dev_err(dev->class_dev, "driver bug?\n");
+		comedi_error(dev, "driver bug?");
 		return -1;
+		break;
 	}
 
 	return 1;
@@ -801,33 +790,6 @@ static int trimpot_read_insn(struct comedi_device *dev,
 	return 1;
 }
 
-static int cb_pcidas_ai_check_chanlist(struct comedi_device *dev,
-				       struct comedi_subdevice *s,
-				       struct comedi_cmd *cmd)
-{
-	unsigned int chan0 = CR_CHAN(cmd->chanlist[0]);
-	unsigned int range0 = CR_RANGE(cmd->chanlist[0]);
-	int i;
-
-	for (i = 1; i < cmd->chanlist_len; i++) {
-		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
-		unsigned int range = CR_RANGE(cmd->chanlist[i]);
-
-		if (chan != (chan0 + i) % s->n_chan) {
-			dev_dbg(dev->class_dev,
-				"entries in chanlist must be consecutive channels, counting upwards\n");
-			return -EINVAL;
-		}
-
-		if (range != range0) {
-			dev_dbg(dev->class_dev,
-				"entries in chanlist must all have the same gain\n");
-			return -EINVAL;
-		}
-	}
-	return 0;
-}
-
 static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 				struct comedi_subdevice *s,
 				struct comedi_cmd *cmd)
@@ -835,7 +797,8 @@ static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 	const struct cb_pcidas_board *thisboard = comedi_board(dev);
 	struct cb_pcidas_private *devpriv = dev->private;
 	int err = 0;
-	unsigned int arg;
+	int tmp;
+	int i, gain, start_chan;
 
 	/* Step 1 : check if triggers are trivially valid */
 
@@ -870,12 +833,9 @@ static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 	if (err)
 		return 2;
 
-	/* Step 3: check if arguments are trivially valid */
+	/* step 3: arguments are trivially compatible */
 
 	switch (cmd->start_src) {
-	case TRIG_NOW:
-		err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
-		break;
 	case TRIG_EXT:
 		/* External trigger, only CR_EDGE and CR_INVERT flags allowed */
 		if ((cmd->start_arg
@@ -888,6 +848,9 @@ static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 			cmd->start_arg &= (CR_FLAGS_MASK & ~CR_INVERT);
 			err |= -EINVAL;
 		}
+		break;
+	default:
+		err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
 		break;
 	}
 
@@ -910,28 +873,47 @@ static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 	/* step 4: fix up any arguments */
 
 	if (cmd->scan_begin_src == TRIG_TIMER) {
-		arg = cmd->scan_begin_arg;
-		i8253_cascade_ns_to_timer(I8254_OSC_BASE_10MHZ,
-					  &devpriv->divisor1,
-					  &devpriv->divisor2,
-					  &arg, cmd->flags);
-		err |= cfc_check_trigger_arg_is(&cmd->scan_begin_arg, arg);
+		tmp = cmd->scan_begin_arg;
+		i8253_cascade_ns_to_timer_2div(TIMER_BASE,
+					       &(devpriv->divisor1),
+					       &(devpriv->divisor2),
+					       &(cmd->scan_begin_arg),
+					       cmd->flags & TRIG_ROUND_MASK);
+		if (tmp != cmd->scan_begin_arg)
+			err++;
 	}
 	if (cmd->convert_src == TRIG_TIMER) {
-		arg = cmd->convert_arg;
-		i8253_cascade_ns_to_timer(I8254_OSC_BASE_10MHZ,
-					  &devpriv->divisor1,
-					  &devpriv->divisor2,
-					  &arg, cmd->flags);
-		err |= cfc_check_trigger_arg_is(&cmd->convert_arg, arg);
+		tmp = cmd->convert_arg;
+		i8253_cascade_ns_to_timer_2div(TIMER_BASE,
+					       &(devpriv->divisor1),
+					       &(devpriv->divisor2),
+					       &(cmd->convert_arg),
+					       cmd->flags & TRIG_ROUND_MASK);
+		if (tmp != cmd->convert_arg)
+			err++;
 	}
 
 	if (err)
 		return 4;
 
-	/* Step 5: check channel list if it exists */
-	if (cmd->chanlist && cmd->chanlist_len > 0)
-		err |= cb_pcidas_ai_check_chanlist(dev, s, cmd);
+	/*  check channel/gain list against card's limitations */
+	if (cmd->chanlist) {
+		gain = CR_RANGE(cmd->chanlist[0]);
+		start_chan = CR_CHAN(cmd->chanlist[0]);
+		for (i = 1; i < cmd->chanlist_len; i++) {
+			if (CR_CHAN(cmd->chanlist[i]) !=
+			    (start_chan + i) % s->n_chan) {
+				comedi_error(dev,
+					     "entries in chanlist must be consecutive channels, counting upwards\n");
+				err++;
+			}
+			if (CR_RANGE(cmd->chanlist[i]) != gain) {
+				comedi_error(dev,
+					     "entries in chanlist must all have the same gain\n");
+				err++;
+			}
+		}
+	}
 
 	if (err)
 		return 5;
@@ -939,16 +921,20 @@ static int cb_pcidas_ai_cmdtest(struct comedi_device *dev,
 	return 0;
 }
 
-static void cb_pcidas_ai_load_counters(struct comedi_device *dev)
+static void cb_pcidas_load_counters(struct comedi_device *dev, unsigned int *ns,
+				    int rounding_flags)
 {
 	struct cb_pcidas_private *devpriv = dev->private;
-	unsigned long timer_base = devpriv->pacer_counter_dio + ADC8254;
 
-	i8254_set_mode(timer_base, 0, 1, I8254_MODE2 | I8254_BINARY);
-	i8254_set_mode(timer_base, 0, 2, I8254_MODE2 | I8254_BINARY);
+	i8253_cascade_ns_to_timer_2div(TIMER_BASE, &(devpriv->divisor1),
+				       &(devpriv->divisor2), ns,
+				       rounding_flags & TRIG_ROUND_MASK);
 
-	i8254_write(timer_base, 0, 1, devpriv->divisor1);
-	i8254_write(timer_base, 0, 2, devpriv->divisor2);
+	/* Write the values of ctr1 and ctr2 into counters 1 and 2 */
+	i8254_load(devpriv->pacer_counter_dio + ADC8254, 0, 1,
+		   devpriv->divisor1, 2);
+	i8254_load(devpriv->pacer_counter_dio + ADC8254, 0, 2,
+		   devpriv->divisor2, 2);
 }
 
 static int cb_pcidas_ai_cmd(struct comedi_device *dev,
@@ -986,8 +972,12 @@ static int cb_pcidas_ai_cmd(struct comedi_device *dev,
 	outw(bits, devpriv->control_status + ADCMUX_CONT);
 
 	/*  load counters */
-	if (cmd->scan_begin_src == TRIG_TIMER || cmd->convert_src == TRIG_TIMER)
-		cb_pcidas_ai_load_counters(dev);
+	if (cmd->convert_src == TRIG_TIMER)
+		cb_pcidas_load_counters(dev, &cmd->convert_arg,
+					cmd->flags & TRIG_ROUND_MASK);
+	else if (cmd->scan_begin_src == TRIG_TIMER)
+		cb_pcidas_load_counters(dev, &cmd->scan_begin_arg,
+					cmd->flags & TRIG_ROUND_MASK);
 
 	/*  set number of conversions */
 	if (cmd->stop_src == TRIG_COUNT)
@@ -1016,9 +1006,9 @@ static int cb_pcidas_ai_cmd(struct comedi_device *dev,
 
 	/*  set start trigger and burst mode */
 	bits = 0;
-	if (cmd->start_src == TRIG_NOW) {
+	if (cmd->start_src == TRIG_NOW)
 		bits |= SW_TRIGGER;
-	} else {	/* TRIG_EXT */
+	else if (cmd->start_src == TRIG_EXT) {
 		bits |= EXT_TRIGGER | TGEN | XTRCL;
 		if (thisboard->is_1602) {
 			if (cmd->start_arg & CR_INVERT)
@@ -1026,29 +1016,13 @@ static int cb_pcidas_ai_cmd(struct comedi_device *dev,
 			if (cmd->start_arg & CR_EDGE)
 				bits |= TGSEL;
 		}
+	} else {
+		comedi_error(dev, "bug!");
+		return -1;
 	}
 	if (cmd->convert_src == TRIG_NOW && cmd->chanlist_len > 1)
 		bits |= BURSTE;
 	outw(bits, devpriv->control_status + TRIG_CONTSTAT);
-
-	return 0;
-}
-
-static int cb_pcidas_ao_check_chanlist(struct comedi_device *dev,
-				       struct comedi_subdevice *s,
-				       struct comedi_cmd *cmd)
-{
-	unsigned int chan0 = CR_CHAN(cmd->chanlist[0]);
-
-	if (cmd->chanlist_len > 1) {
-		unsigned int chan1 = CR_CHAN(cmd->chanlist[1]);
-
-		if (chan0 != 0 || chan1 != 1) {
-			dev_dbg(dev->class_dev,
-				"channels must be ordered channel 0, channel 1 in chanlist\n");
-			return -EINVAL;
-		}
-	}
 
 	return 0;
 }
@@ -1060,7 +1034,7 @@ static int cb_pcidas_ao_cmdtest(struct comedi_device *dev,
 	const struct cb_pcidas_board *thisboard = comedi_board(dev);
 	struct cb_pcidas_private *devpriv = dev->private;
 	int err = 0;
-	unsigned int arg;
+	int tmp;
 
 	/* Step 1 : check if triggers are trivially valid */
 
@@ -1103,20 +1077,28 @@ static int cb_pcidas_ao_cmdtest(struct comedi_device *dev,
 	/* step 4: fix up any arguments */
 
 	if (cmd->scan_begin_src == TRIG_TIMER) {
-		arg = cmd->scan_begin_arg;
-		i8253_cascade_ns_to_timer(I8254_OSC_BASE_10MHZ,
-					  &devpriv->ao_divisor1,
-					  &devpriv->ao_divisor2,
-					  &arg, cmd->flags);
-		err |= cfc_check_trigger_arg_is(&cmd->scan_begin_arg, arg);
+		tmp = cmd->scan_begin_arg;
+		i8253_cascade_ns_to_timer_2div(TIMER_BASE,
+					       &(devpriv->ao_divisor1),
+					       &(devpriv->ao_divisor2),
+					       &(cmd->scan_begin_arg),
+					       cmd->flags & TRIG_ROUND_MASK);
+		if (tmp != cmd->scan_begin_arg)
+			err++;
 	}
 
 	if (err)
 		return 4;
 
-	/* Step 5: check channel list if it exists */
-	if (cmd->chanlist && cmd->chanlist_len > 0)
-		err |= cb_pcidas_ao_check_chanlist(dev, s, cmd);
+	/*  check channel/gain list against card's limitations */
+	if (cmd->chanlist && cmd->chanlist_len > 1) {
+		if (CR_CHAN(cmd->chanlist[0]) != 0 ||
+		    CR_CHAN(cmd->chanlist[1]) != 1) {
+			comedi_error(dev,
+				     "channels must be ordered channel 0, channel 1 in chanlist\n");
+			err++;
+		}
+	}
 
 	if (err)
 		return 5;
@@ -1156,7 +1138,7 @@ static int cb_pcidas_ao_inttrig(struct comedi_device *dev,
 	struct comedi_cmd *cmd = &s->async->cmd;
 	unsigned long flags;
 
-	if (trig_num != cmd->start_arg)
+	if (trig_num != 0)
 		return -EINVAL;
 
 	/*  load up fifo */
@@ -1191,18 +1173,6 @@ static int cb_pcidas_ao_inttrig(struct comedi_device *dev,
 	return 0;
 }
 
-static void cb_pcidas_ao_load_counters(struct comedi_device *dev)
-{
-	struct cb_pcidas_private *devpriv = dev->private;
-	unsigned long timer_base = devpriv->pacer_counter_dio + DAC8254;
-
-	i8254_set_mode(timer_base, 0, 1, I8254_MODE2 | I8254_BINARY);
-	i8254_set_mode(timer_base, 0, 2, I8254_MODE2 | I8254_BINARY);
-
-	i8254_write(timer_base, 0, 1, devpriv->ao_divisor1);
-	i8254_write(timer_base, 0, 2, devpriv->ao_divisor2);
-}
-
 static int cb_pcidas_ao_cmd(struct comedi_device *dev,
 			    struct comedi_subdevice *s)
 {
@@ -1232,9 +1202,19 @@ static int cb_pcidas_ao_cmd(struct comedi_device *dev,
 	outw(0, devpriv->ao_registers + DACFIFOCLR);
 
 	/*  load counters */
-	if (cmd->scan_begin_src == TRIG_TIMER)
-		cb_pcidas_ao_load_counters(dev);
+	if (cmd->scan_begin_src == TRIG_TIMER) {
+		i8253_cascade_ns_to_timer_2div(TIMER_BASE,
+					       &(devpriv->ao_divisor1),
+					       &(devpriv->ao_divisor2),
+					       &(cmd->scan_begin_arg),
+					       cmd->flags);
 
+		/* Write the values of ctr1 and ctr2 into counters 1 and 2 */
+		i8254_load(devpriv->pacer_counter_dio + DAC8254, 0, 1,
+			   devpriv->ao_divisor1, 2);
+		i8254_load(devpriv->pacer_counter_dio + DAC8254, 0, 2,
+			   devpriv->ao_divisor2, 2);
+	}
 	/*  set number of conversions */
 	if (cmd->stop_src == TRIG_COUNT)
 		devpriv->ao_count = cmd->chanlist_len * cmd->stop_arg;
@@ -1249,8 +1229,9 @@ static int cb_pcidas_ao_cmd(struct comedi_device *dev,
 		break;
 	default:
 		spin_unlock_irqrestore(&dev->spinlock, flags);
-		dev_err(dev->class_dev, "error setting dac pacer source\n");
+		comedi_error(dev, "error setting dac pacer source");
 		return -1;
+		break;
 	}
 	spin_unlock_irqrestore(&dev->spinlock, flags);
 
@@ -1290,6 +1271,8 @@ static void handle_ao_interrupt(struct comedi_device *dev, unsigned int status)
 	unsigned int num_points;
 	unsigned long flags;
 
+	async->events = 0;
+
 	if (status & DAEMI) {
 		/*  clear dac empty interrupt latch */
 		spin_lock_irqsave(&dev->spinlock, flags);
@@ -1300,7 +1283,8 @@ static void handle_ao_interrupt(struct comedi_device *dev, unsigned int status)
 			if (cmd->stop_src == TRIG_NONE ||
 			    (cmd->stop_src == TRIG_COUNT
 			     && devpriv->ao_count)) {
-				dev_err(dev->class_dev, "dac fifo underflow\n");
+				comedi_error(dev, "dac fifo underflow");
+				cb_pcidas_ao_cancel(dev, s);
 				async->events |= COMEDI_CB_ERROR;
 			}
 			async->events |= COMEDI_CB_EOA;
@@ -1318,7 +1302,7 @@ static void handle_ao_interrupt(struct comedi_device *dev, unsigned int status)
 					       num_points * sizeof(short));
 		num_points = num_bytes / sizeof(short);
 
-		if (cmd->stop_src == TRIG_COUNT)
+		if (async->cmd.stop_src == TRIG_COUNT)
 			devpriv->ao_count -= num_points;
 		/*  write data to board's fifo */
 		outsw(devpriv->ao_registers + DACDATA, devpriv->ao_buffer,
@@ -1330,7 +1314,7 @@ static void handle_ao_interrupt(struct comedi_device *dev, unsigned int status)
 		spin_unlock_irqrestore(&dev->spinlock, flags);
 	}
 
-	cfc_handle_events(dev, s);
+	comedi_event(dev, s);
 }
 
 static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
@@ -1340,18 +1324,17 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 	struct cb_pcidas_private *devpriv = dev->private;
 	struct comedi_subdevice *s = dev->read_subdev;
 	struct comedi_async *async;
-	struct comedi_cmd *cmd;
 	int status, s5933_status;
 	int half_fifo = thisboard->fifo_size / 2;
 	unsigned int num_samples, i;
 	static const int timeout = 10000;
 	unsigned long flags;
 
-	if (!dev->attached)
+	if (dev->attached == 0)
 		return IRQ_NONE;
 
 	async = s->async;
-	cmd = &async->cmd;
+	async->events = 0;
 
 	s5933_status = inl(devpriv->s5933_config + AMCC_OP_REG_INTCSR);
 
@@ -1374,7 +1357,7 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 	if (status & ADHFI) {
 		/*  read data */
 		num_samples = half_fifo;
-		if (cmd->stop_src == TRIG_COUNT &&
+		if (async->cmd.stop_src == TRIG_COUNT &&
 		    num_samples > devpriv->count) {
 			num_samples = devpriv->count;
 		}
@@ -1383,8 +1366,10 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 		cfc_write_array_to_buffer(s, devpriv->ai_buffer,
 					  num_samples * sizeof(short));
 		devpriv->count -= num_samples;
-		if (cmd->stop_src == TRIG_COUNT && devpriv->count == 0)
+		if (async->cmd.stop_src == TRIG_COUNT && devpriv->count == 0) {
 			async->events |= COMEDI_CB_EOA;
+			cb_pcidas_cancel(dev, s);
+		}
 		/*  clear half-full interrupt latch */
 		spin_lock_irqsave(&dev->spinlock, flags);
 		outw(devpriv->adc_fifo_bits | INT,
@@ -1398,9 +1383,10 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 					INT_ADCFIFO)) == 0)
 				break;
 			cfc_write_to_buffer(s, inw(devpriv->adc_fifo));
-			if (cmd->stop_src == TRIG_COUNT &&
+			if (async->cmd.stop_src == TRIG_COUNT &&
 			    --devpriv->count == 0) {
 				/* end of acquisition */
+				cb_pcidas_cancel(dev, s);
 				async->events |= COMEDI_CB_EOA;
 				break;
 			}
@@ -1411,8 +1397,8 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 		     devpriv->control_status + INT_ADCFIFO);
 		spin_unlock_irqrestore(&dev->spinlock, flags);
 	} else if (status & EOAI) {
-		dev_err(dev->class_dev,
-			"bug! encountered end of acquisition interrupt?\n");
+		comedi_error(dev,
+			     "bug! encountered end of acquisition interrupt?");
 		/*  clear EOA interrupt latch */
 		spin_lock_irqsave(&dev->spinlock, flags);
 		outw(devpriv->adc_fifo_bits | EOAI,
@@ -1421,42 +1407,57 @@ static irqreturn_t cb_pcidas_interrupt(int irq, void *d)
 	}
 	/* check for fifo overflow */
 	if (status & LADFUL) {
-		dev_err(dev->class_dev, "fifo overflow\n");
+		comedi_error(dev, "fifo overflow");
 		/*  clear overflow interrupt latch */
 		spin_lock_irqsave(&dev->spinlock, flags);
 		outw(devpriv->adc_fifo_bits | LADFUL,
 		     devpriv->control_status + INT_ADCFIFO);
 		spin_unlock_irqrestore(&dev->spinlock, flags);
+		cb_pcidas_cancel(dev, s);
 		async->events |= COMEDI_CB_EOA | COMEDI_CB_ERROR;
 	}
 
-	cfc_handle_events(dev, s);
+	comedi_event(dev, s);
 
 	return IRQ_HANDLED;
 }
 
+static const void *cb_pcidas_find_boardinfo(struct comedi_device *dev,
+					    struct pci_dev *pcidev)
+{
+	const struct cb_pcidas_board *thisboard;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(cb_pcidas_boards); i++) {
+		thisboard = &cb_pcidas_boards[i];
+		if (thisboard->device_id == pcidev->device)
+			return thisboard;
+	}
+	return NULL;
+}
+
 static int cb_pcidas_auto_attach(struct comedi_device *dev,
-				 unsigned long context)
+					   unsigned long context_unused)
 {
 	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
-	const struct cb_pcidas_board *thisboard = NULL;
+	const struct cb_pcidas_board *thisboard;
 	struct cb_pcidas_private *devpriv;
 	struct comedi_subdevice *s;
 	int i;
 	int ret;
 
-	if (context < ARRAY_SIZE(cb_pcidas_boards))
-		thisboard = &cb_pcidas_boards[context];
+	thisboard = cb_pcidas_find_boardinfo(dev, pcidev);
 	if (!thisboard)
 		return -ENODEV;
 	dev->board_ptr  = thisboard;
 	dev->board_name = thisboard->name;
 
-	devpriv = comedi_alloc_devpriv(dev, sizeof(*devpriv));
+	devpriv = kzalloc(sizeof(*devpriv), GFP_KERNEL);
 	if (!devpriv)
 		return -ENOMEM;
+	dev->private = devpriv;
 
-	ret = comedi_pci_enable(dev);
+	ret = comedi_pci_enable(pcidev, dev->board_name);
 	if (ret)
 		return ret;
 
@@ -1471,12 +1472,11 @@ static int cb_pcidas_auto_attach(struct comedi_device *dev,
 	outl(INTCSR_INBOX_INTR_STATUS,
 	     devpriv->s5933_config + AMCC_OP_REG_INTCSR);
 
-	ret = request_irq(pcidev->irq, cb_pcidas_interrupt, IRQF_SHARED,
-			  dev->board_name, dev);
-	if (ret) {
+	if (request_irq(pcidev->irq, cb_pcidas_interrupt,
+			IRQF_SHARED, dev->driver->driver_name, dev)) {
 		dev_dbg(dev->class_dev, "unable to allocate irq %d\n",
 			pcidev->irq);
-		return ret;
+		return -EINVAL;
 	}
 	dev->irq = pcidev->irq;
 
@@ -1592,12 +1592,16 @@ static int cb_pcidas_auto_attach(struct comedi_device *dev,
 	outl(devpriv->s5933_intcsr_bits | INTCSR_INBOX_INTR_STATUS,
 	     devpriv->s5933_config + AMCC_OP_REG_INTCSR);
 
+	dev_info(dev->class_dev, "%s: %s attached\n",
+		dev->driver->driver_name, dev->board_name);
+
 	return 0;
 }
 
 static void cb_pcidas_detach(struct comedi_device *dev)
 {
 	struct cb_pcidas_private *devpriv = dev->private;
+	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 
 	if (devpriv) {
 		if (devpriv->s5933_config) {
@@ -1607,7 +1611,12 @@ static void cb_pcidas_detach(struct comedi_device *dev)
 	}
 	if (dev->irq)
 		free_irq(dev->irq, dev);
-	comedi_pci_disable(dev);
+	if (dev->subdevices)
+		subdev_8255_cleanup(dev, &dev->subdevices[2]);
+	if (pcidev) {
+		if (devpriv->s5933_config)
+			comedi_pci_disable(pcidev);
+	}
 }
 
 static struct comedi_driver cb_pcidas_driver = {
@@ -1618,21 +1627,25 @@ static struct comedi_driver cb_pcidas_driver = {
 };
 
 static int cb_pcidas_pci_probe(struct pci_dev *dev,
-			       const struct pci_device_id *id)
+					 const struct pci_device_id *ent)
 {
-	return comedi_pci_auto_config(dev, &cb_pcidas_driver,
-				      id->driver_data);
+	return comedi_pci_auto_config(dev, &cb_pcidas_driver);
 }
 
-static const struct pci_device_id cb_pcidas_pci_table[] = {
-	{ PCI_VDEVICE(CB, 0x0001), BOARD_PCIDAS1602_16 },
-	{ PCI_VDEVICE(CB, 0x000f), BOARD_PCIDAS1200 },
-	{ PCI_VDEVICE(CB, 0x0010), BOARD_PCIDAS1602_12 },
-	{ PCI_VDEVICE(CB, 0x0019), BOARD_PCIDAS1200_JR },
-	{ PCI_VDEVICE(CB, 0x001c), BOARD_PCIDAS1602_16_JR },
-	{ PCI_VDEVICE(CB, 0x004c), BOARD_PCIDAS1000 },
-	{ PCI_VDEVICE(CB, 0x001a), BOARD_PCIDAS1001 },
-	{ PCI_VDEVICE(CB, 0x001b), BOARD_PCIDAS1002 },
+static void cb_pcidas_pci_remove(struct pci_dev *dev)
+{
+	comedi_pci_auto_unconfig(dev);
+}
+
+static DEFINE_PCI_DEVICE_TABLE(cb_pcidas_pci_table) = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x0001) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x000f) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x0010) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x0019) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x001c) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x004c) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x001a) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_CB, 0x001b) },
 	{ 0 }
 };
 MODULE_DEVICE_TABLE(pci, cb_pcidas_pci_table);
@@ -1641,7 +1654,7 @@ static struct pci_driver cb_pcidas_pci_driver = {
 	.name		= "cb_pcidas",
 	.id_table	= cb_pcidas_pci_table,
 	.probe		= cb_pcidas_pci_probe,
-	.remove		= comedi_pci_auto_unconfig,
+	.remove		= cb_pcidas_pci_remove
 };
 module_comedi_pci_driver(cb_pcidas_driver, cb_pcidas_pci_driver);
 

@@ -22,7 +22,6 @@
 #include <linux/vfio.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
-#include <linux/slab.h>
 
 #include "vfio_pci_private.h"
 
@@ -130,8 +129,8 @@ static int virqfd_enable(struct vfio_pci_device *vdev,
 			 void (*thread)(struct vfio_pci_device *, void *),
 			 void *data, struct virqfd **pvirqfd, int fd)
 {
-	struct fd irqfd;
-	struct eventfd_ctx *ctx;
+	struct file *file = NULL;
+	struct eventfd_ctx *ctx = NULL;
 	struct virqfd *virqfd;
 	int ret = 0;
 	unsigned int events;
@@ -149,16 +148,16 @@ static int virqfd_enable(struct vfio_pci_device *vdev,
 	INIT_WORK(&virqfd->shutdown, virqfd_shutdown);
 	INIT_WORK(&virqfd->inject, virqfd_inject);
 
-	irqfd = fdget(fd);
-	if (!irqfd.file) {
-		ret = -EBADF;
-		goto err_fd;
+	file = eventfd_fget(fd);
+	if (IS_ERR(file)) {
+		ret = PTR_ERR(file);
+		goto fail;
 	}
 
-	ctx = eventfd_ctx_fileget(irqfd.file);
+	ctx = eventfd_ctx_fileget(file);
 	if (IS_ERR(ctx)) {
 		ret = PTR_ERR(ctx);
-		goto err_ctx;
+		goto fail;
 	}
 
 	virqfd->eventfd = ctx;
@@ -174,7 +173,7 @@ static int virqfd_enable(struct vfio_pci_device *vdev,
 	if (*pvirqfd) {
 		spin_unlock_irq(&vdev->irqlock);
 		ret = -EBUSY;
-		goto err_busy;
+		goto fail;
 	}
 	*pvirqfd = virqfd;
 
@@ -187,7 +186,7 @@ static int virqfd_enable(struct vfio_pci_device *vdev,
 	init_waitqueue_func_entry(&virqfd->wait, virqfd_wakeup);
 	init_poll_funcptr(&virqfd->pt, virqfd_ptable_queue_proc);
 
-	events = irqfd.file->f_op->poll(irqfd.file, &virqfd->pt);
+	events = file->f_op->poll(file, &virqfd->pt);
 
 	/*
 	 * Check if there was an event already pending on the eventfd
@@ -202,14 +201,17 @@ static int virqfd_enable(struct vfio_pci_device *vdev,
 	 * Do not drop the file until the irqfd is fully initialized,
 	 * otherwise we might race against the POLLHUP.
 	 */
-	fdput(irqfd);
+	fput(file);
 
 	return 0;
-err_busy:
-	eventfd_ctx_put(ctx);
-err_ctx:
-	fdput(irqfd);
-err_fd:
+
+fail:
+	if (ctx && !IS_ERR(ctx))
+		eventfd_ctx_put(ctx);
+
+	if (file && !IS_ERR(file))
+		fput(file);
+
 	kfree(virqfd);
 
 	return ret;
@@ -284,8 +286,7 @@ void vfio_pci_intx_mask(struct vfio_pci_device *vdev)
  * a signal is necessary, which can then be handled via a work queue
  * or directly depending on the caller.
  */
-static int vfio_pci_intx_unmask_handler(struct vfio_pci_device *vdev,
-					void *unused)
+int vfio_pci_intx_unmask_handler(struct vfio_pci_device *vdev, void *unused)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	unsigned long flags;
@@ -482,19 +483,15 @@ static int vfio_msi_enable(struct vfio_pci_device *vdev, int nvec, bool msix)
 		for (i = 0; i < nvec; i++)
 			vdev->msix[i].entry = i;
 
-		ret = pci_enable_msix_range(pdev, vdev->msix, 1, nvec);
-		if (ret < nvec) {
-			if (ret > 0)
-				pci_disable_msix(pdev);
+		ret = pci_enable_msix(pdev, vdev->msix, nvec);
+		if (ret) {
 			kfree(vdev->msix);
 			kfree(vdev->ctx);
 			return ret;
 		}
 	} else {
-		ret = pci_enable_msi_range(pdev, 1, nvec);
-		if (ret < nvec) {
-			if (ret > 0)
-				pci_disable_msi(pdev);
+		ret = pci_enable_msi_block(pdev, nvec);
+		if (ret) {
 			kfree(vdev->ctx);
 			return ret;
 		}
@@ -748,46 +745,6 @@ static int vfio_pci_set_msi_trigger(struct vfio_pci_device *vdev,
 	return 0;
 }
 
-static int vfio_pci_set_err_trigger(struct vfio_pci_device *vdev,
-				    unsigned index, unsigned start,
-				    unsigned count, uint32_t flags, void *data)
-{
-	int32_t fd = *(int32_t *)data;
-
-	if ((index != VFIO_PCI_ERR_IRQ_INDEX) ||
-	    !(flags & VFIO_IRQ_SET_DATA_TYPE_MASK))
-		return -EINVAL;
-
-	/* DATA_NONE/DATA_BOOL enables loopback testing */
-	if (flags & VFIO_IRQ_SET_DATA_NONE) {
-		if (vdev->err_trigger)
-			eventfd_signal(vdev->err_trigger, 1);
-		return 0;
-	} else if (flags & VFIO_IRQ_SET_DATA_BOOL) {
-		uint8_t trigger = *(uint8_t *)data;
-		if (trigger && vdev->err_trigger)
-			eventfd_signal(vdev->err_trigger, 1);
-		return 0;
-	}
-
-	/* Handle SET_DATA_EVENTFD */
-	if (fd == -1) {
-		if (vdev->err_trigger)
-			eventfd_ctx_put(vdev->err_trigger);
-		vdev->err_trigger = NULL;
-		return 0;
-	} else if (fd >= 0) {
-		struct eventfd_ctx *efdctx;
-		efdctx = eventfd_ctx_fdget(fd);
-		if (IS_ERR(efdctx))
-			return PTR_ERR(efdctx);
-		if (vdev->err_trigger)
-			eventfd_ctx_put(vdev->err_trigger);
-		vdev->err_trigger = efdctx;
-		return 0;
-	} else
-		return -EINVAL;
-}
 int vfio_pci_set_irqs_ioctl(struct vfio_pci_device *vdev, uint32_t flags,
 			    unsigned index, unsigned start, unsigned count,
 			    void *data)
@@ -822,13 +779,6 @@ int vfio_pci_set_irqs_ioctl(struct vfio_pci_device *vdev, uint32_t flags,
 			break;
 		}
 		break;
-	case VFIO_PCI_ERR_IRQ_INDEX:
-		switch (flags & VFIO_IRQ_SET_ACTION_TYPE_MASK) {
-		case VFIO_IRQ_SET_ACTION_TRIGGER:
-			if (pci_is_pcie(vdev->pdev))
-				func = vfio_pci_set_err_trigger;
-			break;
-		}
 	}
 
 	if (!func)

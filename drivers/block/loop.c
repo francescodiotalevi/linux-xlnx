@@ -63,6 +63,7 @@
 #include <linux/init.h>
 #include <linux/swap.h>
 #include <linux/slab.h>
+#include <linux/loop.h>
 #include <linux/compat.h>
 #include <linux/suspend.h>
 #include <linux/freezer.h>
@@ -75,7 +76,6 @@
 #include <linux/sysfs.h>
 #include <linux/miscdevice.h>
 #include <linux/falloc.h>
-#include "loop.h"
 
 #include <asm/uaccess.h>
 
@@ -162,13 +162,12 @@ static struct loop_func_table *xfer_funcs[MAX_LO_CRYPT] = {
 
 static loff_t get_size(loff_t offset, loff_t sizelimit, struct file *file)
 {
-	loff_t loopsize;
+	loff_t size, loopsize;
 
 	/* Compute loopsize in bytes */
-	loopsize = i_size_read(file->f_mapping->host);
-	if (offset > 0)
-		loopsize -= offset;
-	/* offset is beyond i_size, weird but possible */
+	size = i_size_read(file->f_mapping->host);
+	loopsize = size - offset;
+	/* offset is beyond i_size, wierd but possible */
 	if (loopsize < 0)
 		return 0;
 
@@ -191,7 +190,6 @@ figure_loop_size(struct loop_device *lo, loff_t offset, loff_t sizelimit)
 {
 	loff_t size = get_size(offset, sizelimit, lo->lo_backing_file);
 	sector_t x = (sector_t)size;
-	struct block_device *bdev = lo->lo_device;
 
 	if (unlikely((loff_t)x != size))
 		return -EFBIG;
@@ -200,9 +198,6 @@ figure_loop_size(struct loop_device *lo, loff_t offset, loff_t sizelimit)
 	if (lo->lo_sizelimit != sizelimit)
 		lo->lo_sizelimit = sizelimit;
 	set_capacity(lo->lo_disk, x);
-	bd_set_size(bdev, (loff_t)get_capacity(bdev->bd_disk) << 9);
-	/* let user-space know about the new size */
-	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
 	return 0;
 }
 
@@ -230,14 +225,12 @@ static int __do_lo_send_write(struct file *file,
 	ssize_t bw;
 	mm_segment_t old_fs = get_fs();
 
-	file_start_write(file);
 	set_fs(get_ds());
 	bw = file->f_op->write(file, buf, len, &pos);
 	set_fs(old_fs);
-	file_end_write(file);
 	if (likely(bw == len))
 		return 0;
-	printk_ratelimited(KERN_ERR "loop: Write error at byte offset %llu, length %i.\n",
+	printk(KERN_ERR "loop: Write error at byte offset %llu, length %i.\n",
 			(unsigned long long)pos, len);
 	if (bw >= 0)
 		bw = -EIO;
@@ -277,7 +270,7 @@ static int do_lo_send_write(struct loop_device *lo, struct bio_vec *bvec,
 		return __do_lo_send_write(lo->lo_backing_file,
 				page_address(page), bvec->bv_len,
 				pos);
-	printk_ratelimited(KERN_ERR "loop: Transfer error at byte offset %llu, "
+	printk(KERN_ERR "loop: Transfer error at byte offset %llu, "
 			"length %i.\n", (unsigned long long)pos, bvec->bv_len);
 	if (ret > 0)
 		ret = -EIO;
@@ -288,10 +281,9 @@ static int lo_send(struct loop_device *lo, struct bio *bio, loff_t pos)
 {
 	int (*do_lo_send)(struct loop_device *, struct bio_vec *, loff_t,
 			struct page *page);
-	struct bio_vec bvec;
-	struct bvec_iter iter;
+	struct bio_vec *bvec;
 	struct page *page = NULL;
-	int ret = 0;
+	int i, ret = 0;
 
 	if (lo->transfer != transfer_none) {
 		page = alloc_page(GFP_NOIO | __GFP_HIGHMEM);
@@ -303,11 +295,11 @@ static int lo_send(struct loop_device *lo, struct bio *bio, loff_t pos)
 		do_lo_send = do_lo_send_direct_write;
 	}
 
-	bio_for_each_segment(bvec, bio, iter) {
-		ret = do_lo_send(lo, &bvec, pos, page);
+	bio_for_each_segment(bvec, bio, i) {
+		ret = do_lo_send(lo, bvec, pos, page);
 		if (ret < 0)
 			break;
-		pos += bvec.bv_len;
+		pos += bvec->bv_len;
 	}
 	if (page) {
 		kunmap(page);
@@ -316,7 +308,7 @@ static int lo_send(struct loop_device *lo, struct bio *bio, loff_t pos)
 out:
 	return ret;
 fail:
-	printk_ratelimited(KERN_ERR "loop: Failed to allocate temporary page for write.\n");
+	printk(KERN_ERR "loop: Failed to allocate temporary page for write.\n");
 	ret = -ENOMEM;
 	goto out;
 }
@@ -345,7 +337,7 @@ lo_splice_actor(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
 		size = p->bsize;
 
 	if (lo_do_transfer(lo, READ, page, buf->offset, p->page, p->offset, size, IV)) {
-		printk_ratelimited(KERN_ERR "loop: transfer error block %ld\n",
+		printk(KERN_ERR "loop: transfer error block %ld\n",
 		       page->index);
 		size = -EINVAL;
 	}
@@ -393,20 +385,20 @@ do_lo_receive(struct loop_device *lo,
 static int
 lo_receive(struct loop_device *lo, struct bio *bio, int bsize, loff_t pos)
 {
-	struct bio_vec bvec;
-	struct bvec_iter iter;
+	struct bio_vec *bvec;
 	ssize_t s;
+	int i;
 
-	bio_for_each_segment(bvec, bio, iter) {
-		s = do_lo_receive(lo, &bvec, bsize, pos);
+	bio_for_each_segment(bvec, bio, i) {
+		s = do_lo_receive(lo, bvec, bsize, pos);
 		if (s < 0)
 			return s;
 
-		if (s != bvec.bv_len) {
+		if (s != bvec->bv_len) {
 			zero_fill_bio(bio);
 			break;
 		}
-		pos += bvec.bv_len;
+		pos += bvec->bv_len;
 	}
 	return 0;
 }
@@ -416,7 +408,7 @@ static int do_bio_filebacked(struct loop_device *lo, struct bio *bio)
 	loff_t pos;
 	int ret;
 
-	pos = ((loff_t) bio->bi_iter.bi_sector << 9) + lo->lo_offset;
+	pos = ((loff_t) bio->bi_sector << 9) + lo->lo_offset;
 
 	if (bio_rw(bio) == WRITE) {
 		struct file *file = lo->lo_backing_file;
@@ -445,7 +437,7 @@ static int do_bio_filebacked(struct loop_device *lo, struct bio *bio)
 				goto out;
 			}
 			ret = file->f_op->fallocate(file, mode, pos,
-						    bio->bi_iter.bi_size);
+						    bio->bi_size);
 			if (unlikely(ret && ret != -EINVAL &&
 				     ret != -EOPNOTSUPP))
 				ret = -EIO;
@@ -548,7 +540,7 @@ static int loop_thread(void *data)
 	struct loop_device *lo = data;
 	struct bio *bio;
 
-	set_user_nice(current, MIN_NICE);
+	set_user_nice(current, -20);
 
 	while (!kthread_should_stop() || !bio_list_empty(&lo->lo_bio_list)) {
 
@@ -799,7 +791,7 @@ static void loop_config_discard(struct loop_device *lo)
 
 	/*
 	 * We use punch hole to reclaim the free space used by the
-	 * image a.k.a. discard. However we do not support discard if
+	 * image a.k.a. discard. However we do support discard if
 	 * encryption is enabled, because it may give an attacker
 	 * useful information.
 	 */
@@ -895,6 +887,13 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 
 	bio_list_init(&lo->lo_bio_list);
 
+	/*
+	 * set queue make_request_fn, and add limits based on lower level
+	 * device
+	 */
+	blk_queue_make_request(lo->lo_queue, loop_make_request);
+	lo->lo_queue->queuedata = lo;
+
 	if (!(lo_flags & LO_FLAGS_READ_ONLY) && file->f_op->fsync)
 		blk_queue_flush(lo->lo_queue, REQ_FLUSH);
 
@@ -918,11 +917,6 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 		lo->lo_flags |= LO_FLAGS_PARTSCAN;
 	if (lo->lo_flags & LO_FLAGS_PARTSCAN)
 		ioctl_by_bdev(bdev, BLKRRPART, 0);
-
-	/* Grab the block_device to prevent its destruction after we
-	 * put /dev/loopXX inode. Later in loop_clr_fd() we bdput(bdev).
-	 */
-	bdgrab(bdev);
 	return 0;
 
 out_clr:
@@ -1032,10 +1026,8 @@ static int loop_clr_fd(struct loop_device *lo)
 	memset(lo->lo_encrypt_key, 0, LO_KEY_SIZE);
 	memset(lo->lo_crypt_name, 0, LO_NAME_SIZE);
 	memset(lo->lo_file_name, 0, LO_NAME_SIZE);
-	if (bdev) {
-		bdput(bdev);
+	if (bdev)
 		invalidate_bdev(bdev);
-	}
 	set_capacity(lo->lo_disk, 0);
 	loop_sysfs_exit(lo);
 	if (bdev) {
@@ -1099,10 +1091,10 @@ loop_set_status(struct loop_device *lo, const struct loop_info64 *info)
 		return err;
 
 	if (lo->lo_offset != info->lo_offset ||
-	    lo->lo_sizelimit != info->lo_sizelimit)
+	    lo->lo_sizelimit != info->lo_sizelimit) {
 		if (figure_loop_size(lo, info->lo_offset, info->lo_sizelimit))
 			return -EFBIG;
-
+	}
 	loop_config_discard(lo);
 
 	memcpy(lo->lo_file_name, info->lo_file_name, LO_NAME_SIZE);
@@ -1147,7 +1139,7 @@ loop_get_status(struct loop_device *lo, struct loop_info64 *info)
 
 	if (lo->lo_state != Lo_bound)
 		return -ENXIO;
-	error = vfs_getattr(&file->f_path, &stat);
+	error = vfs_getattr(file->f_path.mnt, file->f_path.dentry, &stat);
 	if (error)
 		return error;
 	memset(info, 0, sizeof(*info));
@@ -1279,10 +1271,28 @@ loop_get_status64(struct loop_device *lo, struct loop_info64 __user *arg) {
 
 static int loop_set_capacity(struct loop_device *lo, struct block_device *bdev)
 {
-	if (unlikely(lo->lo_state != Lo_bound))
-		return -ENXIO;
+	int err;
+	sector_t sec;
+	loff_t sz;
 
-	return figure_loop_size(lo, lo->lo_offset, lo->lo_sizelimit);
+	err = -ENXIO;
+	if (unlikely(lo->lo_state != Lo_bound))
+		goto out;
+	err = figure_loop_size(lo, lo->lo_offset, lo->lo_sizelimit);
+	if (unlikely(err))
+		goto out;
+	sec = get_capacity(lo->lo_disk);
+	/* the width of sector_t may be narrow for bit-shift */
+	sz = sec;
+	sz <<= 9;
+	mutex_lock(&bdev->bd_mutex);
+	bd_set_size(bdev, sz);
+	/* let user-space know about the new size */
+	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
+	mutex_unlock(&bdev->bd_mutex);
+
+ out:
+	return err;
 }
 
 static int lo_ioctl(struct block_device *bdev, fmode_t mode,
@@ -1512,7 +1522,7 @@ out:
 	return err;
 }
 
-static void lo_release(struct gendisk *disk, fmode_t mode)
+static int lo_release(struct gendisk *disk, fmode_t mode)
 {
 	struct loop_device *lo = disk->private_data;
 	int err;
@@ -1529,7 +1539,7 @@ static void lo_release(struct gendisk *disk, fmode_t mode)
 		 */
 		err = loop_clr_fd(lo);
 		if (!err)
-			return;
+			goto out_unlocked;
 	} else {
 		/*
 		 * Otherwise keep thread (if running) and config,
@@ -1540,6 +1550,8 @@ static void lo_release(struct gendisk *disk, fmode_t mode)
 
 out:
 	mutex_unlock(&lo->lo_ctl_mutex);
+out_unlocked:
+	return 0;
 }
 
 static const struct block_device_operations lo_fops = {
@@ -1612,30 +1624,34 @@ static int loop_add(struct loop_device **l, int i)
 	if (!lo)
 		goto out;
 
-	lo->lo_state = Lo_unbound;
+	if (!idr_pre_get(&loop_index_idr, GFP_KERNEL))
+		goto out_free_dev;
 
-	/* allocate id, if @id >= 0, we're requesting that specific id */
 	if (i >= 0) {
-		err = idr_alloc(&loop_index_idr, lo, i, i + 1, GFP_KERNEL);
-		if (err == -ENOSPC)
+		int m;
+
+		/* create specific i in the index */
+		err = idr_get_new_above(&loop_index_idr, lo, i, &m);
+		if (err >= 0 && i != m) {
+			idr_remove(&loop_index_idr, m);
 			err = -EEXIST;
+		}
+	} else if (i == -1) {
+		int m;
+
+		/* get next free nr */
+		err = idr_get_new(&loop_index_idr, lo, &m);
+		if (err >= 0)
+			i = m;
 	} else {
-		err = idr_alloc(&loop_index_idr, lo, 0, 0, GFP_KERNEL);
+		err = -EINVAL;
 	}
 	if (err < 0)
 		goto out_free_dev;
-	i = err;
 
-	err = -ENOMEM;
 	lo->lo_queue = blk_alloc_queue(GFP_KERNEL);
 	if (!lo->lo_queue)
-		goto out_free_idr;
-
-	/*
-	 * set queue make_request_fn
-	 */
-	blk_queue_make_request(lo->lo_queue, loop_make_request);
-	lo->lo_queue->queuedata = lo;
+		goto out_free_dev;
 
 	disk = lo->lo_disk = alloc_disk(1 << part_shift);
 	if (!disk)
@@ -1680,8 +1696,6 @@ static int loop_add(struct loop_device **l, int i)
 
 out_free_queue:
 	blk_cleanup_queue(lo->lo_queue);
-out_free_idr:
-	idr_remove(&loop_index_idr, i);
 out_free_dev:
 	kfree(lo);
 out:
@@ -1745,7 +1759,7 @@ static struct kobject *loop_probe(dev_t dev, int *part, void *data)
 	if (err < 0)
 		err = loop_add(&lo, MINOR(dev) >> part_shift);
 	if (err < 0)
-		kobj = NULL;
+		kobj = ERR_PTR(err);
 	else
 		kobj = get_disk(lo->lo_disk);
 	mutex_unlock(&loop_index_mutex);
@@ -1844,15 +1858,11 @@ static int __init loop_init(void)
 		max_part = (1UL << part_shift) - 1;
 	}
 
-	if ((1UL << part_shift) > DISK_MAX_PARTS) {
-		err = -EINVAL;
-		goto misc_out;
-	}
+	if ((1UL << part_shift) > DISK_MAX_PARTS)
+		return -EINVAL;
 
-	if (max_loop > 1UL << (MINORBITS - part_shift)) {
-		err = -EINVAL;
-		goto misc_out;
-	}
+	if (max_loop > 1UL << (MINORBITS - part_shift))
+		return -EINVAL;
 
 	/*
 	 * If max_loop is specified, create that many devices upfront.
@@ -1870,10 +1880,8 @@ static int __init loop_init(void)
 		range = 1UL << MINORBITS;
 	}
 
-	if (register_blkdev(LOOP_MAJOR, "loop")) {
-		err = -EIO;
-		goto misc_out;
-	}
+	if (register_blkdev(LOOP_MAJOR, "loop"))
+		return -EIO;
 
 	blk_register_region(MKDEV(LOOP_MAJOR, 0), range,
 				  THIS_MODULE, loop_probe, NULL, NULL);
@@ -1886,10 +1894,6 @@ static int __init loop_init(void)
 
 	printk(KERN_INFO "loop: module loaded\n");
 	return 0;
-
-misc_out:
-	misc_deregister(&loop_misc);
-	return err;
 }
 
 static int loop_exit_cb(int id, void *ptr, void *data)
@@ -1907,6 +1911,7 @@ static void __exit loop_exit(void)
 	range = max_loop ? max_loop << part_shift : 1UL << MINORBITS;
 
 	idr_for_each(&loop_index_idr, &loop_exit_cb, NULL);
+	idr_remove_all(&loop_index_idr);
 	idr_destroy(&loop_index_idr);
 
 	blk_unregister_region(MKDEV(LOOP_MAJOR, 0), range);

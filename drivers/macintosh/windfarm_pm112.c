@@ -681,7 +681,7 @@ static int __init wf_pm112_init(void)
 
 	/* Count the number of CPU cores */
 	nr_cores = 0;
-	for_each_node_by_type(cpu, "cpu")
+	for (cpu = NULL; (cpu = of_find_node_by_type(cpu, "cpu")) != NULL; )
 		++nr_cores;
 
 	printk(KERN_INFO "windfarm: initializing for dual-core desktop G5\n");

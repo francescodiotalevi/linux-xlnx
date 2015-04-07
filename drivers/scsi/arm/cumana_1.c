@@ -30,11 +30,15 @@
 #define NCR5380_write(reg, value)	cumanascsi_write(_instance, reg, value)
 #define NCR5380_intr			cumanascsi_intr
 #define NCR5380_queue_command		cumanascsi_queue_command
+#define NCR5380_proc_info		cumanascsi_proc_info
 
 #define NCR5380_implementation_fields	\
 	unsigned ctrl;			\
 	void __iomem *base;		\
 	void __iomem *dma
+
+#define BOARD_NORMAL	0
+#define BOARD_NCR53C400	1
 
 #include "../NCR5380.h"
 
@@ -259,7 +263,7 @@ static int cumanascsi1_probe(struct expansion_card *ec,
 		goto out_unmap;
 	}
 
-	ret = request_irq(host->irq, cumanascsi_intr, 0,
+	ret = request_irq(host->irq, cumanascsi_intr, IRQF_DISABLED,
 			  "CumanaSCSI-1", host);
 	if (ret) {
 		printk("scsi%d: IRQ%d not free: %d\n",

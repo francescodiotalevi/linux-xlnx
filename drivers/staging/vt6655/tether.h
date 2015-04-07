@@ -37,11 +37,12 @@
 // constants
 //
 #define U_ETHER_ADDR_STR_LEN (ETH_ALEN * 2 + 1)
-// Ethernet address string length
+                                        // Ethernet address string length
 
 #define MAX_LOOKAHEAD_SIZE  ETH_FRAME_LEN
 
 #define U_MULTI_ADDR_LEN    8           // multicast address length
+
 
 #ifdef __BIG_ENDIAN
 
@@ -87,6 +88,7 @@
 #define TYPE_CTL_RTS        0xb400
 #define TYPE_CTL_CTS        0xc400
 #define TYPE_CTL_ACK        0xd400
+
 
 #else //if LITTLE_ENDIAN
 //
@@ -138,6 +140,8 @@
 #define TYPE_CTL_CTS        0x00c4
 #define TYPE_CTL_ACK        0x00d4
 
+
+
 #endif //#ifdef __BIG_ENDIAN
 
 #define WEP_IV_MASK         0x00FFFFFF
@@ -147,34 +151,35 @@
 // Ethernet packet
 //
 typedef struct tagSEthernetHeader {
-	unsigned char abyDstAddr[ETH_ALEN];
-	unsigned char abySrcAddr[ETH_ALEN];
-	unsigned short wType;
-} __attribute__ ((__packed__))
+    unsigned char abyDstAddr[ETH_ALEN];
+    unsigned char abySrcAddr[ETH_ALEN];
+    unsigned short wType;
+}__attribute__ ((__packed__))
 SEthernetHeader, *PSEthernetHeader;
+
 
 //
 // 802_3 packet
 //
 typedef struct tagS802_3Header {
-	unsigned char abyDstAddr[ETH_ALEN];
-	unsigned char abySrcAddr[ETH_ALEN];
-	unsigned short wLen;
-} __attribute__ ((__packed__))
+    unsigned char abyDstAddr[ETH_ALEN];
+    unsigned char abySrcAddr[ETH_ALEN];
+    unsigned short wLen;
+}__attribute__ ((__packed__))
 S802_3Header, *PS802_3Header;
 
 //
 // 802_11 packet
 //
 typedef struct tagS802_11Header {
-	unsigned short wFrameCtl;
-	unsigned short wDurationID;
-	unsigned char abyAddr1[ETH_ALEN];
-	unsigned char abyAddr2[ETH_ALEN];
-	unsigned char abyAddr3[ETH_ALEN];
-	unsigned short wSeqCtl;
-	unsigned char abyAddr4[ETH_ALEN];
-} __attribute__ ((__packed__))
+    unsigned short wFrameCtl;
+    unsigned short wDurationID;
+    unsigned char abyAddr1[ETH_ALEN];
+    unsigned char abyAddr2[ETH_ALEN];
+    unsigned char abyAddr3[ETH_ALEN];
+    unsigned short wSeqCtl;
+    unsigned char abyAddr4[ETH_ALEN];
+}__attribute__ ((__packed__))
 S802_11Header, *PS802_11Header;
 
 /*---------------------  Export Macros ------------------------------*/
@@ -190,3 +195,6 @@ unsigned char ETHbyGetHashIndexByCrc32(unsigned char *pbyMultiAddr);
 bool ETHbIsBufferCrc32Ok(unsigned char *pbyBuffer, unsigned int cbFrameLength);
 
 #endif // __TETHER_H__
+
+
+

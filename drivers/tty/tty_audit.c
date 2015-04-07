@@ -60,23 +60,24 @@ static void tty_audit_buf_put(struct tty_audit_buf *buf)
 		tty_audit_buf_free(buf);
 }
 
-static void tty_audit_log(const char *description, int major, int minor,
-			  unsigned char *data, size_t size)
+static void tty_audit_log(const char *description, struct task_struct *tsk,
+			  kuid_t loginuid, unsigned sessionid, int major,
+			  int minor, unsigned char *data, size_t size)
 {
 	struct audit_buffer *ab;
-	struct task_struct *tsk = current;
-	pid_t pid = task_pid_nr(tsk);
-	uid_t uid = from_kuid(&init_user_ns, task_uid(tsk));
-	uid_t loginuid = from_kuid(&init_user_ns, audit_get_loginuid(tsk));
-	unsigned int sessionid = audit_get_sessionid(tsk);
 
 	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_TTY);
 	if (ab) {
 		char name[sizeof(tsk->comm)];
+		kuid_t uid = task_uid(tsk);
 
-		audit_log_format(ab, "%s pid=%u uid=%u auid=%u ses=%u major=%d"
-				 " minor=%d comm=", description, pid, uid,
-				 loginuid, sessionid, major, minor);
+		audit_log_format(ab, "%s pid=%u uid=%u auid=%u ses=%u "
+				 "major=%d minor=%d comm=", description,
+				 tsk->pid,
+				 from_kuid(&init_user_ns, uid),
+				 from_kuid(&init_user_ns, loginuid),
+				 sessionid,
+				 major, minor);
 		get_task_comm(name, tsk);
 		audit_log_untrustedstring(ab, name);
 		audit_log_format(ab, " data=");
@@ -89,9 +90,11 @@ static void tty_audit_log(const char *description, int major, int minor,
  *	tty_audit_buf_push	-	Push buffered data out
  *
  *	Generate an audit message from the contents of @buf, which is owned by
- *	the current task.  @buf->mutex must be locked.
+ *	@tsk with @loginuid.  @buf->mutex must be locked.
  */
-static void tty_audit_buf_push(struct tty_audit_buf *buf)
+static void tty_audit_buf_push(struct task_struct *tsk, kuid_t loginuid,
+			       unsigned int sessionid,
+			       struct tty_audit_buf *buf)
 {
 	if (buf->valid == 0)
 		return;
@@ -99,8 +102,22 @@ static void tty_audit_buf_push(struct tty_audit_buf *buf)
 		buf->valid = 0;
 		return;
 	}
-	tty_audit_log("tty", buf->major, buf->minor, buf->data, buf->valid);
+	tty_audit_log("tty", tsk, loginuid, sessionid, buf->major, buf->minor,
+		      buf->data, buf->valid);
 	buf->valid = 0;
+}
+
+/**
+ *	tty_audit_buf_push_current	-	Push buffered data out
+ *
+ *	Generate an audit message from the contents of @buf, which is owned by
+ *	the current task.  @buf->mutex must be locked.
+ */
+static void tty_audit_buf_push_current(struct tty_audit_buf *buf)
+{
+	kuid_t auid = audit_get_loginuid(current);
+	unsigned int sessionid = audit_get_sessionid(current);
+	tty_audit_buf_push(current, auid, sessionid, buf);
 }
 
 /**
@@ -113,13 +130,15 @@ void tty_audit_exit(void)
 {
 	struct tty_audit_buf *buf;
 
+	spin_lock_irq(&current->sighand->siglock);
 	buf = current->signal->tty_audit_buf;
 	current->signal->tty_audit_buf = NULL;
+	spin_unlock_irq(&current->sighand->siglock);
 	if (!buf)
 		return;
 
 	mutex_lock(&buf->mutex);
-	tty_audit_buf_push(buf);
+	tty_audit_buf_push_current(buf);
 	mutex_unlock(&buf->mutex);
 
 	tty_audit_buf_put(buf);
@@ -132,8 +151,9 @@ void tty_audit_exit(void)
  */
 void tty_audit_fork(struct signal_struct *sig)
 {
+	spin_lock_irq(&current->sighand->siglock);
 	sig->audit_tty = current->signal->audit_tty;
-	sig->audit_tty_log_passwd = current->signal->audit_tty_log_passwd;
+	spin_unlock_irq(&current->sighand->siglock);
 }
 
 /**
@@ -143,21 +163,20 @@ void tty_audit_tiocsti(struct tty_struct *tty, char ch)
 {
 	struct tty_audit_buf *buf;
 	int major, minor, should_audit;
-	unsigned long flags;
 
-	spin_lock_irqsave(&current->sighand->siglock, flags);
+	spin_lock_irq(&current->sighand->siglock);
 	should_audit = current->signal->audit_tty;
 	buf = current->signal->tty_audit_buf;
 	if (buf)
 		atomic_inc(&buf->count);
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_unlock_irq(&current->sighand->siglock);
 
 	major = tty->driver->major;
 	minor = tty->driver->minor_start + tty->index;
 	if (buf) {
 		mutex_lock(&buf->mutex);
 		if (buf->major == major && buf->minor == minor)
-			tty_audit_buf_push(buf);
+			tty_audit_buf_push_current(buf);
 		mutex_unlock(&buf->mutex);
 		tty_audit_buf_put(buf);
 	}
@@ -168,20 +187,24 @@ void tty_audit_tiocsti(struct tty_struct *tty, char ch)
 
 		auid = audit_get_loginuid(current);
 		sessionid = audit_get_sessionid(current);
-		tty_audit_log("ioctl=TIOCSTI", major, minor, &ch, 1);
+		tty_audit_log("ioctl=TIOCSTI", current, auid, sessionid, major,
+			      minor, &ch, 1);
 	}
 }
 
 /**
- * tty_audit_push_current -	Flush current's pending audit data
+ * tty_audit_push_task	-	Flush task's pending audit data
+ * @tsk:		task pointer
+ * @loginuid:		sender login uid
+ * @sessionid:		sender session id
  *
- * Try to lock sighand and get a reference to the tty audit buffer if available.
+ * Called with a ref on @tsk held. Try to lock sighand and get a
+ * reference to the tty audit buffer if available.
  * Flush the buffer or return an appropriate error code.
  */
-int tty_audit_push_current(void)
+int tty_audit_push_task(struct task_struct *tsk, kuid_t loginuid, u32 sessionid)
 {
 	struct tty_audit_buf *buf = ERR_PTR(-EPERM);
-	struct task_struct *tsk = current;
 	unsigned long flags;
 
 	if (!lock_task_sighand(tsk, &flags))
@@ -202,7 +225,7 @@ int tty_audit_push_current(void)
 		return PTR_ERR(buf);
 
 	mutex_lock(&buf->mutex);
-	tty_audit_buf_push(buf);
+	tty_audit_buf_push(tsk, loginuid, sessionid, buf);
 	mutex_unlock(&buf->mutex);
 
 	tty_audit_buf_put(buf);
@@ -220,11 +243,10 @@ static struct tty_audit_buf *tty_audit_buf_get(struct tty_struct *tty,
 		unsigned icanon)
 {
 	struct tty_audit_buf *buf, *buf2;
-	unsigned long flags;
 
 	buf = NULL;
 	buf2 = NULL;
-	spin_lock_irqsave(&current->sighand->siglock, flags);
+	spin_lock_irq(&current->sighand->siglock);
 	if (likely(!current->signal->audit_tty))
 		goto out;
 	buf = current->signal->tty_audit_buf;
@@ -232,7 +254,7 @@ static struct tty_audit_buf *tty_audit_buf_get(struct tty_struct *tty,
 		atomic_inc(&buf->count);
 		goto out;
 	}
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_unlock_irq(&current->sighand->siglock);
 
 	buf2 = tty_audit_buf_alloc(tty->driver->major,
 				   tty->driver->minor_start + tty->index,
@@ -242,7 +264,7 @@ static struct tty_audit_buf *tty_audit_buf_get(struct tty_struct *tty,
 		return NULL;
 	}
 
-	spin_lock_irqsave(&current->sighand->siglock, flags);
+	spin_lock_irq(&current->sighand->siglock);
 	if (!current->signal->audit_tty)
 		goto out;
 	buf = current->signal->tty_audit_buf;
@@ -254,7 +276,7 @@ static struct tty_audit_buf *tty_audit_buf_get(struct tty_struct *tty,
 	atomic_inc(&buf->count);
 	/* Fall through */
  out:
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_unlock_irq(&current->sighand->siglock);
 	if (buf2)
 		tty_audit_buf_free(buf2);
 	return buf;
@@ -270,16 +292,8 @@ void tty_audit_add_data(struct tty_struct *tty, unsigned char *data,
 {
 	struct tty_audit_buf *buf;
 	int major, minor;
-	int audit_log_tty_passwd;
-	unsigned long flags;
 
 	if (unlikely(size == 0))
-		return;
-
-	spin_lock_irqsave(&current->sighand->siglock, flags);
-	audit_log_tty_passwd = current->signal->audit_tty_log_passwd;
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
-	if (!audit_log_tty_passwd && icanon && !L_ECHO(tty))
 		return;
 
 	if (tty->driver->type == TTY_DRIVER_TYPE_PTY
@@ -295,7 +309,7 @@ void tty_audit_add_data(struct tty_struct *tty, unsigned char *data,
 	minor = tty->driver->minor_start + tty->index;
 	if (buf->major != major || buf->minor != minor
 	    || buf->icanon != icanon) {
-		tty_audit_buf_push(buf);
+		tty_audit_buf_push_current(buf);
 		buf->major = major;
 		buf->minor = minor;
 		buf->icanon = icanon;
@@ -311,7 +325,7 @@ void tty_audit_add_data(struct tty_struct *tty, unsigned char *data,
 		data += run;
 		size -= run;
 		if (buf->valid == N_TTY_BUF_SIZE)
-			tty_audit_buf_push(buf);
+			tty_audit_buf_push_current(buf);
 	} while (size != 0);
 	mutex_unlock(&buf->mutex);
 	tty_audit_buf_put(buf);
@@ -325,17 +339,16 @@ void tty_audit_add_data(struct tty_struct *tty, unsigned char *data,
 void tty_audit_push(struct tty_struct *tty)
 {
 	struct tty_audit_buf *buf;
-	unsigned long flags;
 
-	spin_lock_irqsave(&current->sighand->siglock, flags);
+	spin_lock_irq(&current->sighand->siglock);
 	if (likely(!current->signal->audit_tty)) {
-		spin_unlock_irqrestore(&current->sighand->siglock, flags);
+		spin_unlock_irq(&current->sighand->siglock);
 		return;
 	}
 	buf = current->signal->tty_audit_buf;
 	if (buf)
 		atomic_inc(&buf->count);
-	spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	spin_unlock_irq(&current->sighand->siglock);
 
 	if (buf) {
 		int major, minor;
@@ -344,7 +357,7 @@ void tty_audit_push(struct tty_struct *tty)
 		minor = tty->driver->minor_start + tty->index;
 		mutex_lock(&buf->mutex);
 		if (buf->major == major && buf->minor == minor)
-			tty_audit_buf_push(buf);
+			tty_audit_buf_push_current(buf);
 		mutex_unlock(&buf->mutex);
 		tty_audit_buf_put(buf);
 	}

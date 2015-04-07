@@ -10,21 +10,13 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+#include <linux/cpuidle.h>
+
 #ifdef CONFIG_CPU_IDLE
-extern int imx5_cpuidle_init(void);
-extern int imx6q_cpuidle_init(void);
-extern int imx6sl_cpuidle_init(void);
+extern int imx_cpuidle_init(struct cpuidle_driver *drv);
 #else
-static inline int imx5_cpuidle_init(void)
+static inline int imx_cpuidle_init(struct cpuidle_driver *drv)
 {
-	return 0;
-}
-static inline int imx6q_cpuidle_init(void)
-{
-	return 0;
-}
-static inline int imx6sl_cpuidle_init(void)
-{
-	return 0;
+	return -ENODEV;
 }
 #endif

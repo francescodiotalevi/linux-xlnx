@@ -14,6 +14,11 @@
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
 */
 /*
 Driver: s526
@@ -36,14 +41,17 @@ comedi_config /dev/comedi0 s526 0x2C0,0x3
 
 */
 
-#include <linux/module.h>
 #include "../comedidev.h"
+#include <linux/ioport.h>
 #include <asm/byteorder.h>
+
+#define S526_SIZE 64
 
 #define S526_START_AI_CONV	0
 #define S526_AI_READ		0
 
 /* Ports */
+#define S526_IOSIZE 0x40
 #define S526_NUM_PORTS 27
 
 /* registers */
@@ -342,6 +350,7 @@ static int s526_gpct_insn_config(struct comedi_device *dev,
 
 	default:
 		return -EINVAL;
+		break;
 	}
 
 	return insn->n;
@@ -416,28 +425,15 @@ static int s526_ai_insn_config(struct comedi_device *dev,
 	return result;
 }
 
-static int s526_ai_eoc(struct comedi_device *dev,
-		       struct comedi_subdevice *s,
-		       struct comedi_insn *insn,
-		       unsigned long context)
-{
-	unsigned int status;
-
-	status = inw(dev->iobase + REG_ISR);
-	if (status & ISR_ADC_DONE)
-		return 0;
-	return -EBUSY;
-}
-
 static int s526_ai_rinsn(struct comedi_device *dev, struct comedi_subdevice *s,
 			 struct comedi_insn *insn, unsigned int *data)
 {
 	struct s526_private *devpriv = dev->private;
 	unsigned int chan = CR_CHAN(insn->chanspec);
-	int n;
+	int n, i;
 	unsigned short value;
 	unsigned int d;
-	int ret;
+	unsigned int status;
 
 	/* Set configured delay, enable channel for this channel only,
 	 * select "ADC read" channel, set "ADC start" bit. */
@@ -449,12 +445,17 @@ static int s526_ai_rinsn(struct comedi_device *dev, struct comedi_subdevice *s,
 		/* trigger conversion */
 		outw(value, dev->iobase + REG_ADC);
 
+#define TIMEOUT 100
 		/* wait for conversion to end */
-		ret = comedi_timeout(dev, s, insn, s526_ai_eoc, 0);
-		if (ret)
-			return ret;
-
-		outw(ISR_ADC_DONE, dev->iobase + REG_ISR);
+		for (i = 0; i < TIMEOUT; i++) {
+			status = inw(dev->iobase + REG_ISR);
+			if (status & ISR_ADC_DONE) {
+				outw(ISR_ADC_DONE, dev->iobase + REG_ISR);
+				break;
+			}
+		}
+		if (i == TIMEOUT)
+			return -ETIMEDOUT;
 
 		/* read data */
 		d = inw(dev->iobase + REG_ADD);
@@ -503,11 +504,14 @@ static int s526_ao_rinsn(struct comedi_device *dev, struct comedi_subdevice *s,
 
 static int s526_dio_insn_bits(struct comedi_device *dev,
 			      struct comedi_subdevice *s,
-			      struct comedi_insn *insn,
-			      unsigned int *data)
+			      struct comedi_insn *insn, unsigned int *data)
 {
-	if (comedi_dio_update_state(s, data))
+	if (data[0]) {
+		s->state &= ~data[0];
+		s->state |= data[0] & data[1];
+
 		outw(s->state, dev->iobase + REG_DIO);
+	}
 
 	data[1] = inw(dev->iobase + REG_DIO) & 0xff;
 
@@ -516,50 +520,54 @@ static int s526_dio_insn_bits(struct comedi_device *dev,
 
 static int s526_dio_insn_config(struct comedi_device *dev,
 				struct comedi_subdevice *s,
-				struct comedi_insn *insn,
-				unsigned int *data)
+				struct comedi_insn *insn, unsigned int *data)
 {
 	unsigned int chan = CR_CHAN(insn->chanspec);
-	unsigned int mask;
-	int ret;
+	int group, mask;
 
-	if (chan < 4)
-		mask = 0x0f;
-	else
-		mask = 0xf0;
-
-	ret = comedi_dio_insn_config(dev, s, insn, data, mask);
-	if (ret)
-		return ret;
-
-	/* bit 10/11 set the group 1/2's mode */
-	if (s->io_bits & 0x0f)
-		s->state |= (1 << 10);
-	else
-		s->state &= ~(1 << 10);
-	if (s->io_bits & 0xf0)
-		s->state |= (1 << 11);
-	else
-		s->state &= ~(1 << 11);
-
+	group = chan >> 2;
+	mask = 0xF << (group << 2);
+	switch (data[0]) {
+	case INSN_CONFIG_DIO_OUTPUT:
+		/* bit 10/11 set the group 1/2's mode */
+		s->state |= 1 << (group + 10);
+		s->io_bits |= mask;
+		break;
+	case INSN_CONFIG_DIO_INPUT:
+		s->state &= ~(1 << (group + 10)); /* 1 is output, 0 is input. */
+		s->io_bits &= ~mask;
+		break;
+	case INSN_CONFIG_DIO_QUERY:
+		data[1] = (s->io_bits & mask) ? COMEDI_OUTPUT : COMEDI_INPUT;
+		return insn->n;
+	default:
+		return -EINVAL;
+	}
 	outw(s->state, dev->iobase + REG_DIO);
 
-	return insn->n;
+	return 1;
 }
 
 static int s526_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
 	struct s526_private *devpriv;
 	struct comedi_subdevice *s;
+	int iobase;
 	int ret;
 
-	ret = comedi_request_region(dev, it->options[0], 0x40);
-	if (ret)
-		return ret;
+	dev->board_name = dev->driver->driver_name;
 
-	devpriv = comedi_alloc_devpriv(dev, sizeof(*devpriv));
+	iobase = it->options[0];
+	if (!iobase || !request_region(iobase, S526_IOSIZE, dev->board_name)) {
+		comedi_error(dev, "I/O port conflict");
+		return -EIO;
+	}
+	dev->iobase = iobase;
+
+	devpriv = kzalloc(sizeof(*devpriv), GFP_KERNEL);
 	if (!devpriv)
 		return -ENOMEM;
+	dev->private = devpriv;
 
 	ret = comedi_alloc_subdevices(dev, 4);
 	if (ret)
@@ -608,14 +616,22 @@ static int s526_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	s->insn_bits = s526_dio_insn_bits;
 	s->insn_config = s526_dio_insn_config;
 
-	return 0;
+	dev_info(dev->class_dev, "%s attached\n", dev->board_name);
+
+	return 1;
+}
+
+static void s526_detach(struct comedi_device *dev)
+{
+	if (dev->iobase > 0)
+		release_region(dev->iobase, S526_IOSIZE);
 }
 
 static struct comedi_driver s526_driver = {
 	.driver_name	= "s526",
 	.module		= THIS_MODULE,
 	.attach		= s526_attach,
-	.detach		= comedi_legacy_detach,
+	.detach		= s526_detach,
 };
 module_comedi_driver(s526_driver);
 

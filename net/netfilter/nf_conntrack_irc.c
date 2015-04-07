@@ -1,7 +1,6 @@
 /* IRC extension for IP connection tracking, Version 1.21
  * (C) 2000-2002 by Harald Welte <laforge@gnumonks.org>
  * based on RR's ip_conntrack_ftp.c
- * (C) 2006-2012 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -195,8 +194,6 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 
 			exp = nf_ct_expect_alloc(ct);
 			if (exp == NULL) {
-				nf_ct_helper_log(skb, ct,
-						 "cannot alloc expectation");
 				ret = NF_DROP;
 				goto out;
 			}
@@ -213,11 +210,8 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 						 addr_beg_p - ib_ptr,
 						 addr_end_p - addr_beg_p,
 						 exp);
-			else if (nf_ct_expect_related(exp) != 0) {
-				nf_ct_helper_log(skb, ct,
-						 "cannot add expectation");
+			else if (nf_ct_expect_related(exp) != 0)
 				ret = NF_DROP;
-			}
 			nf_ct_expect_put(exp);
 			goto out;
 		}

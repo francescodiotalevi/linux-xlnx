@@ -3,7 +3,7 @@
  * for access to MPT (Message Passing Technology) firmware.
  *
  * This code is based on drivers/scsi/mpt3sas/mpt3sas_base.c
- * Copyright (C) 2012-2013  LSI Corporation
+ * Copyright (C) 2012  LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  * This program is free software; you can redistribute it and/or
@@ -42,6 +42,7 @@
  * USA.
  */
 
+#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -82,10 +83,6 @@ static int msix_disable = -1;
 module_param(msix_disable, int, 0);
 MODULE_PARM_DESC(msix_disable, " disable msix routed interrupts (default=0)");
 
-static int max_msix_vectors = 8;
-module_param(max_msix_vectors, int, 0);
-MODULE_PARM_DESC(max_msix_vectors,
-	" max msix vectors - (default=8)");
 
 static int mpt3sas_fwfault_debug;
 MODULE_PARM_DESC(mpt3sas_fwfault_debug,
@@ -131,7 +128,7 @@ static int mpt3sas_remove_dead_ioc_func(void *arg)
 	pdev = ioc->pdev;
 	if ((pdev == NULL))
 		return -1;
-	pci_stop_and_remove_bus_device_locked(pdev);
+	pci_stop_and_remove_bus_device(pdev);
 	return 0;
 }
 
@@ -266,7 +263,7 @@ mpt3sas_base_stop_watchdog(struct MPT3SAS_ADAPTER *ioc)
 	ioc->fault_reset_work_q = NULL;
 	spin_unlock_irqrestore(&ioc->ioc_reset_in_progress_lock, flags);
 	if (wq) {
-		if (!cancel_delayed_work_sync(&ioc->fault_reset_work))
+		if (!cancel_delayed_work(&ioc->fault_reset_work))
 			flush_workqueue(wq);
 		destroy_workqueue(wq);
 	}
@@ -1313,6 +1310,7 @@ _base_build_sg_scmd_ieee(struct MPT3SAS_ADAPTER *ioc,
 	void *sg_local, *chain;
 	u32 chain_offset;
 	u32 chain_length;
+	u32 chain_flags;
 	int sges_left;
 	u32 sges_in_segment;
 	u8 simple_sgl_flags;
@@ -1358,7 +1356,8 @@ _base_build_sg_scmd_ieee(struct MPT3SAS_ADAPTER *ioc,
 		sges_in_segment--;
 	}
 
-	/* initializing the pointers */
+	/* initializing the chain flags and pointers */
+	chain_flags = MPI2_SGE_FLAGS_CHAIN_ELEMENT << MPI2_SGE_FLAGS_SHIFT;
 	chain_req = _base_get_chain_buffer_tracker(ioc, smid);
 	if (!chain_req)
 		return -1;
@@ -1624,35 +1623,66 @@ _base_request_irq(struct MPT3SAS_ADAPTER *ioc, u8 index, u32 vector)
 static void
 _base_assign_reply_queues(struct MPT3SAS_ADAPTER *ioc)
 {
-	unsigned int cpu, nr_cpus, nr_msix, index = 0;
+	struct adapter_reply_queue *reply_q;
+	int cpu_id;
+	int cpu_grouping, loop, grouping, grouping_mod;
+	int reply_queue;
 
 	if (!_base_is_controller_msix_enabled(ioc))
 		return;
 
 	memset(ioc->cpu_msix_table, 0, ioc->cpu_msix_table_sz);
 
-	nr_cpus = num_online_cpus();
-	nr_msix = ioc->reply_queue_count = min(ioc->reply_queue_count,
-					       ioc->facts.MaxMSIxVectors);
-	if (!nr_msix)
-		return;
-
-	cpu = cpumask_first(cpu_online_mask);
-
-	do {
-		unsigned int i, group = nr_cpus / nr_msix;
-
-		if (index < nr_cpus % nr_msix)
-			group++;
-
-		for (i = 0 ; i < group ; i++) {
-			ioc->cpu_msix_table[cpu] = index;
-			cpu = cpumask_next(cpu, cpu_online_mask);
+	/* NUMA Hardware bug workaround - drop to less reply queues */
+	if (ioc->reply_queue_count > ioc->facts.MaxMSIxVectors) {
+		ioc->reply_queue_count = ioc->facts.MaxMSIxVectors;
+		reply_queue = 0;
+		list_for_each_entry(reply_q, &ioc->reply_queue_list, list) {
+			reply_q->msix_index = reply_queue;
+			if (++reply_queue == ioc->reply_queue_count)
+				reply_queue = 0;
 		}
+	}
 
-		index++;
+	/* when there are more cpus than available msix vectors,
+	 * then group cpus togeather on same irq
+	 */
+	if (ioc->cpu_count > ioc->msix_vector_count) {
+		grouping = ioc->cpu_count / ioc->msix_vector_count;
+		grouping_mod = ioc->cpu_count % ioc->msix_vector_count;
+		if (grouping < 2 || (grouping == 2 && !grouping_mod))
+			cpu_grouping = 2;
+		else if (grouping < 4 || (grouping == 4 && !grouping_mod))
+			cpu_grouping = 4;
+		else if (grouping < 8 || (grouping == 8 && !grouping_mod))
+			cpu_grouping = 8;
+		else
+			cpu_grouping = 16;
+	} else
+		cpu_grouping = 0;
 
-	} while (cpu < nr_cpus);
+	loop = 0;
+	reply_q = list_entry(ioc->reply_queue_list.next,
+	     struct adapter_reply_queue, list);
+	for_each_online_cpu(cpu_id) {
+		if (!cpu_grouping) {
+			ioc->cpu_msix_table[cpu_id] = reply_q->msix_index;
+			reply_q = list_entry(reply_q->list.next,
+			    struct adapter_reply_queue, list);
+		} else {
+			if (loop < cpu_grouping) {
+				ioc->cpu_msix_table[cpu_id] =
+				    reply_q->msix_index;
+				loop++;
+			} else {
+				reply_q = list_entry(reply_q->list.next,
+				    struct adapter_reply_queue, list);
+				ioc->cpu_msix_table[cpu_id] =
+				    reply_q->msix_index;
+				loop = 1;
+			}
+		}
+	}
 }
 
 /**
@@ -1682,6 +1712,8 @@ _base_enable_msix(struct MPT3SAS_ADAPTER *ioc)
 	int i;
 	u8 try_msix = 0;
 
+	INIT_LIST_HEAD(&ioc->reply_queue_list);
+
 	if (msix_disable == -1 || msix_disable == 0)
 		try_msix = 1;
 
@@ -1693,16 +1725,6 @@ _base_enable_msix(struct MPT3SAS_ADAPTER *ioc)
 
 	ioc->reply_queue_count = min_t(int, ioc->cpu_count,
 	    ioc->msix_vector_count);
-
-	printk(MPT3SAS_FMT "MSI-X vectors supported: %d, no of cores"
-	  ": %d, max_msix_vectors: %d\n", ioc->name, ioc->msix_vector_count,
-	  ioc->cpu_count, max_msix_vectors);
-
-	if (max_msix_vectors > 0) {
-		ioc->reply_queue_count = min_t(int, max_msix_vectors,
-			ioc->reply_queue_count);
-		ioc->msix_vector_count = ioc->reply_queue_count;
-	}
 
 	entries = kcalloc(ioc->reply_queue_count, sizeof(struct msix_entry),
 	    GFP_KERNEL);
@@ -1771,7 +1793,6 @@ mpt3sas_base_map_resources(struct MPT3SAS_ADAPTER *ioc)
 	if (pci_enable_device_mem(pdev)) {
 		pr_warn(MPT3SAS_FMT "pci_enable_device_mem: failed\n",
 			ioc->name);
-		ioc->bars = 0;
 		return -ENODEV;
 	}
 
@@ -1780,7 +1801,6 @@ mpt3sas_base_map_resources(struct MPT3SAS_ADAPTER *ioc)
 	    MPT3SAS_DRIVER_NAME)) {
 		pr_warn(MPT3SAS_FMT "pci_request_selected_regions: failed\n",
 			ioc->name);
-		ioc->bars = 0;
 		r = -ENODEV;
 		goto out_fail;
 	}
@@ -4073,15 +4093,11 @@ _base_diag_reset(struct MPT3SAS_ADAPTER *ioc, int sleep_flag)
 	writel(host_diagnostic | MPI2_DIAG_RESET_ADAPTER,
 	     &ioc->chip->HostDiagnostic);
 
-	/*This delay allows the chip PCIe hardware time to finish reset tasks*/
-	if (sleep_flag == CAN_SLEEP)
-		msleep(MPI2_HARD_RESET_PCIE_FIRST_READ_DELAY_MICRO_SEC/1000);
-	else
-		mdelay(MPI2_HARD_RESET_PCIE_FIRST_READ_DELAY_MICRO_SEC/1000);
+	/* don't access any registers for 50 milliseconds */
+	msleep(50);
 
-	/* Approximately 300 second max wait */
-	for (count = 0; count < (300000000 /
-		MPI2_HARD_RESET_PCIE_SECOND_READ_DELAY_MICRO_SEC); count++) {
+	/* 300 second max wait */
+	for (count = 0; count < 3000000 ; count++) {
 
 		host_diagnostic = readl(&ioc->chip->HostDiagnostic);
 
@@ -4090,13 +4106,11 @@ _base_diag_reset(struct MPT3SAS_ADAPTER *ioc, int sleep_flag)
 		if (!(host_diagnostic & MPI2_DIAG_RESET_ADAPTER))
 			break;
 
-		/* Wait to pass the second read delay window */
+		/* wait 1 msec */
 		if (sleep_flag == CAN_SLEEP)
-			msleep(MPI2_HARD_RESET_PCIE_SECOND_READ_DELAY_MICRO_SEC
-								/ 1000);
+			usleep_range(1000, 1500);
 		else
-			mdelay(MPI2_HARD_RESET_PCIE_SECOND_READ_DELAY_MICRO_SEC
-								/ 1000);
+			mdelay(1);
 	}
 
 	if (host_diagnostic & MPI2_DIAG_HCB_MODE) {
@@ -4376,25 +4390,18 @@ mpt3sas_base_free_resources(struct MPT3SAS_ADAPTER *ioc)
 	dexitprintk(ioc, pr_info(MPT3SAS_FMT "%s\n", ioc->name,
 	    __func__));
 
-	if (ioc->chip_phys && ioc->chip) {
-		_base_mask_interrupts(ioc);
-		ioc->shost_recovery = 1;
-		_base_make_ioc_ready(ioc, CAN_SLEEP, SOFT_RESET);
-		ioc->shost_recovery = 0;
-	}
-
+	_base_mask_interrupts(ioc);
+	ioc->shost_recovery = 1;
+	_base_make_ioc_ready(ioc, CAN_SLEEP, SOFT_RESET);
+	ioc->shost_recovery = 0;
 	_base_free_irq(ioc);
 	_base_disable_msix(ioc);
-
-	if (ioc->chip_phys && ioc->chip)
+	if (ioc->chip_phys)
 		iounmap(ioc->chip);
 	ioc->chip_phys = 0;
-
-	if (pci_is_enabled(pdev)) {
-		pci_release_selected_regions(ioc->pdev, ioc->bars);
-		pci_disable_pcie_error_reporting(pdev);
-		pci_disable_device(pdev);
-	}
+	pci_release_selected_regions(ioc->pdev, ioc->bars);
+	pci_disable_pcie_error_reporting(pdev);
+	pci_disable_device(pdev);
 	return;
 }
 

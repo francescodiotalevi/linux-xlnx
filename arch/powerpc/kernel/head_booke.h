@@ -199,6 +199,11 @@
         .align 5;              						     \
 label:
 
+#define FINISH_EXCEPTION(func)					\
+	bl	transfer_to_handler_full;			\
+	.long	func;						\
+	.long	ret_from_except_full
+
 #define EXCEPTION(n, intno, label, hdlr, xfer)			\
 	START_EXCEPTION(label);					\
 	NORMAL_EXCEPTION_PROLOG(intno);				\
@@ -281,13 +286,13 @@ label:
 	andis.	r10,r10,(DBSR_IC|DBSR_BT)@h;				      \
 	beq+	2f;							      \
 									      \
-	lis	r10,interrupt_base@h;	/* check if exception in vectors */   \
-	ori	r10,r10,interrupt_base@l;				      \
+	lis	r10,KERNELBASE@h;	/* check if exception in vectors */   \
+	ori	r10,r10,KERNELBASE@l;					      \
 	cmplw	r12,r10;						      \
 	blt+	2f;			/* addr below exception vectors */    \
 									      \
-	lis	r10,interrupt_end@h;					      \
-	ori	r10,r10,interrupt_end@l;				      \
+	lis	r10,DebugDebug@h;					      \
+	ori	r10,r10,DebugDebug@l;					      \
 	cmplw	r12,r10;						      \
 	bgt+	2f;			/* addr above exception vectors */    \
 									      \
@@ -334,13 +339,13 @@ label:
 	andis.	r10,r10,(DBSR_IC|DBSR_BT)@h;				      \
 	beq+	2f;							      \
 									      \
-	lis	r10,interrupt_base@h;	/* check if exception in vectors */   \
-	ori	r10,r10,interrupt_base@l;				      \
+	lis	r10,KERNELBASE@h;	/* check if exception in vectors */   \
+	ori	r10,r10,KERNELBASE@l;					      \
 	cmplw	r12,r10;						      \
 	blt+	2f;			/* addr below exception vectors */    \
 									      \
-	lis	r10,interrupt_end@h;					      \
-	ori	r10,r10,interrupt_end@l;				      \
+	lis	r10,DebugCrit@h;					      \
+	ori	r10,r10,DebugCrit@l;					      \
 	cmplw	r12,r10;						      \
 	bgt+	2f;			/* addr above exception vectors */    \
 									      \

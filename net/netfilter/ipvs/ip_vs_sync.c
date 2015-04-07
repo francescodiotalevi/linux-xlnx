@@ -246,7 +246,7 @@ struct ip_vs_sync_thread_data {
 struct ip_vs_sync_mesg_v0 {
 	__u8                    nr_conns;
 	__u8                    syncid;
-	__be16                  size;
+	__u16                   size;
 
 	/* ip_vs_sync_conn entries start here */
 };
@@ -255,7 +255,7 @@ struct ip_vs_sync_mesg_v0 {
 struct ip_vs_sync_mesg {
 	__u8			reserved;	/* must be zero */
 	__u8			syncid;
-	__be16			size;
+	__u16			size;
 	__u8			nr_conns;
 	__s8			version;	/* SYNC_PROTO_VER  */
 	__u16			spare;
@@ -335,7 +335,7 @@ ip_vs_sync_buff_create(struct netns_ipvs *ipvs)
 	sb->mesg->reserved = 0;  /* old nr_conns i.e. must be zero now */
 	sb->mesg->version = SYNC_PROTO_VER;
 	sb->mesg->syncid = ipvs->master_syncid;
-	sb->mesg->size = htons(sizeof(struct ip_vs_sync_mesg));
+	sb->mesg->size = sizeof(struct ip_vs_sync_mesg);
 	sb->mesg->nr_conns = 0;
 	sb->mesg->spare = 0;
 	sb->head = (unsigned char *)sb->mesg + sizeof(struct ip_vs_sync_mesg);
@@ -418,21 +418,11 @@ ip_vs_sync_buff_create_v0(struct netns_ipvs *ipvs)
 	mesg = (struct ip_vs_sync_mesg_v0 *)sb->mesg;
 	mesg->nr_conns = 0;
 	mesg->syncid = ipvs->master_syncid;
-	mesg->size = htons(sizeof(struct ip_vs_sync_mesg_v0));
+	mesg->size = sizeof(struct ip_vs_sync_mesg_v0);
 	sb->head = (unsigned char *)mesg + sizeof(struct ip_vs_sync_mesg_v0);
 	sb->end = (unsigned char *)mesg + ipvs->send_mesg_maxlen;
 	sb->firstuse = jiffies;
 	return sb;
-}
-
-/* Check if connection is controlled by persistence */
-static inline bool in_persistence(struct ip_vs_conn *cp)
-{
-	for (cp = cp->control; cp; cp = cp->control) {
-		if (cp->flags & IP_VS_CONN_F_TEMPLATE)
-			return true;
-	}
-	return false;
 }
 
 /* Check if conn should be synced.
@@ -457,8 +447,6 @@ static int ip_vs_sync_conn_needed(struct netns_ipvs *ipvs,
 	/* Check if we sync in current state */
 	if (unlikely(cp->flags & IP_VS_CONN_F_TEMPLATE))
 		force = 0;
-	else if (unlikely(sysctl_sync_persist_mode(ipvs) && in_persistence(cp)))
-		return 0;
 	else if (likely(cp->protocol == IPPROTO_TCP)) {
 		if (!((1 << cp->state) &
 		      ((1 << IP_VS_TCP_S_ESTABLISHED) |
@@ -473,10 +461,9 @@ static int ip_vs_sync_conn_needed(struct netns_ipvs *ipvs,
 	} else if (unlikely(cp->protocol == IPPROTO_SCTP)) {
 		if (!((1 << cp->state) &
 		      ((1 << IP_VS_SCTP_S_ESTABLISHED) |
-		       (1 << IP_VS_SCTP_S_SHUTDOWN_SENT) |
-		       (1 << IP_VS_SCTP_S_SHUTDOWN_RECEIVED) |
-		       (1 << IP_VS_SCTP_S_SHUTDOWN_ACK_SENT) |
-		       (1 << IP_VS_SCTP_S_CLOSED))))
+		       (1 << IP_VS_SCTP_S_CLOSED) |
+		       (1 << IP_VS_SCTP_S_SHUT_ACK_CLI) |
+		       (1 << IP_VS_SCTP_S_SHUT_ACK_SER))))
 			return 0;
 		force = cp->state != cp->old_state;
 		if (force && cp->state != IP_VS_SCTP_S_ESTABLISHED)
@@ -544,9 +531,9 @@ static void ip_vs_sync_conn_v0(struct net *net, struct ip_vs_conn *cp,
 	if (!ip_vs_sync_conn_needed(ipvs, cp, pkts))
 		return;
 
-	spin_lock_bh(&ipvs->sync_buff_lock);
+	spin_lock(&ipvs->sync_buff_lock);
 	if (!(ipvs->sync_state & IP_VS_STATE_MASTER)) {
-		spin_unlock_bh(&ipvs->sync_buff_lock);
+		spin_unlock(&ipvs->sync_buff_lock);
 		return;
 	}
 
@@ -565,7 +552,7 @@ static void ip_vs_sync_conn_v0(struct net *net, struct ip_vs_conn *cp,
 	if (!buff) {
 		buff = ip_vs_sync_buff_create_v0(ipvs);
 		if (!buff) {
-			spin_unlock_bh(&ipvs->sync_buff_lock);
+			spin_unlock(&ipvs->sync_buff_lock);
 			pr_err("ip_vs_sync_buff_create failed.\n");
 			return;
 		}
@@ -595,7 +582,7 @@ static void ip_vs_sync_conn_v0(struct net *net, struct ip_vs_conn *cp,
 	}
 
 	m->nr_conns++;
-	m->size = htons(ntohs(m->size) + len);
+	m->size += len;
 	buff->head += len;
 
 	/* check if there is a space for next one */
@@ -603,7 +590,7 @@ static void ip_vs_sync_conn_v0(struct net *net, struct ip_vs_conn *cp,
 		sb_queue_tail(ipvs, ms);
 		ms->sync_buff = NULL;
 	}
-	spin_unlock_bh(&ipvs->sync_buff_lock);
+	spin_unlock(&ipvs->sync_buff_lock);
 
 	/* synchronize its controller if it has */
 	cp = cp->control;
@@ -654,9 +641,9 @@ sloop:
 		pe_name_len = strnlen(cp->pe->name, IP_VS_PENAME_MAXLEN);
 	}
 
-	spin_lock_bh(&ipvs->sync_buff_lock);
+	spin_lock(&ipvs->sync_buff_lock);
 	if (!(ipvs->sync_state & IP_VS_STATE_MASTER)) {
-		spin_unlock_bh(&ipvs->sync_buff_lock);
+		spin_unlock(&ipvs->sync_buff_lock);
 		return;
 	}
 
@@ -696,7 +683,7 @@ sloop:
 	if (!buff) {
 		buff = ip_vs_sync_buff_create(ipvs);
 		if (!buff) {
-			spin_unlock_bh(&ipvs->sync_buff_lock);
+			spin_unlock(&ipvs->sync_buff_lock);
 			pr_err("ip_vs_sync_buff_create failed.\n");
 			return;
 		}
@@ -706,7 +693,7 @@ sloop:
 
 	p = buff->head;
 	buff->head += pad + len;
-	m->size = htons(ntohs(m->size) + pad + len);
+	m->size += pad + len;
 	/* Add ev. padding from prev. sync_conn */
 	while (pad--)
 		*(p++) = 0;
@@ -763,7 +750,7 @@ sloop:
 		}
 	}
 
-	spin_unlock_bh(&ipvs->sync_buff_lock);
+	spin_unlock(&ipvs->sync_buff_lock);
 
 control:
 	/* synchronize its controller if it has */
@@ -856,7 +843,7 @@ static void ip_vs_proc_conn(struct net *net, struct ip_vs_conn_param *param,
 		kfree(param->pe_data);
 
 		dest = cp->dest;
-		spin_lock_bh(&cp->lock);
+		spin_lock(&cp->lock);
 		if ((cp->flags ^ flags) & IP_VS_CONN_F_INACTIVE &&
 		    !(flags & IP_VS_CONN_F_TEMPLATE) && dest) {
 			if (flags & IP_VS_CONN_F_INACTIVE) {
@@ -870,23 +857,27 @@ static void ip_vs_proc_conn(struct net *net, struct ip_vs_conn_param *param,
 		flags &= IP_VS_CONN_F_BACKUP_UPD_MASK;
 		flags |= cp->flags & ~IP_VS_CONN_F_BACKUP_UPD_MASK;
 		cp->flags = flags;
-		spin_unlock_bh(&cp->lock);
-		if (!dest)
-			ip_vs_try_bind_dest(cp);
+		spin_unlock(&cp->lock);
+		if (!dest) {
+			dest = ip_vs_try_bind_dest(cp);
+			if (dest)
+				atomic_dec(&dest->refcnt);
+		}
 	} else {
 		/*
 		 * Find the appropriate destination for the connection.
 		 * If it is not found the connection will remain unbound
 		 * but still handled.
 		 */
-		rcu_read_lock();
 		dest = ip_vs_find_dest(net, type, daddr, dport, param->vaddr,
 				       param->vport, protocol, fwmark, flags);
 
 		cp = ip_vs_conn_new(param, daddr, dport, flags, dest, fwmark);
-		rcu_read_unlock();
+		if (dest)
+			atomic_dec(&dest->refcnt);
 		if (!cp) {
-			kfree(param->pe_data);
+			if (param->pe_data)
+				kfree(param->pe_data);
 			IP_VS_DBG(2, "BACKUP, add new conn. failed\n");
 			return;
 		}
@@ -1187,8 +1178,10 @@ static void ip_vs_process_message(struct net *net, __u8 *buffer,
 		IP_VS_DBG(2, "BACKUP, message header too short\n");
 		return;
 	}
+	/* Convert size back to host byte order */
+	m2->size = ntohs(m2->size);
 
-	if (buflen != ntohs(m2->size)) {
+	if (buflen != m2->size) {
 		IP_VS_DBG(2, "BACKUP, bogus message size\n");
 		return;
 	}
@@ -1554,7 +1547,10 @@ ip_vs_send_sync_msg(struct socket *sock, struct ip_vs_sync_mesg *msg)
 	int msize;
 	int ret;
 
-	msize = ntohs(msg->size);
+	msize = msg->size;
+
+	/* Put size in network byte order */
+	msg->size = htons(msg->size);
 
 	ret = ip_vs_send_async(sock, (char *)msg, msize);
 	if (ret >= 0 || ret == -EAGAIN)
@@ -1636,12 +1632,12 @@ static int sync_thread_master(void *data)
 			continue;
 		}
 		while (ip_vs_send_sync_msg(tinfo->sock, sb->mesg) < 0) {
-			/* (Ab)use interruptible sleep to avoid increasing
-			 * the load avg.
-			 */
+			int ret = 0;
+
 			__wait_event_interruptible(*sk_sleep(sk),
 						   sock_writeable(sk) ||
-						   kthread_should_stop());
+						   kthread_should_stop(),
+						   ret);
 			if (unlikely(kthread_should_stop()))
 				goto done;
 		}
@@ -1696,7 +1692,11 @@ static int sync_thread_backup(void *data)
 				break;
 			}
 
+			/* disable bottom half, because it accesses the data
+			   shared by softirq while getting/creating conns */
+			local_bh_disable();
 			ip_vs_process_message(tinfo->net, tinfo->buf, len);
+			local_bh_enable();
 		}
 	}
 

@@ -1,5 +1,5 @@
 /*
- * OMAP4 SMP source file. It contains platform specific functions
+ * OMAP4 SMP source file. It contains platform specific fucntions
  * needed for the linux smp kernel.
  *
  * Copyright (C) 2009 Texas Instruments, Inc.
@@ -19,8 +19,9 @@
 #include <linux/device.h>
 #include <linux/smp.h>
 #include <linux/io.h>
-#include <linux/irqchip/arm-gic.h>
 
+#include <asm/cacheflush.h>
+#include <asm/hardware/gic.h>
 #include <asm/smp_scu.h>
 
 #include "omap-secure.h"
@@ -39,6 +40,8 @@
 
 #define OMAP5_CORE_COUNT	0x2
 
+u16 pm44xx_errata;
+
 /* SCU base address */
 static void __iomem *scu_base;
 
@@ -49,7 +52,7 @@ void __iomem *omap4_get_scu_base(void)
 	return scu_base;
 }
 
-static void omap4_secondary_init(unsigned int cpu)
+static void __cpuinit omap4_secondary_init(unsigned int cpu)
 {
 	/*
 	 * Configure ACTRL and enable NS SMP bit access on CPU1 on HS device.
@@ -64,11 +67,11 @@ static void omap4_secondary_init(unsigned int cpu)
 							4, 0, 0, 0, 0, 0);
 
 	/*
-	 * Configure the CNTFRQ register for the secondary cpu's which
-	 * indicates the frequency of the cpu local timers.
+	 * If any interrupts are already enabled for the primary
+	 * core (e.g. timer irq), then they will not have been enabled
+	 * for us: do so
 	 */
-	if (soc_is_omap54xx() || soc_is_dra7xx())
-		set_cntfreq();
+	gic_secondary_init(0);
 
 	/*
 	 * Synchronise with the boot thread.
@@ -77,11 +80,10 @@ static void omap4_secondary_init(unsigned int cpu)
 	spin_unlock(&boot_lock);
 }
 
-static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
+static int __cpuinit omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
 	static struct clockdomain *cpu1_clkdm;
 	static bool booted;
-	static struct powerdomain *cpu1_pwrdm;
 	void __iomem *base = omap_get_wakeupgen_base();
 
 	/*
@@ -92,19 +94,20 @@ static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 
 	/*
 	 * Update the AuxCoreBoot0 with boot state for secondary core.
-	 * omap4_secondary_startup() routine will hold the secondary core till
+	 * omap_secondary_startup() routine will hold the secondary core till
 	 * the AuxCoreBoot1 register is updated with cpu state
 	 * A barrier is added to ensure that write buffer is drained
 	 */
 	if (omap_secure_apis_support())
 		omap_modify_auxcoreboot0(0x200, 0xfffffdff);
 	else
-		writel_relaxed(0x20, base + OMAP_AUX_CORE_BOOT_0);
+		__raw_writel(0x20, base + OMAP_AUX_CORE_BOOT_0);
 
-	if (!cpu1_clkdm && !cpu1_pwrdm) {
+	flush_cache_all();
+	smp_wmb();
+
+	if (!cpu1_clkdm)
 		cpu1_clkdm = clkdm_lookup("mpu1_clkdm");
-		cpu1_pwrdm = pwrdm_lookup("cpu1_pwrdm");
-	}
 
 	/*
 	 * The SGI(Software Generated Interrupts) are not wakeup capable
@@ -117,7 +120,7 @@ static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	 * Section :
 	 *	4.3.4.2 Power States of CPU0 and CPU1
 	 */
-	if (booted && cpu1_pwrdm && cpu1_clkdm) {
+	if (booted) {
 		/*
 		 * GIC distributor control register has changed between
 		 * CortexA9 r1pX and r2pX. The Control Register secure
@@ -138,12 +141,7 @@ static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 			gic_dist_disable();
 		}
 
-		/*
-		 * Ensure that CPU power state is set to ON to avoid CPU
-		 * powerdomain transition on wfi
-		 */
 		clkdm_wakeup(cpu1_clkdm);
-		omap_set_pwrdm_state(cpu1_pwrdm, PWRDM_POWER_ON);
 		clkdm_allow_idle(cpu1_clkdm);
 
 		if (IS_PM44XX_ERRATUM(PM_OMAP4_ROM_SMP_BOOT_ERRATUM_GICD)) {
@@ -159,7 +157,7 @@ static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 		booted = true;
 	}
 
-	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+	gic_raise_softirq(cpumask_of(cpu), 0);
 
 	/*
 	 * Now the secondary core is starting up let it run its
@@ -168,6 +166,38 @@ static int omap4_boot_secondary(unsigned int cpu, struct task_struct *idle)
 	spin_unlock(&boot_lock);
 
 	return 0;
+}
+
+static void __init wakeup_secondary(void)
+{
+	void *startup_addr = omap_secondary_startup;
+	void __iomem *base = omap_get_wakeupgen_base();
+
+	if (cpu_is_omap446x()) {
+		startup_addr = omap_secondary_startup_4460;
+		pm44xx_errata |= PM_OMAP4_ROM_SMP_BOOT_ERRATUM_GICD;
+	}
+
+	/*
+	 * Write the address of secondary startup routine into the
+	 * AuxCoreBoot1 where ROM code will jump and start executing
+	 * on secondary core once out of WFE
+	 * A barrier is added to ensure that write buffer is drained
+	 */
+	if (omap_secure_apis_support())
+		omap_auxcoreboot_addr(virt_to_phys(startup_addr));
+	else
+		__raw_writel(virt_to_phys(omap5_secondary_startup),
+						base + OMAP_AUX_CORE_BOOT_1);
+
+	smp_wmb();
+
+	/*
+	 * Send a 'sev' to wake the secondary core from WFE.
+	 * Drain the outstanding writes to memory
+	 */
+	dsb_sev();
+	mb();
 }
 
 /*
@@ -179,13 +209,13 @@ static void __init omap4_smp_init_cpus(void)
 	unsigned int i = 0, ncores = 1, cpu_id;
 
 	/* Use ARM cpuid check here, as SoC detection will not work so early */
-	cpu_id = read_cpuid_id() & CPU_MASK;
+	cpu_id = read_cpuid(CPUID_ID) & CPU_MASK;
 	if (cpu_id == CPU_CORTEX_A9) {
 		/*
 		 * Currently we can't call ioremap here because
 		 * SoC detection won't work until after init_early.
 		 */
-		scu_base =  OMAP2_L4_IO_ADDRESS(scu_a9_get_base());
+		scu_base =  OMAP2_L4_IO_ADDRESS(OMAP44XX_SCU_BASE);
 		BUG_ON(!scu_base);
 		ncores = scu_get_core_count(scu_base);
 	} else if (cpu_id == CPU_CORTEX_A15) {
@@ -201,12 +231,12 @@ static void __init omap4_smp_init_cpus(void)
 
 	for (i = 0; i < ncores; i++)
 		set_cpu_possible(i, true);
+
+	set_smp_cross_call(gic_raise_softirq);
 }
 
 static void __init omap4_smp_prepare_cpus(unsigned int max_cpus)
 {
-	void *startup_addr = omap4_secondary_startup;
-	void __iomem *base = omap_get_wakeupgen_base();
 
 	/*
 	 * Initialise the SCU and wake up the secondary core using
@@ -214,22 +244,7 @@ static void __init omap4_smp_prepare_cpus(unsigned int max_cpus)
 	 */
 	if (scu_base)
 		scu_enable(scu_base);
-
-	if (cpu_is_omap446x())
-		startup_addr = omap4460_secondary_startup;
-
-	/*
-	 * Write the address of secondary startup routine into the
-	 * AuxCoreBoot1 where ROM code will jump and start executing
-	 * on secondary core once out of WFE
-	 * A barrier is added to ensure that write buffer is drained
-	 */
-	if (omap_secure_apis_support())
-		omap_auxcoreboot_addr(virt_to_phys(startup_addr));
-	else
-		writel_relaxed(virt_to_phys(omap5_secondary_startup),
-			       base + OMAP_AUX_CORE_BOOT_1);
-
+	wakeup_secondary();
 }
 
 struct smp_operations omap4_smp_ops __initdata = {

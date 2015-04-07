@@ -26,7 +26,6 @@
 
 #include <linux/i2c.h>
 #include "dvb_frontend.h"
-#include "tda8290.h"
 
 struct tda827x_config
 {
@@ -35,7 +34,7 @@ struct tda827x_config
 	int (*sleep) (struct dvb_frontend *fe);
 
 	/* interface to tda829x driver */
-	enum tda8290_lna config;
+	unsigned int config;
 	int 	     switch_addr;
 
 	void (*agcf)(struct dvb_frontend *fe);
@@ -51,7 +50,7 @@ struct tda827x_config
  * @param cfg optional callback function pointers.
  * @return FE pointer on success, NULL on failure.
  */
-#if IS_ENABLED(CONFIG_MEDIA_TUNER_TDA827X)
+#if defined(CONFIG_MEDIA_TUNER_TDA827X) || (defined(CONFIG_MEDIA_TUNER_TDA827X_MODULE) && defined(MODULE))
 extern struct dvb_frontend* tda827x_attach(struct dvb_frontend *fe, int addr,
 					   struct i2c_adapter *i2c,
 					   struct tda827x_config *cfg);

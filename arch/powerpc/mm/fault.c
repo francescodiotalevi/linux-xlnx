@@ -32,7 +32,6 @@
 #include <linux/perf_event.h>
 #include <linux/magic.h>
 #include <linux/ratelimit.h>
-#include <linux/context_tracking.h>
 
 #include <asm/firmware.h>
 #include <asm/page.h>
@@ -197,7 +196,6 @@ static int mm_fault_error(struct pt_regs *regs, unsigned long addr, int fault)
 int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 			    unsigned long error_code)
 {
-	enum ctx_state prev_state = exception_enter();
 	struct vm_area_struct * vma;
 	struct mm_struct *mm = current->mm;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
@@ -206,7 +204,6 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	int trap = TRAP(regs);
  	int is_exec = trap == 0x400;
 	int fault;
-	int rc = 0, store_update_sp = 0;
 
 #if !(defined(CONFIG_4xx) || defined(CONFIG_BOOKE))
 	/*
@@ -223,6 +220,9 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	is_write = error_code & ESR_DST;
 #endif /* CONFIG_4xx || CONFIG_BOOKE */
 
+	if (is_write)
+		flags |= FAULT_FLAG_WRITE;
+
 #ifdef CONFIG_PPC_ICSWX
 	/*
 	 * we need to do this early because this "data storage
@@ -230,30 +230,28 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	 * look at it
 	 */
 	if (error_code & ICSWX_DSI_UCT) {
-		rc = acop_handle_fault(regs, address, error_code);
+		int rc = acop_handle_fault(regs, address, error_code);
 		if (rc)
-			goto bail;
+			return rc;
 	}
 #endif /* CONFIG_PPC_ICSWX */
 
 	if (notify_page_fault(regs))
-		goto bail;
+		return 0;
 
 	if (unlikely(debugger_fault_handler(regs)))
-		goto bail;
+		return 0;
 
 	/* On a kernel SLB miss we can only check for a valid exception entry */
-	if (!user_mode(regs) && (address >= TASK_SIZE)) {
-		rc = SIGSEGV;
-		goto bail;
-	}
+	if (!user_mode(regs) && (address >= TASK_SIZE))
+		return SIGSEGV;
 
 #if !(defined(CONFIG_4xx) || defined(CONFIG_BOOKE) || \
 			     defined(CONFIG_PPC_BOOK3S_64))
   	if (error_code & DSISR_DABRMATCH) {
-		/* breakpoint match */
-		do_break(regs, address, error_code);
-		goto bail;
+		/* DABR match */
+		do_dabr(regs, address, error_code);
+		return 0;
 	}
 #endif
 
@@ -262,10 +260,8 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 		local_irq_enable();
 
 	if (in_atomic() || mm == NULL) {
-		if (!user_mode(regs)) {
-			rc = SIGSEGV;
-			goto bail;
-		}
+		if (!user_mode(regs))
+			return SIGSEGV;
 		/* in_atomic() in user mode is really bad,
 		   as is current->mm == NULL. */
 		printk(KERN_EMERG "Page fault in user mode with "
@@ -276,17 +272,6 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
-
-	/*
-	 * We want to do this outside mmap_sem, because reading code around nip
-	 * can result in fault, which will cause a deadlock when called with
-	 * mmap_sem held
-	 */
-	if (user_mode(regs))
-		store_update_sp = store_updates_sp(regs);
-
-	if (user_mode(regs))
-		flags |= FAULT_FLAG_USER;
 
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
@@ -353,7 +338,8 @@ retry:
 		 * between the last mapped region and the stack will
 		 * expand the stack rather than segfaulting.
 		 */
-		if (address + 2048 < uregs->gpr[1] && !store_update_sp)
+		if (address + 2048 < uregs->gpr[1]
+		    && (!user_mode(regs) || !store_updates_sp(regs)))
 			goto bad_area;
 	}
 	if (expand_stack(vma, address))
@@ -415,7 +401,6 @@ good_area:
 	} else if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
-		flags |= FAULT_FLAG_WRITE;
 	/* a read */
 	} else {
 		/* protection fault */
@@ -432,11 +417,9 @@ good_area:
 	 */
 	fault = handle_mm_fault(mm, vma, address, flags);
 	if (unlikely(fault & (VM_FAULT_RETRY|VM_FAULT_ERROR))) {
-		rc = mm_fault_error(regs, address, fault);
+		int rc = mm_fault_error(regs, address, fault);
 		if (rc >= MM_FAULT_RETURN)
-			goto bail;
-		else
-			rc = 0;
+			return rc;
 	}
 
 	/*
@@ -451,12 +434,8 @@ good_area:
 				      regs, address);
 #ifdef CONFIG_PPC_SMLPAR
 			if (firmware_has_feature(FW_FEATURE_CMO)) {
-				u32 page_ins;
-
 				preempt_disable();
-				page_ins = be32_to_cpu(get_lppaca()->page_ins);
-				page_ins += 1 << PAGE_FACTOR;
-				get_lppaca()->page_ins = cpu_to_be32(page_ins);
+				get_lppaca()->page_ins += (1 << PAGE_FACTOR);
 				preempt_enable();
 			}
 #endif /* CONFIG_PPC_SMLPAR */
@@ -475,7 +454,7 @@ good_area:
 	}
 
 	up_read(&mm->mmap_sem);
-	goto bail;
+	return 0;
 
 bad_area:
 	up_read(&mm->mmap_sem);
@@ -484,7 +463,7 @@ bad_area_nosemaphore:
 	/* User mode accesses cause a SIGSEGV */
 	if (user_mode(regs)) {
 		_exception(SIGSEGV, regs, code, address);
-		goto bail;
+		return 0;
 	}
 
 	if (is_exec && (error_code & DSISR_PROTFAULT))
@@ -492,11 +471,7 @@ bad_area_nosemaphore:
 				   " page (%lx) - exploit attempt? (uid: %d)\n",
 				   address, from_kuid(&init_user_ns, current_uid()));
 
-	rc = SIGSEGV;
-
-bail:
-	exception_exit(prev_state);
-	return rc;
+	return SIGSEGV;
 
 }
 

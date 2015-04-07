@@ -45,6 +45,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
 #include <linux/syscore_ops.h>
+#include <linux/ipipe.h>
 
 #include <mach/pxa25x.h>
 #include <mach/audio.h>
@@ -288,7 +289,7 @@ static void viper_irq_handler(unsigned int irq, struct irq_desc *desc)
 
 		if (likely(pending)) {
 			irq = viper_bit_to_irq(__ffs(pending));
-			generic_handle_irq(irq);
+			ipipe_handle_demuxed_irq(irq);
 		}
 		pending = viper_irq_pending();
 	} while (pending);
@@ -401,7 +402,6 @@ static struct platform_pwm_backlight_data viper_backlight_data = {
 	.max_brightness	= 100,
 	.dft_brightness	= 100,
 	.pwm_period_ns	= 1000000,
-	.enable_gpio	= -1,
 	.init		= viper_backlight_init,
 	.notify		= viper_backlight_notify,
 	.exit		= viper_backlight_exit,
@@ -625,8 +625,8 @@ static struct isp116x_platform_data isp116x_platform_data = {
 static struct platform_device isp116x_device = {
 	.name			= "isp116x-hcd",
 	.id			= -1,
-	.num_resources  	= ARRAY_SIZE(isp116x_resources),
-	.resource       	= isp116x_resources,
+	.num_resources		= ARRAY_SIZE(isp116x_resources),
+	.resource		= isp116x_resources,
 	.dev			= {
 		.platform_data	= &isp116x_platform_data,
 	},
@@ -769,7 +769,7 @@ static unsigned long viper_tpm;
 
 static int __init viper_tpm_setup(char *str)
 {
-	return kstrtoul(str, 10, &viper_tpm) >= 0;
+	return strict_strtoul(str, 10, &viper_tpm) >= 0;
 }
 
 __setup("tpm=", viper_tpm_setup);
@@ -885,6 +885,9 @@ static int viper_cpufreq_notifier(struct notifier_block *nb,
 			viper_set_core_cpu_voltage(freq->new, 0);
 		}
 		break;
+	case CPUFREQ_RESUMECHANGE:
+		viper_set_core_cpu_voltage(freq->new, 0);
+		break;
 	default:
 		/* ignore */
 		break;
@@ -995,7 +998,7 @@ MACHINE_START(VIPER, "Arcom/Eurotech VIPER SBC")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= viper_init_irq,
 	.handle_irq	= pxa25x_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer          = &pxa_timer,
 	.init_machine	= viper_init,
 	.restart	= pxa_restart,
 MACHINE_END

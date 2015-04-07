@@ -27,10 +27,7 @@
 #ifndef __NOUVEAU_CONNECTOR_H__
 #define __NOUVEAU_CONNECTOR_H__
 
-#include <nvif/notify.h>
-
 #include <drm/drm_edid.h>
-#include <drm/drm_dp_helper.h>
 #include "nouveau_crtc.h"
 
 struct nouveau_i2c_port;
@@ -64,10 +61,7 @@ struct nouveau_connector {
 	enum dcb_connector_type type;
 	u8 index;
 	u8 *dcb;
-
-	struct nvif_notify hpd;
-
-	struct drm_dp_aux aux;
+	u8 hpd;
 
 	int dithering_mode;
 	int dithering_depth;
@@ -104,5 +98,8 @@ nouveau_crtc_connector_get(struct nouveau_crtc *nv_crtc)
 
 struct drm_connector *
 nouveau_connector_create(struct drm_device *, int index);
+
+int
+nouveau_connector_bpp(struct drm_connector *);
 
 #endif /* __NOUVEAU_CONNECTOR_H__ */

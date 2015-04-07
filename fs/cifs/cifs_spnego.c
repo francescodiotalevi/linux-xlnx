@@ -37,11 +37,12 @@ cifs_spnego_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
 	int ret;
 
 	ret = -ENOMEM;
-	payload = kmemdup(prep->data, prep->datalen, GFP_KERNEL);
+	payload = kmalloc(prep->datalen, GFP_KERNEL);
 	if (!payload)
 		goto error;
 
 	/* attach the data */
+	memcpy(payload, prep->data, prep->datalen);
 	key->payload.data = payload;
 	ret = 0;
 
@@ -148,12 +149,10 @@ cifs_get_spnego_key(struct cifs_ses *sesInfo)
 		goto out;
 
 	dp = description + strlen(description);
-	sprintf(dp, ";uid=0x%x",
-		from_kuid_munged(&init_user_ns, sesInfo->linux_uid));
+	sprintf(dp, ";uid=0x%x", sesInfo->linux_uid);
 
 	dp = description + strlen(description);
-	sprintf(dp, ";creduid=0x%x",
-		from_kuid_munged(&init_user_ns, sesInfo->cred_uid));
+	sprintf(dp, ";creduid=0x%x", sesInfo->cred_uid);
 
 	if (sesInfo->user_name) {
 		dp = description + strlen(description);
@@ -163,7 +162,7 @@ cifs_get_spnego_key(struct cifs_ses *sesInfo)
 	dp = description + strlen(description);
 	sprintf(dp, ";pid=0x%x", current->pid);
 
-	cifs_dbg(FYI, "key description = %s\n", description);
+	cFYI(1, "key description = %s", description);
 	spnego_key = request_key(&cifs_spnego_key_type, description, "");
 
 #ifdef CONFIG_CIFS_DEBUG2

@@ -16,7 +16,6 @@
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/serial_core.h>
-#include <linux/serial_s3c.h>
 #include <linux/io.h>
 
 #include <mach/dma.h>
@@ -24,9 +23,14 @@
 #include <plat/dma-s3c24xx.h>
 #include <plat/cpu.h>
 
+#include <plat/regs-serial.h>
 #include <mach/regs-gpio.h>
+#include <plat/regs-ac97.h>
 #include <plat/regs-dma.h>
+#include <mach/regs-mem.h>
 #include <mach/regs-lcd.h>
+#include <mach/regs-sdi.h>
+#include <plat/regs-iis.h>
 #include <plat/regs-spi.h>
 
 #define MAP(x) { \
@@ -128,8 +132,7 @@ static struct s3c24xx_dma_map __initdata s3c2443_dma_mappings[] = {
 static void s3c2443_dma_select(struct s3c2410_dma_chan *chan,
 			       struct s3c24xx_dma_map *map)
 {
-	unsigned long chsel = map->channels[0] & (~DMA_CH_VALID);
-	writel(chsel | S3C2443_DMAREQSEL_HW,
+	writel(map->channels[0] | S3C2443_DMAREQSEL_HW,
 	       chan->regs + S3C2443_DMA_DMAREQSEL);
 }
 

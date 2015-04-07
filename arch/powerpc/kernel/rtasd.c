@@ -29,7 +29,6 @@
 #include <asm/nvram.h>
 #include <linux/atomic.h>
 #include <asm/machdep.h>
-#include <asm/topology.h>
 
 
 static DEFINE_SPINLOCK(rtasd_log_lock);
@@ -88,8 +87,6 @@ static char *rtas_event_type(int type)
 			return "Resource Deallocation Event";
 		case RTAS_TYPE_DUMP:
 			return "Dump Notification Event";
-		case RTAS_TYPE_PRRN:
-			return "Platform Resource Reassignment Event";
 	}
 
 	return rtas_type[0];
@@ -150,8 +147,8 @@ static void printk_log_rtas(char *buf, int len)
 		struct rtas_error_log *errlog = (struct rtas_error_log *)buf;
 
 		printk(RTAS_DEBUG "event: %d, Type: %s, Severity: %d\n",
-		       error_log_cnt, rtas_event_type(rtas_error_type(errlog)),
-		       rtas_error_severity(errlog));
+		       error_log_cnt, rtas_event_type(errlog->type),
+		       errlog->severity);
 	}
 }
 
@@ -159,16 +156,14 @@ static int log_rtas_len(char * buf)
 {
 	int len;
 	struct rtas_error_log *err;
-	uint32_t extended_log_length;
 
 	/* rtas fixed header */
 	len = 8;
 	err = (struct rtas_error_log *)buf;
-	extended_log_length = rtas_error_extended_log_length(err);
-	if (rtas_error_extended(err) && extended_log_length) {
+	if (err->extended && err->extended_log_length) {
 
 		/* extended header */
-		len += extended_log_length;
+		len += err->extended_log_length;
 	}
 
 	if (rtas_error_log_max == 0)
@@ -270,48 +265,8 @@ void pSeries_log_error(char *buf, unsigned int err_type, int fatal)
 		spin_unlock_irqrestore(&rtasd_log_lock, s);
 		return;
 	}
+
 }
-
-#ifdef CONFIG_PPC_PSERIES
-static s32 prrn_update_scope;
-
-static void prrn_work_fn(struct work_struct *work)
-{
-	/*
-	 * For PRRN, we must pass the negative of the scope value in
-	 * the RTAS event.
-	 */
-	pseries_devicetree_update(-prrn_update_scope);
-}
-
-static DECLARE_WORK(prrn_work, prrn_work_fn);
-
-void prrn_schedule_update(u32 scope)
-{
-	flush_work(&prrn_work);
-	prrn_update_scope = scope;
-	schedule_work(&prrn_work);
-}
-
-static void handle_rtas_event(const struct rtas_error_log *log)
-{
-	if (rtas_error_type(log) != RTAS_TYPE_PRRN || !prrn_is_enabled())
-		return;
-
-	/* For PRRN Events the extended log length is used to denote
-	 * the scope for calling rtas update-nodes.
-	 */
-	prrn_schedule_update(rtas_error_extended_log_length(log));
-}
-
-#else
-
-static void handle_rtas_event(const struct rtas_error_log *log)
-{
-	return;
-}
-
-#endif
 
 static int rtas_log_open(struct inode * inode, struct file * file)
 {
@@ -433,10 +388,8 @@ static void do_event_scan(void)
 			break;
 		}
 
-		if (error == 0) {
+		if (error == 0)
 			pSeries_log_error(logdata, ERR_TYPE_RTAS_LOG, 0);
-			handle_rtas_event((struct rtas_error_log *)logdata);
-		}
 
 	} while(error == 0);
 }

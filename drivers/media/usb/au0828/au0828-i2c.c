@@ -141,27 +141,25 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
 {
 	int i, strobe = 0;
 	struct au0828_dev *dev = i2c_adap->algo_data;
-	u8 i2c_speed = dev->board.i2c_clk_divider;
 
 	dprintk(4, "%s()\n", __func__);
 
 	au0828_write(dev, AU0828_I2C_MULTIBYTE_MODE_2FF, 0x01);
 
+	/* Set the I2C clock */
 	if (((dev->board.tuner_type == TUNER_XC5000) ||
 	     (dev->board.tuner_type == TUNER_XC5000C)) &&
-	    (dev->board.tuner_addr == msg->addr)) {
-		/*
-		 * Due to I2C clock stretch, we need to use a lower speed
-		 * on xc5000 for commands. However, firmware transfer can
-		 * speed up to 400 KHz.
-		 */
-		if (msg->len == 64)
-			i2c_speed = AU0828_I2C_CLK_250KHZ;
-		else
-			i2c_speed = AU0828_I2C_CLK_20KHZ;
+	    (dev->board.tuner_addr == msg->addr) &&
+	    (msg->len == 64)) {
+		/* Hack to speed up firmware load.  The xc5000 lets us do up
+		   to 400 KHz when in firmware download mode */
+		au0828_write(dev, AU0828_I2C_CLK_DIVIDER_202,
+			     AU0828_I2C_CLK_250KHZ);
+	} else {
+		/* Use the i2c clock speed in the board configuration */
+		au0828_write(dev, AU0828_I2C_CLK_DIVIDER_202,
+			     dev->board.i2c_clk_divider);
 	}
-	/* Set the I2C clock */
-	au0828_write(dev, AU0828_I2C_CLK_DIVIDER_202, i2c_speed);
 
 	/* Hardware needs 8 bit addresses */
 	au0828_write(dev, AU0828_I2C_DEST_ADDR_203, msg->addr << 1);
@@ -230,24 +228,15 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
 	const struct i2c_msg *msg, int joined)
 {
 	struct au0828_dev *dev = i2c_adap->algo_data;
-	u8 i2c_speed = dev->board.i2c_clk_divider;
 	int i;
 
 	dprintk(4, "%s()\n", __func__);
 
 	au0828_write(dev, AU0828_I2C_MULTIBYTE_MODE_2FF, 0x01);
 
-	/*
-	 * Due to xc5000c clock stretch, we cannot use full speed at
-	 * readings from xc5000, as otherwise they'll fail.
-	 */
-	if (((dev->board.tuner_type == TUNER_XC5000) ||
-	     (dev->board.tuner_type == TUNER_XC5000C)) &&
-	    (dev->board.tuner_addr == msg->addr))
-		i2c_speed = AU0828_I2C_CLK_20KHZ;
-
 	/* Set the I2C clock */
-	au0828_write(dev, AU0828_I2C_CLK_DIVIDER_202, i2c_speed);
+	au0828_write(dev, AU0828_I2C_CLK_DIVIDER_202,
+		     dev->board.i2c_clk_divider);
 
 	/* Hardware needs 8 bit addresses */
 	au0828_write(dev, AU0828_I2C_DEST_ADDR_203, msg->addr << 1);
@@ -375,9 +364,12 @@ int au0828_i2c_register(struct au0828_dev *dev)
 {
 	dprintk(1, "%s()\n", __func__);
 
-	dev->i2c_adap = au0828_i2c_adap_template;
-	dev->i2c_algo = au0828_i2c_algo_template;
-	dev->i2c_client = au0828_i2c_client_template;
+	memcpy(&dev->i2c_adap, &au0828_i2c_adap_template,
+	       sizeof(dev->i2c_adap));
+	memcpy(&dev->i2c_algo, &au0828_i2c_algo_template,
+	       sizeof(dev->i2c_algo));
+	memcpy(&dev->i2c_client, &au0828_i2c_client_template,
+	       sizeof(dev->i2c_client));
 
 	dev->i2c_adap.dev.parent = &dev->usbdev->dev;
 
@@ -386,11 +378,7 @@ int au0828_i2c_register(struct au0828_dev *dev)
 
 	dev->i2c_adap.algo = &dev->i2c_algo;
 	dev->i2c_adap.algo_data = dev;
-#ifdef CONFIG_VIDEO_AU0828_V4L2
 	i2c_set_adapdata(&dev->i2c_adap, &dev->v4l2_dev);
-#else
-	i2c_set_adapdata(&dev->i2c_adap, dev);
-#endif
 	i2c_add_adapter(&dev->i2c_adap);
 
 	dev->i2c_client.adapter = &dev->i2c_adap;

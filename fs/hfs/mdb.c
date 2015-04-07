@@ -48,7 +48,7 @@ static int hfs_get_last_session(struct super_block *sb,
 			*start = (sector_t)te.cdte_addr.lba << 2;
 			return 0;
 		}
-		pr_err("invalid session number or type of track\n");
+		printk(KERN_ERR "hfs: invalid session number or type of track\n");
 		return -EINVAL;
 	}
 	ms_info.addr_format = CDROM_LBA;
@@ -101,7 +101,7 @@ int hfs_mdb_get(struct super_block *sb)
 
 	HFS_SB(sb)->alloc_blksz = size = be32_to_cpu(mdb->drAlBlkSiz);
 	if (!size || (size & (HFS_SECTOR_SIZE - 1))) {
-		pr_err("bad allocation block size %d\n", size);
+		printk(KERN_ERR "hfs: bad allocation block size %d\n", size);
 		goto out_bh;
 	}
 
@@ -118,7 +118,7 @@ int hfs_mdb_get(struct super_block *sb)
 		size >>= 1;
 	brelse(bh);
 	if (!sb_set_blocksize(sb, size)) {
-		pr_err("unable to set blocksize to %u\n", size);
+		printk(KERN_ERR "hfs: unable to set blocksize to %u\n", size);
 		goto out;
 	}
 
@@ -162,8 +162,8 @@ int hfs_mdb_get(struct super_block *sb)
 	}
 
 	if (!HFS_SB(sb)->alt_mdb) {
-		pr_warn("unable to locate alternate MDB\n");
-		pr_warn("continuing without an alternate MDB\n");
+		printk(KERN_WARNING "hfs: unable to locate alternate MDB\n");
+		printk(KERN_WARNING "hfs: continuing without an alternate MDB\n");
 	}
 
 	HFS_SB(sb)->bitmap = (__be32 *)__get_free_pages(GFP_KERNEL, PAGE_SIZE < 8192 ? 1 : 0);
@@ -178,7 +178,7 @@ int hfs_mdb_get(struct super_block *sb)
 	while (size) {
 		bh = sb_bread(sb, off >> sb->s_blocksize_bits);
 		if (!bh) {
-			pr_err("unable to read volume bitmap\n");
+			printk(KERN_ERR "hfs: unable to read volume bitmap\n");
 			goto out;
 		}
 		off2 = off & (sb->s_blocksize - 1);
@@ -192,22 +192,23 @@ int hfs_mdb_get(struct super_block *sb)
 
 	HFS_SB(sb)->ext_tree = hfs_btree_open(sb, HFS_EXT_CNID, hfs_ext_keycmp);
 	if (!HFS_SB(sb)->ext_tree) {
-		pr_err("unable to open extent tree\n");
+		printk(KERN_ERR "hfs: unable to open extent tree\n");
 		goto out;
 	}
 	HFS_SB(sb)->cat_tree = hfs_btree_open(sb, HFS_CAT_CNID, hfs_cat_keycmp);
 	if (!HFS_SB(sb)->cat_tree) {
-		pr_err("unable to open catalog tree\n");
+		printk(KERN_ERR "hfs: unable to open catalog tree\n");
 		goto out;
 	}
 
 	attrib = mdb->drAtrb;
 	if (!(attrib & cpu_to_be16(HFS_SB_ATTRIB_UNMNT))) {
-		pr_warn("filesystem was not cleanly unmounted, running fsck.hfs is recommended.  mounting read-only.\n");
+		printk(KERN_WARNING "hfs: filesystem was not cleanly unmounted, "
+			 "running fsck.hfs is recommended.  mounting read-only.\n");
 		sb->s_flags |= MS_RDONLY;
 	}
 	if ((attrib & cpu_to_be16(HFS_SB_ATTRIB_SLOCK))) {
-		pr_warn("filesystem is marked locked, mounting read-only.\n");
+		printk(KERN_WARNING "hfs: filesystem is marked locked, mounting read-only.\n");
 		sb->s_flags |= MS_RDONLY;
 	}
 	if (!(sb->s_flags & MS_RDONLY)) {
@@ -311,7 +312,7 @@ void hfs_mdb_commit(struct super_block *sb)
 		while (size) {
 			bh = sb_bread(sb, block);
 			if (!bh) {
-				pr_err("unable to read volume bitmap\n");
+				printk(KERN_ERR "hfs: unable to read volume bitmap\n");
 				break;
 			}
 			len = min((int)sb->s_blocksize - off, size);

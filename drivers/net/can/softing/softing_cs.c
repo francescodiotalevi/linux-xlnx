@@ -13,7 +13,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/module.h>
@@ -26,7 +27,7 @@
 #include "softing_platform.h"
 
 static int softingcs_index;
-static DEFINE_SPINLOCK(softingcs_index_lock);
+static spinlock_t softingcs_index_lock;
 
 static int softingcs_reset(struct platform_device *pdev, int v);
 static int softingcs_enable_irq(struct platform_device *pdev, int v);
@@ -339,7 +340,19 @@ static struct pcmcia_driver softingcs_driver = {
 	.remove		= softingcs_remove,
 };
 
-module_pcmcia_driver(softingcs_driver);
+static int __init softingcs_start(void)
+{
+	spin_lock_init(&softingcs_index_lock);
+	return pcmcia_register_driver(&softingcs_driver);
+}
+
+static void __exit softingcs_stop(void)
+{
+	pcmcia_unregister_driver(&softingcs_driver);
+}
+
+module_init(softingcs_start);
+module_exit(softingcs_stop);
 
 MODULE_DESCRIPTION("softing CANcard driver"
 		", links PCMCIA card to softing driver");

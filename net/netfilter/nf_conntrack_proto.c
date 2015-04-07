@@ -3,7 +3,6 @@
 /* (C) 1999-2001 Paul `Rusty' Russell
  * (C) 2002-2006 Netfilter Core Team <coreteam@netfilter.org>
  * (C) 2003,2004 USAGI/WIDE Project <http://www.linux-ipv6.org>
- * (C) 2006-2012 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -91,6 +90,12 @@ nf_ct_l3proto_find_get(u_int16_t l3proto)
 	return p;
 }
 EXPORT_SYMBOL_GPL(nf_ct_l3proto_find_get);
+
+void nf_ct_l3proto_put(struct nf_conntrack_l3proto *p)
+{
+	module_put(p->me);
+}
+EXPORT_SYMBOL_GPL(nf_ct_l3proto_put);
 
 int
 nf_ct_l3proto_try_module_get(unsigned short l3proto)
@@ -207,7 +212,8 @@ static void nf_ct_l3proto_unregister_sysctl(struct net *net,
 #endif
 }
 
-int nf_ct_l3proto_register(struct nf_conntrack_l3proto *proto)
+static int
+nf_conntrack_l3proto_register_net(struct nf_conntrack_l3proto *proto)
 {
 	int ret = 0;
 	struct nf_conntrack_l3proto *old;
@@ -236,9 +242,8 @@ out_unlock:
 	return ret;
 
 }
-EXPORT_SYMBOL_GPL(nf_ct_l3proto_register);
 
-int nf_ct_l3proto_pernet_register(struct net *net,
+int nf_conntrack_l3proto_register(struct net *net,
 				  struct nf_conntrack_l3proto *proto)
 {
 	int ret = 0;
@@ -249,11 +254,22 @@ int nf_ct_l3proto_pernet_register(struct net *net,
 			return ret;
 	}
 
-	return nf_ct_l3proto_register_sysctl(net, proto);
-}
-EXPORT_SYMBOL_GPL(nf_ct_l3proto_pernet_register);
+	ret = nf_ct_l3proto_register_sysctl(net, proto);
+	if (ret < 0)
+		return ret;
 
-void nf_ct_l3proto_unregister(struct nf_conntrack_l3proto *proto)
+	if (net == &init_net) {
+		ret = nf_conntrack_l3proto_register_net(proto);
+		if (ret < 0)
+			nf_ct_l3proto_unregister_sysctl(net, proto);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(nf_conntrack_l3proto_register);
+
+static void
+nf_conntrack_l3proto_unregister_net(struct nf_conntrack_l3proto *proto)
 {
 	BUG_ON(proto->l3proto >= AF_MAX);
 
@@ -267,17 +283,19 @@ void nf_ct_l3proto_unregister(struct nf_conntrack_l3proto *proto)
 
 	synchronize_rcu();
 }
-EXPORT_SYMBOL_GPL(nf_ct_l3proto_unregister);
 
-void nf_ct_l3proto_pernet_unregister(struct net *net,
+void nf_conntrack_l3proto_unregister(struct net *net,
 				     struct nf_conntrack_l3proto *proto)
 {
+	if (net == &init_net)
+		nf_conntrack_l3proto_unregister_net(proto);
+
 	nf_ct_l3proto_unregister_sysctl(net, proto);
 
 	/* Remove all contrack entries for this protocol */
-	nf_ct_iterate_cleanup(net, kill_l3proto, proto, 0, 0);
+	nf_ct_iterate_cleanup(net, kill_l3proto, proto);
 }
-EXPORT_SYMBOL_GPL(nf_ct_l3proto_pernet_unregister);
+EXPORT_SYMBOL_GPL(nf_conntrack_l3proto_unregister);
 
 static struct nf_proto_net *nf_ct_l4proto_net(struct net *net,
 					      struct nf_conntrack_l4proto *l4proto)
@@ -358,7 +376,8 @@ void nf_ct_l4proto_unregister_sysctl(struct net *net,
 
 /* FIXME: Allow NULL functions and sub in pointers to generic for
    them. --RR */
-int nf_ct_l4proto_register(struct nf_conntrack_l4proto *l4proto)
+static int
+nf_conntrack_l4proto_register_net(struct nf_conntrack_l4proto *l4proto)
 {
 	int ret = 0;
 
@@ -412,9 +431,8 @@ out_unlock:
 	mutex_unlock(&nf_ct_proto_mutex);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(nf_ct_l4proto_register);
 
-int nf_ct_l4proto_pernet_register(struct net *net,
+int nf_conntrack_l4proto_register(struct net *net,
 				  struct nf_conntrack_l4proto *l4proto)
 {
 	int ret = 0;
@@ -434,13 +452,22 @@ int nf_ct_l4proto_pernet_register(struct net *net,
 	if (ret < 0)
 		goto out;
 
+	if (net == &init_net) {
+		ret = nf_conntrack_l4proto_register_net(l4proto);
+		if (ret < 0) {
+			nf_ct_l4proto_unregister_sysctl(net, pn, l4proto);
+			goto out;
+		}
+	}
+
 	pn->users++;
 out:
 	return ret;
 }
-EXPORT_SYMBOL_GPL(nf_ct_l4proto_pernet_register);
+EXPORT_SYMBOL_GPL(nf_conntrack_l4proto_register);
 
-void nf_ct_l4proto_unregister(struct nf_conntrack_l4proto *l4proto)
+static void
+nf_conntrack_l4proto_unregister_net(struct nf_conntrack_l4proto *l4proto)
 {
 	BUG_ON(l4proto->l3proto >= PF_MAX);
 
@@ -455,12 +482,14 @@ void nf_ct_l4proto_unregister(struct nf_conntrack_l4proto *l4proto)
 
 	synchronize_rcu();
 }
-EXPORT_SYMBOL_GPL(nf_ct_l4proto_unregister);
 
-void nf_ct_l4proto_pernet_unregister(struct net *net,
+void nf_conntrack_l4proto_unregister(struct net *net,
 				     struct nf_conntrack_l4proto *l4proto)
 {
 	struct nf_proto_net *pn = NULL;
+
+	if (net == &init_net)
+		nf_conntrack_l4proto_unregister_net(l4proto);
 
 	pn = nf_ct_l4proto_net(net, l4proto);
 	if (pn == NULL)
@@ -470,12 +499,13 @@ void nf_ct_l4proto_pernet_unregister(struct net *net,
 	nf_ct_l4proto_unregister_sysctl(net, pn, l4proto);
 
 	/* Remove all contrack entries for this protocol */
-	nf_ct_iterate_cleanup(net, kill_l4proto, l4proto, 0, 0);
+	nf_ct_iterate_cleanup(net, kill_l4proto, l4proto);
 }
-EXPORT_SYMBOL_GPL(nf_ct_l4proto_pernet_unregister);
+EXPORT_SYMBOL_GPL(nf_conntrack_l4proto_unregister);
 
-int nf_conntrack_proto_pernet_init(struct net *net)
+int nf_conntrack_proto_init(struct net *net)
 {
+	unsigned int i;
 	int err;
 	struct nf_proto_net *pn = nf_ct_l4proto_net(net,
 					&nf_conntrack_l4proto_generic);
@@ -490,12 +520,19 @@ int nf_conntrack_proto_pernet_init(struct net *net)
 	if (err < 0)
 		return err;
 
+	if (net == &init_net) {
+		for (i = 0; i < AF_MAX; i++)
+			rcu_assign_pointer(nf_ct_l3protos[i],
+					   &nf_conntrack_l3proto_generic);
+	}
+
 	pn->users++;
 	return 0;
 }
 
-void nf_conntrack_proto_pernet_fini(struct net *net)
+void nf_conntrack_proto_fini(struct net *net)
 {
+	unsigned int i;
 	struct nf_proto_net *pn = nf_ct_l4proto_net(net,
 					&nf_conntrack_l4proto_generic);
 
@@ -503,21 +540,9 @@ void nf_conntrack_proto_pernet_fini(struct net *net)
 	nf_ct_l4proto_unregister_sysctl(net,
 					pn,
 					&nf_conntrack_l4proto_generic);
-}
-
-int nf_conntrack_proto_init(void)
-{
-	unsigned int i;
-	for (i = 0; i < AF_MAX; i++)
-		rcu_assign_pointer(nf_ct_l3protos[i],
-				   &nf_conntrack_l3proto_generic);
-	return 0;
-}
-
-void nf_conntrack_proto_fini(void)
-{
-	unsigned int i;
-	/* free l3proto protocol tables */
-	for (i = 0; i < PF_MAX; i++)
-		kfree(nf_ct_protos[i]);
+	if (net == &init_net) {
+		/* free l3proto protocol tables */
+		for (i = 0; i < PF_MAX; i++)
+			kfree(nf_ct_protos[i]);
+	}
 }

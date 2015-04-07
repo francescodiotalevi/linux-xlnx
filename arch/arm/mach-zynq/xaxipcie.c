@@ -34,12 +34,15 @@
 #include <linux/of_irq.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
+#include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/sizes.h>
-#include <linux/irqdomain.h>
+
 #include <linux/pci.h>
 #include <asm/mach/pci.h>
+#include "common.h"
 
 /* Register definitions */
 #define PCIE_CFG_CMD			0x00000004
@@ -176,21 +179,8 @@ static int last_bus_on_record;
 static resource_size_t isa_mem_base;
 
 #ifdef CONFIG_PCI_MSI
-static int xaxipcie_msi_irq_base;
-
-int xaxipcie_alloc_msi_irqdescs(struct device_node *node,
-				unsigned long msg_addr);
+unsigned long xaxipcie_msg_addr;
 #endif
-
-/* Macros */
-#define is_link_up(base_address)	\
-	((readl(base_address + XAXIPCIE_REG_PSCR) &	\
-	XAXIPCIE_REG_PSCR_LNKUP) ? 1 : 0)
-
-#define bridge_enable(base_address)	\
-	writel((readl(base_address + XAXIPCIE_REG_RPSC) |	\
-		XAXIPCIE_REG_RPSC_BEN), \
-		(base_address + XAXIPCIE_REG_RPSC))
 
 /**
  * xaxi_pcie_verify_config
@@ -229,9 +219,6 @@ static int xaxi_pcie_verify_config(struct xaxi_pcie_port *port,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	/* Check if we have a link */
-	if (!port->link_up)
-		port->link_up = is_link_up(port->base_addr_remap);
-
 	if ((bus->number != port->first_busno) && !port->link_up)
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
@@ -756,7 +743,7 @@ static irqreturn_t xaxi_pcie_intr_handler(int irq, void *data)
 			port->base_addr_remap + XAXIPCIE_REG_RPIFR1);
 #ifdef CONFIG_PCI_MSI
 		/* Handle MSI Interrupt */
-		if (msi_data >= xaxipcie_msi_irq_base)
+		if (msi_data >= IRQ_XILINX_MSI_0)
 			generic_handle_irq(msi_data);
 #endif
 	}
@@ -804,11 +791,9 @@ static irqreturn_t xaxi_pcie_intr_handler(int irq, void *data)
  */
 static int xaxi_pcie_init_port(struct xaxi_pcie_port *port)
 {
+	u32 val = 0;
 	void __iomem *base_addr_remap = NULL;
 	int err = 0;
-#ifdef CONFIG_PCI_MSI
-	unsigned long xaxipcie_msg_addr;
-#endif
 
 	base_addr_remap = ioremap(port->reg_base, port->reg_len);
 	if (!base_addr_remap)
@@ -830,21 +815,18 @@ static int xaxi_pcie_init_port(struct xaxi_pcie_port *port)
 
 	writel(xaxipcie_msg_addr, port->base_addr_remap +
 				XAXIPCIE_REG_MSIBASE2);
-
-	xaxipcie_msi_irq_base = xaxipcie_alloc_msi_irqdescs(port->node,
-					xaxipcie_msg_addr);
-	if (xaxipcie_msi_irq_base < 0) {
-		pr_err("%s: Couldn't allocate MSI IRQ numbers\n",
-					 __func__);
-		return -ENODEV;
-	}
 #endif
 
-	port->link_up = is_link_up(port->base_addr_remap);
-	if (!port->link_up)
-		pr_info("%s: LINK IS DOWN\n", __func__);
-	else
-		pr_info("%s: LINK IS UP\n", __func__);
+	/* make sure link is up */
+	val = readl(port->base_addr_remap + XAXIPCIE_REG_PSCR);
+
+	if (!(val & XAXIPCIE_REG_PSCR_LNKUP)) {
+		pr_err("%s: Link is Down\n", __func__);
+		iounmap(base_addr_remap);
+		return -ENODEV;
+	}
+
+	port->link_up = 1;
 
 	/* Disable all interrupts*/
 	writel(~XAXIPCIE_REG_IDR_MASKALL,
@@ -863,7 +845,9 @@ static int xaxi_pcie_init_port(struct xaxi_pcie_port *port)
 	 * Bridge enable must be done after enumeration,
 	 * but there is no callback defined
 	 */
-	bridge_enable(port->base_addr_remap);
+	val = readl(port->base_addr_remap + XAXIPCIE_REG_RPSC);
+	val |= XAXIPCIE_REG_RPSC_BEN;
+	writel(val, port->base_addr_remap + XAXIPCIE_REG_RPSC);
 
 	/* Register Interrupt Handler */
 	err = request_irq(port->irq_num, xaxi_pcie_intr_handler,

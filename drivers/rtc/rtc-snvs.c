@@ -252,9 +252,9 @@ static int snvs_rtc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	data->ioaddr = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(data->ioaddr))
-		return PTR_ERR(data->ioaddr);
+	data->ioaddr = devm_request_and_ioremap(&pdev->dev, res);
+	if (!data->ioaddr)
+		return -EADDRNOTAVAIL;
 
 	data->irq = platform_get_irq(pdev, 0);
 	if (data->irq < 0)
@@ -283,13 +283,22 @@ static int snvs_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	data->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
+	data->rtc = rtc_device_register(pdev->name, &pdev->dev,
 					&snvs_rtc_ops, THIS_MODULE);
 	if (IS_ERR(data->rtc)) {
 		ret = PTR_ERR(data->rtc);
 		dev_err(&pdev->dev, "failed to register rtc: %d\n", ret);
 		return ret;
 	}
+
+	return 0;
+}
+
+static int snvs_rtc_remove(struct platform_device *pdev)
+{
+	struct snvs_rtc_data *data = platform_get_drvdata(pdev);
+
+	rtc_device_unregister(data->rtc);
 
 	return 0;
 }
@@ -332,6 +341,7 @@ static struct platform_driver snvs_rtc_driver = {
 		.of_match_table = snvs_dt_ids,
 	},
 	.probe		= snvs_rtc_probe,
+	.remove		= snvs_rtc_remove,
 };
 module_platform_driver(snvs_rtc_driver);
 

@@ -12,36 +12,6 @@
  */
 
 #include <linux/serial_8250.h>
-#include <linux/serial_reg.h>
-#include <linux/dmaengine.h>
-
-struct uart_8250_dma {
-	dma_filter_fn		fn;
-	void			*rx_param;
-	void			*tx_param;
-
-	int			rx_chan_id;
-	int			tx_chan_id;
-
-	struct dma_slave_config	rxconf;
-	struct dma_slave_config	txconf;
-
-	struct dma_chan		*rxchan;
-	struct dma_chan		*txchan;
-
-	dma_addr_t		rx_addr;
-	dma_addr_t		tx_addr;
-
-	dma_cookie_t		rx_cookie;
-	dma_cookie_t		tx_cookie;
-
-	void			*rx_buf;
-
-	size_t			rx_size;
-	size_t			tx_size;
-
-	unsigned char		tx_running:1;
-};
 
 struct old_serial_port {
 	unsigned int uart;
@@ -61,7 +31,6 @@ struct serial8250_config {
 	unsigned short	fifo_size;
 	unsigned short	tx_loadsz;
 	unsigned char	fcr;
-	unsigned char	rxtrig_bytes[UART_FCR_R_TRIG_MAX_STATE];
 	unsigned int	flags;
 };
 
@@ -119,6 +88,13 @@ static inline void serial_dl_write(struct uart_8250_port *up, int value)
  * is cleared, the machine locks up with endless interrupts.
  */
 #define ALPHA_KLUDGE_MCR  (UART_MCR_OUT2 | UART_MCR_OUT1)
+#elif defined(CONFIG_SBC8560)
+/*
+ * WindRiver did something similarly broken on their SBC8560 board. The
+ * UART tristates its IRQ output while OUT2 is clear, but they pulled
+ * the interrupt line _up_ instead of down, so if we register the IRQ
+ * while the UART is in that state, we die in an IRQ storm. */
+#define ALPHA_KLUDGE_MCR (UART_MCR_OUT2)
 #else
 #define ALPHA_KLUDGE_MCR 0
 #endif
@@ -166,25 +142,4 @@ static inline int is_omap1510_8250(struct uart_8250_port *pt)
 {
 	return 0;
 }
-#endif
-
-#ifdef CONFIG_SERIAL_8250_DMA
-extern int serial8250_tx_dma(struct uart_8250_port *);
-extern int serial8250_rx_dma(struct uart_8250_port *, unsigned int iir);
-extern int serial8250_request_dma(struct uart_8250_port *);
-extern void serial8250_release_dma(struct uart_8250_port *);
-#else
-static inline int serial8250_tx_dma(struct uart_8250_port *p)
-{
-	return -1;
-}
-static inline int serial8250_rx_dma(struct uart_8250_port *p, unsigned int iir)
-{
-	return -1;
-}
-static inline int serial8250_request_dma(struct uart_8250_port *p)
-{
-	return -1;
-}
-static inline void serial8250_release_dma(struct uart_8250_port *p) { }
 #endif

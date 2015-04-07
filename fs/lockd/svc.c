@@ -235,7 +235,6 @@ out_err:
 	if (warned++ == 0)
 		printk(KERN_WARNING
 			"lockd_up: makesock failed, error=%d\n", err);
-	svc_shutdown_net(serv, net);
 	return err;
 }
 
@@ -253,11 +252,13 @@ static int lockd_up_net(struct svc_serv *serv, struct net *net)
 
 	error = make_socks(serv, net);
 	if (error < 0)
-		goto err_bind;
+		goto err_socks;
 	set_grace_period(net);
 	dprintk("lockd_up_net: per-net data created; net=%p\n", net);
 	return 0;
 
+err_socks:
+	svc_rpcb_cleanup(serv, net);
 err_bind:
 	ln->nlmsvc_users--;
 	return error;
@@ -304,7 +305,7 @@ static int lockd_start_svc(struct svc_serv *serv)
 	svc_sock_update_bufs(serv);
 	serv->sv_maxconn = nlm_max_connections;
 
-	nlmsvc_task = kthread_run(lockd, nlmsvc_rqst, "%s", serv->sv_name);
+	nlmsvc_task = kthread_run(lockd, nlmsvc_rqst, serv->sv_name);
 	if (IS_ERR(nlmsvc_task)) {
 		error = PTR_ERR(nlmsvc_task);
 		printk(KERN_WARNING
@@ -434,7 +435,7 @@ EXPORT_SYMBOL_GPL(lockd_down);
  * Sysctl parameters (same as module parameters, different interface).
  */
 
-static struct ctl_table nlm_sysctls[] = {
+static ctl_table nlm_sysctls[] = {
 	{
 		.procname	= "nlm_grace_period",
 		.data		= &nlm_grace_period,
@@ -488,7 +489,7 @@ static struct ctl_table nlm_sysctls[] = {
 	{ }
 };
 
-static struct ctl_table nlm_sysctl_dir[] = {
+static ctl_table nlm_sysctl_dir[] = {
 	{
 		.procname	= "nfs",
 		.mode		= 0555,
@@ -497,7 +498,7 @@ static struct ctl_table nlm_sysctl_dir[] = {
 	{ }
 };
 
-static struct ctl_table nlm_sysctl_root[] = {
+static ctl_table nlm_sysctl_root[] = {
 	{
 		.procname	= "fs",
 		.mode		= 0555,
@@ -620,8 +621,8 @@ static int __init init_nlm(void)
 err_pernet:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(nlm_sysctl_table);
-err_sysctl:
 #endif
+err_sysctl:
 	return err;
 }
 

@@ -108,7 +108,7 @@ enum bcm_interface_type {
 };
 
 struct bcm_driver_info {
-	enum bcm_nvm_type	u32NVMType;
+	NVM_TYPE	u32NVMType;
 	unsigned int		MaxRDMBufferSize;
 	enum bcm_interface_type	u32InterfaceType;
 	unsigned int		u32DSDStartOffset;
@@ -175,7 +175,7 @@ struct bcm_flash2x_copy_section {
 
 /*
  * This section provide the complete bitmap of the Flash.
- * using this map lib/APP will issue read/write command.
+ * using this map lib/APP will isssue read/write command.
  * Fields are defined as :
  * Bit [0] = section is present  //1:present, 0: Not present
  * Bit [1] = section is valid  //1: valid, 0: not valid
@@ -202,8 +202,8 @@ struct bcm_flash2x_bitmap {
 };
 
 struct bcm_time_elapsed {
-	u64 ul64TimeElapsedSinceNetEntry;
-	u32 uiReserved[4];
+	unsigned long long ul64TimeElapsedSinceNetEntry;
+	u32  uiReserved[4];
 };
 
 enum {

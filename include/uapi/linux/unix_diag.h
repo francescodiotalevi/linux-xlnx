@@ -31,7 +31,6 @@ struct unix_diag_msg {
 };
 
 enum {
-	/* UNIX_DIAG_NONE, standard nl API requires this attribute!  */
 	UNIX_DIAG_NAME,
 	UNIX_DIAG_VFS,
 	UNIX_DIAG_PEER,
@@ -40,10 +39,8 @@ enum {
 	UNIX_DIAG_MEMINFO,
 	UNIX_DIAG_SHUTDOWN,
 
-	__UNIX_DIAG_MAX,
+	UNIX_DIAG_MAX,
 };
-
-#define UNIX_DIAG_MAX (__UNIX_DIAG_MAX - 1)
 
 struct unix_diag_vfs {
 	__u32	udiag_vfs_ino;

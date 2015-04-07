@@ -126,7 +126,7 @@ static int async_chainiv_schedule_work(struct async_chainiv_ctx *ctx)
 	int err = ctx->err;
 
 	if (!ctx->queue.qlen) {
-		smp_mb__before_atomic();
+		smp_mb__before_clear_bit();
 		clear_bit(CHAINIV_STATE_INUSE, &ctx->state);
 
 		if (!ctx->queue.qlen ||
@@ -291,8 +291,9 @@ static struct crypto_instance *chainiv_alloc(struct rtattr **tb)
 	int err;
 
 	algt = crypto_get_attr_type(tb);
+	err = PTR_ERR(algt);
 	if (IS_ERR(algt))
-		return ERR_CAST(algt);
+		return ERR_PTR(err);
 
 	err = crypto_get_default_rng();
 	if (err)

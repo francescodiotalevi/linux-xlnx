@@ -23,7 +23,6 @@
 #include <linux/if_ether.h>
 #include <linux/slab.h>
 #include <net/sock.h>
-#include <linux/if_vlan.h>
 
 #include "br_private.h"
 
@@ -61,21 +60,20 @@ static int port_cost(struct net_device *dev)
 }
 
 
-/* Check for port carrier transitions. */
+/* Check for port carrier transistions. */
 void br_port_carrier_check(struct net_bridge_port *p)
 {
 	struct net_device *dev = p->dev;
 	struct net_bridge *br = p->br;
 
-	if (!(p->flags & BR_ADMIN_COST) &&
-	    netif_running(dev) && netif_oper_up(dev))
+	if (netif_running(dev) && netif_carrier_ok(dev))
 		p->path_cost = port_cost(dev);
 
 	if (!netif_running(br->dev))
 		return;
 
 	spin_lock_bh(&br->lock);
-	if (netif_running(dev) && netif_oper_up(dev)) {
+	if (netif_running(dev) && netif_carrier_ok(dev)) {
 		if (p->state == BR_STATE_DISABLED)
 			br_stp_enable_port(p);
 	} else {
@@ -83,111 +81,6 @@ void br_port_carrier_check(struct net_bridge_port *p)
 			br_stp_disable_port(p);
 	}
 	spin_unlock_bh(&br->lock);
-}
-
-static void br_port_set_promisc(struct net_bridge_port *p)
-{
-	int err = 0;
-
-	if (br_promisc_port(p))
-		return;
-
-	err = dev_set_promiscuity(p->dev, 1);
-	if (err)
-		return;
-
-	br_fdb_unsync_static(p->br, p);
-	p->flags |= BR_PROMISC;
-}
-
-static void br_port_clear_promisc(struct net_bridge_port *p)
-{
-	int err;
-
-	/* Check if the port is already non-promisc or if it doesn't
-	 * support UNICAST filtering.  Without unicast filtering support
-	 * we'll end up re-enabling promisc mode anyway, so just check for
-	 * it here.
-	 */
-	if (!br_promisc_port(p) || !(p->dev->priv_flags & IFF_UNICAST_FLT))
-		return;
-
-	/* Since we'll be clearing the promisc mode, program the port
-	 * first so that we don't have interruption in traffic.
-	 */
-	err = br_fdb_sync_static(p->br, p);
-	if (err)
-		return;
-
-	dev_set_promiscuity(p->dev, -1);
-	p->flags &= ~BR_PROMISC;
-}
-
-/* When a port is added or removed or when certain port flags
- * change, this function is called to automatically manage
- * promiscuity setting of all the bridge ports.  We are always called
- * under RTNL so can skip using rcu primitives.
- */
-void br_manage_promisc(struct net_bridge *br)
-{
-	struct net_bridge_port *p;
-	bool set_all = false;
-
-	/* If vlan filtering is disabled or bridge interface is placed
-	 * into promiscuous mode, place all ports in promiscuous mode.
-	 */
-	if ((br->dev->flags & IFF_PROMISC) || !br_vlan_enabled(br))
-		set_all = true;
-
-	list_for_each_entry(p, &br->port_list, list) {
-		if (set_all) {
-			br_port_set_promisc(p);
-		} else {
-			/* If the number of auto-ports is <= 1, then all other
-			 * ports will have their output configuration
-			 * statically specified through fdbs.  Since ingress
-			 * on the auto-port becomes forwarding/egress to other
-			 * ports and egress configuration is statically known,
-			 * we can say that ingress configuration of the
-			 * auto-port is also statically known.
-			 * This lets us disable promiscuous mode and write
-			 * this config to hw.
-			 */
-			if (br->auto_cnt == 0 ||
-			    (br->auto_cnt == 1 && br_auto_port(p)))
-				br_port_clear_promisc(p);
-			else
-				br_port_set_promisc(p);
-		}
-	}
-}
-
-static void nbp_update_port_count(struct net_bridge *br)
-{
-	struct net_bridge_port *p;
-	u32 cnt = 0;
-
-	list_for_each_entry(p, &br->port_list, list) {
-		if (br_auto_port(p))
-			cnt++;
-	}
-	if (br->auto_cnt != cnt) {
-		br->auto_cnt = cnt;
-		br_manage_promisc(br);
-	}
-}
-
-static void nbp_delete_promisc(struct net_bridge_port *p)
-{
-	/* If port is currently promiscuous, unset promiscuity.
-	 * Otherwise, it is a static port so remove all addresses
-	 * from it.
-	 */
-	dev_set_allmulti(p->dev, -1);
-	if (br_promisc_port(p))
-		dev_set_promiscuity(p->dev, -1);
-	else
-		br_fdb_unsync_static(p->br, p);
 }
 
 static void release_nbp(struct kobject *kobj)
@@ -238,7 +131,7 @@ static void del_nbp(struct net_bridge_port *p)
 
 	sysfs_remove_link(br->ifobj, p->dev->name);
 
-	nbp_delete_promisc(p);
+	dev_set_promiscuity(dev, -1);
 
 	spin_lock_bh(&br->lock);
 	br_stp_disable_port(p);
@@ -246,17 +139,16 @@ static void del_nbp(struct net_bridge_port *p)
 
 	br_ifinfo_notify(RTM_DELLINK, p);
 
-	list_del_rcu(&p->list);
-
-	nbp_vlan_flush(p);
 	br_fdb_delete_by_port(br, p, 1);
-	nbp_update_port_count(br);
+
+	list_del_rcu(&p->list);
 
 	dev->priv_flags &= ~IFF_BRIDGE_PORT;
 
 	netdev_rx_handler_unregister(dev);
+	synchronize_net();
 
-	netdev_upper_dev_unlink(dev, br->dev);
+	netdev_set_master(dev, NULL);
 
 	br_multicast_del_port(p);
 
@@ -278,9 +170,6 @@ void br_dev_delete(struct net_device *dev, struct list_head *head)
 		del_nbp(p);
 	}
 
-	br_fdb_delete_by_port(br, NULL, 1);
-
-	br_vlan_flush(br);
 	del_timer_sync(&br->gc_timer);
 
 	br_sysfs_delbr(br->dev);
@@ -330,7 +219,7 @@ static struct net_bridge_port *new_nbp(struct net_bridge *br,
 	p->path_cost = port_cost(dev);
 	p->priority = 0x8000 >> BR_PORT_BITS;
 	p->port_no = index;
-	p->flags = BR_LEARNING | BR_FLOOD;
+	p->flags = 0;
 	br_init_port(p);
 	p->state = BR_STATE_DISABLED;
 	br_stp_port_timer_init(p);
@@ -344,7 +233,7 @@ int br_add_bridge(struct net *net, const char *name)
 	struct net_device *dev;
 	int res;
 
-	dev = alloc_netdev(sizeof(struct net_bridge), name, NET_NAME_UNKNOWN,
+	dev = alloc_netdev(sizeof(struct net_bridge), name,
 			   br_dev_setup);
 
 	if (!dev)
@@ -459,7 +348,7 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 
 	call_netdevice_notifiers(NETDEV_JOIN, dev);
 
-	err = dev_set_allmulti(dev, 1);
+	err = dev_set_promiscuity(dev, 1);
 	if (err)
 		goto put_back;
 
@@ -472,11 +361,10 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	if (err)
 		goto err2;
 
-	err = br_netpoll_enable(p);
-	if (err)
+	if (br_netpoll_info(br) && ((err = br_netpoll_enable(p, GFP_KERNEL))))
 		goto err3;
 
-	err = netdev_master_upper_dev_link(dev, br->dev);
+	err = netdev_set_master(dev, br->dev);
 	if (err)
 		goto err4;
 
@@ -490,20 +378,12 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 
 	list_add_rcu(&p->list, &br->port_list);
 
-	nbp_update_port_count(br);
-
 	netdev_update_features(br->dev);
-
-	if (br->dev->needed_headroom < dev->needed_headroom)
-		br->dev->needed_headroom = dev->needed_headroom;
-
-	if (br_fdb_insert(br, p, dev->dev_addr, 0))
-		netdev_err(dev, "failed insert local address bridge forwarding table\n");
 
 	spin_lock_bh(&br->lock);
 	changed_addr = br_stp_recalculate_bridge_id(br);
 
-	if (netif_running(dev) && netif_oper_up(dev) &&
+	if ((dev->flags & IFF_UP) && netif_carrier_ok(dev) &&
 	    (br->dev->flags & IFF_UP))
 		br_stp_enable_port(p);
 	spin_unlock_bh(&br->lock);
@@ -515,12 +395,15 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 
 	dev_set_mtu(br->dev, br_min_mtu(br));
 
+	if (br_fdb_insert(br, p, dev->dev_addr))
+		netdev_err(dev, "failed insert local address bridge forwarding table\n");
+
 	kobject_uevent(&p->kobj, KOBJ_ADD);
 
 	return 0;
 
 err5:
-	netdev_upper_dev_unlink(dev, br->dev);
+	netdev_set_master(dev, NULL);
 err4:
 	br_netpoll_disable(p);
 err3:
@@ -529,7 +412,7 @@ err2:
 	kobject_put(&p->kobj);
 	p = NULL; /* kobject_put frees */
 err1:
-	dev_set_allmulti(dev, -1);
+	dev_set_promiscuity(dev, -1);
 put_back:
 	dev_put(dev);
 	kfree(p);
@@ -564,10 +447,17 @@ int br_del_if(struct net_bridge *br, struct net_device *dev)
 	return 0;
 }
 
-void br_port_flags_change(struct net_bridge_port *p, unsigned long mask)
+void __net_exit br_net_exit(struct net *net)
 {
-	struct net_bridge *br = p->br;
+	struct net_device *dev;
+	LIST_HEAD(list);
 
-	if (mask & BR_AUTO_MASK)
-		nbp_update_port_count(br);
+	rtnl_lock();
+	for_each_netdev(net, dev)
+		if (dev->priv_flags & IFF_EBRIDGE)
+			br_dev_delete(dev, &list);
+
+	unregister_netdevice_many(&list);
+	rtnl_unlock();
+
 }

@@ -28,9 +28,6 @@
 #include <asm/mach/time.h>
 #include <mach/netx-regs.h>
 
-#define NETX_CLOCK_FREQ 100000000
-#define NETX_LATCH DIV_ROUND_CLOSEST(NETX_CLOCK_FREQ, HZ)
-
 #define TIMER_CLOCKEVENT 0
 #define TIMER_CLOCKSOURCE 1
 
@@ -44,7 +41,7 @@ static void netx_set_mode(enum clock_event_mode mode,
 
 	switch (mode) {
 	case CLOCK_EVT_MODE_PERIODIC:
-		writel(NETX_LATCH, NETX_GPIO_COUNTER_MAX(TIMER_CLOCKEVENT));
+		writel(LATCH, NETX_GPIO_COUNTER_MAX(TIMER_CLOCKEVENT));
 		tmode = NETX_GPIO_COUNTER_CTRL_RST_EN |
 			NETX_GPIO_COUNTER_CTRL_IRQ_EN |
 			NETX_GPIO_COUNTER_CTRL_RUN;
@@ -79,6 +76,7 @@ static int netx_set_next_event(unsigned long evt,
 
 static struct clock_event_device netx_clockevent = {
 	.name = "netx-timer" __stringify(TIMER_CLOCKEVENT),
+	.shift = 32,
 	.features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
 	.set_next_event = netx_set_next_event,
 	.set_mode = netx_set_mode,
@@ -102,14 +100,14 @@ netx_timer_interrupt(int irq, void *dev_id)
 
 static struct irqaction netx_timer_irq = {
 	.name		= "NetX Timer Tick",
-	.flags		= IRQF_TIMER | IRQF_IRQPOLL,
+	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
 	.handler	= netx_timer_interrupt,
 };
 
 /*
  * Set up timer interrupt
  */
-void __init netx_timer_init(void)
+static void __init netx_timer_init(void)
 {
 	/* disable timer initially */
 	writel(0, NETX_GPIO_COUNTER_CTRL(0));
@@ -117,7 +115,7 @@ void __init netx_timer_init(void)
 	/* Reset the timer value to zero */
 	writel(0, NETX_GPIO_COUNTER_CURRENT(0));
 
-	writel(NETX_LATCH, NETX_GPIO_COUNTER_MAX(0));
+	writel(LATCH, NETX_GPIO_COUNTER_MAX(0));
 
 	/* acknowledge interrupt */
 	writel(COUNTER_BIT(0), NETX_GPIO_IRQ);
@@ -140,11 +138,20 @@ void __init netx_timer_init(void)
 			NETX_GPIO_COUNTER_CTRL(TIMER_CLOCKSOURCE));
 
 	clocksource_mmio_init(NETX_GPIO_COUNTER_CURRENT(TIMER_CLOCKSOURCE),
-		"netx_timer", NETX_CLOCK_FREQ, 200, 32, clocksource_mmio_readl_up);
+		"netx_timer", CLOCK_TICK_RATE, 200, 32, clocksource_mmio_readl_up);
 
+	netx_clockevent.mult = div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC,
+			netx_clockevent.shift);
+	netx_clockevent.max_delta_ns =
+		clockevent_delta2ns(0xfffffffe, &netx_clockevent);
 	/* with max_delta_ns >= delta2ns(0x800) the system currently runs fine.
 	 * Adding some safety ... */
+	netx_clockevent.min_delta_ns =
+		clockevent_delta2ns(0xa00, &netx_clockevent);
 	netx_clockevent.cpumask = cpumask_of(0);
-	clockevents_config_and_register(&netx_clockevent, NETX_CLOCK_FREQ,
-					0xa00, 0xfffffffe);
+	clockevents_register_device(&netx_clockevent);
 }
+
+struct sys_timer netx_timer = {
+	.init		= netx_timer_init,
+};

@@ -820,6 +820,14 @@ sys_sparc_pipe:
 	 mov	%l5, %o7
 
 	.align	4
+	.globl	sys_sigaltstack
+sys_sigaltstack:
+	mov	%o7, %l5
+	mov	%fp, %o2
+	call	do_sigaltstack
+	 mov	%l5, %o7
+
+	.align	4
 	.globl	sys_sigstack
 sys_sigstack:
 	mov	%o7, %l5
@@ -839,7 +847,7 @@ sys_sigreturn:
 	 nop
 
 	call	syscall_trace
-	 mov	1, %o1
+	 nop
 
 1:
 	/* We don't want to muck with user registers like a

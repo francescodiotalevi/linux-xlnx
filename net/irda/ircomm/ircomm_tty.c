@@ -24,7 +24,9 @@
  *     GNU General Public License for more details.
  *
  *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *     along with this program; if not, write to the Free Software
+ *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+ *     MA 02111-1307 USA
  *
  ********************************************************************/
 
@@ -278,7 +280,7 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 	struct tty_port *port = &self->port;
 	DECLARE_WAITQUEUE(wait, current);
 	int		retval;
-	int		do_clocal = 0;
+	int		do_clocal = 0, extra_count = 0;
 	unsigned long	flags;
 
 	IRDA_DEBUG(2, "%s()\n", __func__ );
@@ -287,15 +289,8 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 	 * If non-blocking mode is set, or the port is not enabled,
 	 * then make the check up front and then exit.
 	 */
-	if (test_bit(TTY_IO_ERROR, &tty->flags)) {
-		port->flags |= ASYNC_NORMAL_ACTIVE;
-		return 0;
-	}
-
-	if (filp->f_flags & O_NONBLOCK) {
-		/* nonblock mode is set */
-		if (tty->termios.c_cflag & CBAUD)
-			tty_port_raise_dtr_rts(port);
+	if (filp->f_flags & O_NONBLOCK || tty->flags & (1 << TTY_IO_ERROR)){
+		/* nonblock mode is set or port is not enabled */
 		port->flags |= ASYNC_NORMAL_ACTIVE;
 		IRDA_DEBUG(1, "%s(), O_NONBLOCK requested!\n", __func__ );
 		return 0;
@@ -320,15 +315,18 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 	      __FILE__, __LINE__, tty->driver->name, port->count);
 
 	spin_lock_irqsave(&port->lock, flags);
-	port->count--;
-	port->blocked_open++;
+	if (!tty_hung_up_p(filp)) {
+		extra_count = 1;
+		port->count--;
+	}
 	spin_unlock_irqrestore(&port->lock, flags);
+	port->blocked_open++;
 
 	while (1) {
-		if (C_BAUD(tty) && test_bit(ASYNCB_INITIALIZED, &port->flags))
+		if (tty->termios.c_cflag & CBAUD)
 			tty_port_raise_dtr_rts(port);
 
-		set_current_state(TASK_INTERRUPTIBLE);
+		current->state = TASK_INTERRUPTIBLE;
 
 		if (tty_hung_up_p(filp) ||
 		    !test_bit(ASYNCB_INITIALIZED, &port->flags)) {
@@ -363,11 +361,13 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&port->open_wait, &wait);
 
-	spin_lock_irqsave(&port->lock, flags);
-	if (!tty_hung_up_p(filp))
+	if (extra_count) {
+		/* ++ is not atomic, so this should be protected - Jean II */
+		spin_lock_irqsave(&port->lock, flags);
 		port->count++;
+		spin_unlock_irqrestore(&port->lock, flags);
+	}
 	port->blocked_open--;
-	spin_unlock_irqrestore(&port->lock, flags);
 
 	IRDA_DEBUG(1, "%s(%d):block_til_ready after blocking on %s open_count=%d\n",
 	      __FILE__, __LINE__, tty->driver->name, port->count);
@@ -452,12 +452,13 @@ static int ircomm_tty_open(struct tty_struct *tty, struct file *filp)
 		   self->line, self->port.count);
 
 	/* Not really used by us, but lets do it anyway */
-	self->port.low_latency = (self->port.flags & ASYNC_LOW_LATENCY) ? 1 : 0;
+	tty->low_latency = (self->port.flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	/*
 	 * If the port is the middle of closing, bail out now
 	 */
-	if (test_bit(ASYNCB_CLOSING, &self->port.flags)) {
+	if (tty_hung_up_p(filp) ||
+	    test_bit(ASYNCB_CLOSING, &self->port.flags)) {
 
 		/* Hm, why are we blocking on ASYNC_CLOSING if we
 		 * do return -EAGAIN/-ERESTARTSYS below anyway?
@@ -1135,14 +1136,14 @@ static int ircomm_tty_data_indication(void *instance, void *sap,
 		ircomm_tty_send_initial_parameters(self);
 		ircomm_tty_link_established(self);
 	}
-	tty_kref_put(tty);
 
 	/*
 	 * Use flip buffer functions since the code may be called from interrupt
 	 * context
 	 */
-	tty_insert_flip_string(&self->port, skb->data, skb->len);
-	tty_flip_buffer_push(&self->port);
+	tty_insert_flip_string(tty, skb->data, skb->len);
+	tty_flip_buffer_push(tty);
+	tty_kref_put(tty);
 
 	/* No need to kfree_skb - see ircomm_ttp_data_indication() */
 

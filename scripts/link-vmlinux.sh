@@ -74,20 +74,13 @@ kallsyms()
 	info KSYM ${2}
 	local kallsymopt;
 
-	if [ -n "${CONFIG_HAVE_UNDERSCORE_SYMBOL_PREFIX}" ]; then
-		kallsymopt="${kallsymopt} --symbol-prefix=_"
+	if [ -n "${CONFIG_SYMBOL_PREFIX}" ]; then
+		kallsymopt="${kallsymopt} \
+			    --symbol-prefix=${CONFIG_SYMBOL_PREFIX}"
 	fi
 
 	if [ -n "${CONFIG_KALLSYMS_ALL}" ]; then
 		kallsymopt="${kallsymopt} --all-symbols"
-	fi
-
-	if [ -n "${CONFIG_ARM}" ] && [ -n "${CONFIG_PAGE_OFFSET}" ]; then
-		kallsymopt="${kallsymopt} --page-offset=$CONFIG_PAGE_OFFSET"
-	fi
-
-	if [ -n "${CONFIG_X86_64}" ]; then
-		kallsymopt="${kallsymopt} --absolute-percpu"
 	fi
 
 	local aflags="${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL}               \
@@ -139,14 +132,7 @@ if [ "$1" = "clean" ]; then
 fi
 
 # We need access to CONFIG_ symbols
-case "${KCONFIG_CONFIG}" in
-*/*)
-	. "${KCONFIG_CONFIG}"
-	;;
-*)
-	# Force using a file from the current directory
-	. "./${KCONFIG_CONFIG}"
-esac
+. ./.config
 
 #link vmlinux.o
 info LD vmlinux.o

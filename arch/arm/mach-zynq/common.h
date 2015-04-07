@@ -17,63 +17,42 @@
 #ifndef __MACH_ZYNQ_COMMON_H__
 #define __MACH_ZYNQ_COMMON_H__
 
-void zynq_secondary_startup(void);
+void __init xttcps_timer_init_old(void);
+void __init xttcpss_timer_init(void);
+void platform_device_init(void);
 
-extern int zynq_slcr_init(void);
-extern int zynq_early_slcr_init(void);
-extern void zynq_slcr_system_reset(void);
-extern void zynq_slcr_cpu_stop(int cpu);
-extern void zynq_slcr_cpu_start(int cpu);
-extern bool zynq_slcr_cpu_state_read(int cpu);
-extern void zynq_slcr_cpu_state_write(int cpu, bool die);
-extern u32 zynq_slcr_get_ocm_config(void);
-extern u32 zynq_slcr_get_device_id(void);
+extern int __cpuinit zynq_cpun_start(u32 address, int cpu);
 
-#ifdef CONFIG_SMP
-extern void zynq_secondary_startup(void);
+extern void xslcr_write(u32 val, u32 offset);
+extern u32 xslcr_read(u32 offset);
+
+extern int xslcr_init(void);
+extern void xslcr_system_reset(void);
+
+extern void xslcr_init_preload_fpga(void);
+extern void xslcr_init_postload_fpga(void);
+
+/* multiplatform use core.h for this purpose */
 extern void secondary_startup(void);
-extern char zynq_secondary_trampoline;
-extern char zynq_secondary_trampoline_jump;
-extern char zynq_secondary_trampoline_end;
-extern int zynq_cpun_start(u32 address, int cpu);
-extern struct smp_operations zynq_smp_ops __initdata;
-#endif
-
-extern void zynq_slcr_init_preload_fpga(void);
-extern void zynq_slcr_init_postload_fpga(void);
 
 extern void __iomem *zynq_slcr_base;
-extern void __iomem *zynq_scu_base;
+extern void __iomem *scu_base;
 
+#ifdef CONFIG_SUSPEND
 int zynq_pm_late_init(void);
+#else
+static inline int zynq_pm_late_init(void)
+{
+	return 0;
+}
+#endif
+
 extern unsigned int zynq_sys_suspend_sz;
 int zynq_sys_suspend(void __iomem *ddrc_base, void __iomem *slcr_base);
 
-static inline void zynq_prefetch_init(void)
-{
-	/*
-	 * Enable prefetching in aux control register. L2 prefetch must
-	 * only be enabled if the slave supports it (PL310 does)
-	 */
-	asm volatile ("mrc   p15, 0, r1, c1, c0, 1\n"
-#ifdef CONFIG_XILINX_PREFETCH
-		      "orr   r1, r1, #6\n"
-#else
-		      "bic   r1, r1, #6\n"
-#endif
-		      "mcr   p15, 0, r1, c1, c0, 1\n"
-		      : : : "r1");
-}
+extern void platform_cpu_die(unsigned int cpu);
+extern struct smp_operations zynq_smp_ops;
 
-static inline void zynq_core_pm_init(void)
-{
-	/* A9 clock gating */
-	asm volatile ("mrc  p15, 0, r12, c15, c0, 0\n"
-		      "orr  r12, r12, #1\n"
-		      "mcr  p15, 0, r12, c15, c0, 0\n"
-		      : /* no outputs */
-		      : /* no inputs */
-		      : "r12");
-}
+#define IRQ_XILINX_MSI_0       128
 
 #endif

@@ -7,19 +7,28 @@
 #define _OZPROTO_H
 
 #include <asm/byteorder.h>
-#include "ozdbg.h"
+#include "ozconfig.h"
 #include "ozappif.h"
 
 #define OZ_ALLOCATED_SPACE(__x)	(LL_RESERVED_SPACE(__x)+(__x)->needed_tailroom)
 
-/* Quantum in MS */
-#define OZ_QUANTUM		8
+/* Converts millisecs to jiffies.
+ */
+#define oz_ms_to_jiffies(__x)	msecs_to_jiffies(__x)
+
+/* Quantum milliseconds.
+ */
+#define OZ_QUANTUM_MS		8
+/* Quantum jiffies
+ */
+#define OZ_QUANTUM_J		(oz_ms_to_jiffies(OZ_QUANTUM_MS))
 /* Default timeouts.
  */
-#define OZ_PRESLEEP_TOUT	11
+#define OZ_CONNECTION_TOUT_J	(2*HZ)
+#define OZ_PRESLEEP_TOUT_J	(11*HZ)
 
 /* Maximun sizes of tx frames. */
-#define OZ_MAX_TX_SIZE		760
+#define OZ_MAX_TX_SIZE		1514
 
 /* Maximum number of uncompleted isoc frames that can be pending in network. */
 #define OZ_MAX_SUBMITTED_ISOC	16
@@ -53,17 +62,14 @@ int oz_protocol_init(char *devs);
 void oz_protocol_term(void);
 int oz_get_pd_list(struct oz_mac_addr *addr, int max_count);
 void oz_app_enable(int app_id, int enable);
-struct oz_pd *oz_pd_find(const u8 *mac_addr);
-void oz_binding_add(const char *net_dev);
-void oz_binding_remove(const char *net_dev);
-void oz_timer_add(struct oz_pd *pd, int type, unsigned long due_time);
+struct oz_pd *oz_pd_find(u8 *mac_addr);
+void oz_binding_add(char *net_dev);
+void oz_binding_remove(char *net_dev);
+void oz_timer_add(struct oz_pd *pd, int type, unsigned long due_time,
+		int remove);
 void oz_timer_delete(struct oz_pd *pd, int type);
 void oz_pd_request_heartbeat(struct oz_pd *pd);
-void oz_pd_heartbeat_handler(unsigned long data);
-void oz_pd_timeout_handler(unsigned long data);
-enum hrtimer_restart oz_pd_heartbeat_event(struct hrtimer *timer);
-enum hrtimer_restart oz_pd_timeout_event(struct hrtimer *timer);
-int oz_get_pd_status_list(char *pd_list, int max_count);
-int oz_get_binding_list(char *buf, int max_if);
+void oz_polling_lock_bh(void);
+void oz_polling_unlock_bh(void);
 
 #endif /* _OZPROTO_H */

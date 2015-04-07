@@ -166,8 +166,7 @@ static int a2091_bus_reset(struct scsi_cmnd *cmd)
 static struct scsi_host_template a2091_scsi_template = {
 	.module			= THIS_MODULE,
 	.name			= "Commodore A2091/A590 SCSI",
-	.show_info		= wd33c93_show_info,
-	.write_info		= wd33c93_write_info,
+	.proc_info		= wd33c93_proc_info,
 	.proc_name		= "A2901",
 	.queuecommand		= wd33c93_queuecommand,
 	.eh_abort_handler	= wd33c93_abort,
@@ -201,7 +200,7 @@ static int a2091_probe(struct zorro_dev *z, const struct zorro_device_id *ent)
 	instance->irq = IRQ_AMIGA_PORTS;
 	instance->unique_id = z->slotaddr;
 
-	regs = ZTWO_VADDR(z->resource.start);
+	regs = (struct a2091_scsiregs *)ZTWO_VADDR(z->resource.start);
 	regs->DAWR = DAWR_A2091;
 
 	wdregs.SASR = &regs->SASR;

@@ -30,9 +30,12 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/cpufreq.h>
-#include <linux/acpi.h>
-#include <acpi/processor.h>
+
 #include <asm/uaccess.h>
+
+#include <acpi/acpi_bus.h>
+#include <acpi/processor.h>
+#include <acpi/acpi_drivers.h>
 
 #define PREFIX "ACPI: "
 
@@ -183,14 +186,26 @@ static int cpufreq_set_cur_state(unsigned int cpu, int state)
 
 #endif
 
-/* thermal cooling device callbacks */
+int acpi_processor_get_limit_info(struct acpi_processor *pr)
+{
+
+	if (!pr)
+		return -EINVAL;
+
+	if (pr->flags.throttling)
+		pr->flags.limit = 1;
+
+	return 0;
+}
+
+/* thermal coolign device callbacks */
 static int acpi_processor_max_state(struct acpi_processor *pr)
 {
 	int max_state = 0;
 
 	/*
 	 * There exists four states according to
-	 * cpufreq_thermal_reduction_pctg. 0, 1, 2, 3
+	 * cpufreq_thermal_reduction_ptg. 0, 1, 2, 3
 	 */
 	max_state += cpufreq_get_max_state(pr->id);
 	if (pr->flags.throttling)
@@ -203,13 +218,9 @@ processor_get_max_state(struct thermal_cooling_device *cdev,
 			unsigned long *state)
 {
 	struct acpi_device *device = cdev->devdata;
-	struct acpi_processor *pr;
+	struct acpi_processor *pr = acpi_driver_data(device);
 
-	if (!device)
-		return -EINVAL;
-
-	pr = acpi_driver_data(device);
-	if (!pr)
+	if (!device || !pr)
 		return -EINVAL;
 
 	*state = acpi_processor_max_state(pr);
@@ -221,13 +232,9 @@ processor_get_cur_state(struct thermal_cooling_device *cdev,
 			unsigned long *cur_state)
 {
 	struct acpi_device *device = cdev->devdata;
-	struct acpi_processor *pr;
+	struct acpi_processor *pr = acpi_driver_data(device);
 
-	if (!device)
-		return -EINVAL;
-
-	pr = acpi_driver_data(device);
-	if (!pr)
+	if (!device || !pr)
 		return -EINVAL;
 
 	*cur_state = cpufreq_get_cur_state(pr->id);
@@ -241,15 +248,11 @@ processor_set_cur_state(struct thermal_cooling_device *cdev,
 			unsigned long state)
 {
 	struct acpi_device *device = cdev->devdata;
-	struct acpi_processor *pr;
+	struct acpi_processor *pr = acpi_driver_data(device);
 	int result = 0;
 	int max_pstate;
 
-	if (!device)
-		return -EINVAL;
-
-	pr = acpi_driver_data(device);
-	if (!pr)
+	if (!device || !pr)
 		return -EINVAL;
 
 	max_pstate = cpufreq_get_max_state(pr->id);

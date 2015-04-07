@@ -14,10 +14,9 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
 #include <net/bluetooth/hci_core.h>
+#include <net/bluetooth/a2mp.h>
+#include <net/bluetooth/amp.h>
 #include <crypto/hash.h>
-
-#include "a2mp.h"
-#include "amp.h"
 
 /* Remote AMP Controllers interface */
 void amp_ctrl_get(struct amp_ctrl *ctrl)
@@ -111,11 +110,10 @@ static u8 __next_handle(struct amp_mgr *mgr)
 struct hci_conn *phylink_add(struct hci_dev *hdev, struct amp_mgr *mgr,
 			     u8 remote_id, bool out)
 {
-	bdaddr_t *dst = &mgr->l2cap_conn->hcon->dst;
+	bdaddr_t *dst = mgr->l2cap_conn->dst;
 	struct hci_conn *hcon;
-	u8 role = out ? HCI_ROLE_MASTER : HCI_ROLE_SLAVE;
 
-	hcon = hci_conn_add(hdev, AMP_LINK, dst, role);
+	hcon = hci_conn_add(hdev, AMP_LINK, dst);
 	if (!hcon)
 		return NULL;
 
@@ -126,6 +124,7 @@ struct hci_conn *phylink_add(struct hci_dev *hdev, struct amp_mgr *mgr,
 	hcon->handle = __next_handle(mgr);
 	hcon->remote_id = remote_id;
 	hcon->amp_mgr = amp_mgr_get(mgr);
+	hcon->out = out;
 
 	return hcon;
 }
@@ -133,8 +132,8 @@ struct hci_conn *phylink_add(struct hci_dev *hdev, struct amp_mgr *mgr,
 /* AMP crypto key generation interface */
 static int hmac_sha256(u8 *key, u8 ksize, char *plaintext, u8 psize, u8 *output)
 {
+	int ret = 0;
 	struct crypto_shash *tfm;
-	int ret;
 
 	if (!ksize)
 		return -EINVAL;
@@ -237,7 +236,7 @@ void amp_read_loc_assoc(struct hci_dev *hdev, struct amp_mgr *mgr)
 
 	cp.max_len = cpu_to_le16(hdev->amp_assoc_size);
 
-	set_bit(READ_LOC_AMP_ASSOC, &mgr->state);
+	mgr->state = READ_LOC_AMP_ASSOC;
 	hci_send_cmd(hdev, HCI_OP_READ_LOCAL_AMP_ASSOC, sizeof(cp), &cp);
 }
 
@@ -251,7 +250,7 @@ void amp_read_loc_assoc_final_data(struct hci_dev *hdev,
 	cp.len_so_far = cpu_to_le16(0);
 	cp.max_len = cpu_to_le16(hdev->amp_assoc_size);
 
-	set_bit(READ_LOC_AMP_ASSOC_FINAL, &mgr->state);
+	mgr->state = READ_LOC_AMP_ASSOC_FINAL;
 
 	/* Read Local AMP Assoc final link information data */
 	hci_send_cmd(hdev, HCI_OP_READ_LOCAL_AMP_ASSOC, sizeof(cp), &cp);
@@ -318,9 +317,7 @@ void amp_write_rem_assoc_continue(struct hci_dev *hdev, u8 handle)
 	if (!hcon)
 		return;
 
-	/* Send A2MP create phylink rsp when all fragments are written */
-	if (amp_write_rem_assoc_frag(hdev, hcon))
-		a2mp_send_create_phy_link_rsp(hdev, 0);
+	amp_write_rem_assoc_frag(hdev, hcon);
 }
 
 void amp_write_remote_assoc(struct hci_dev *hdev, u8 handle)
@@ -406,21 +403,26 @@ void amp_physical_cfm(struct hci_conn *bredr_hcon, struct hci_conn *hs_hcon)
 
 void amp_create_logical_link(struct l2cap_chan *chan)
 {
-	struct hci_conn *hs_hcon = chan->hs_hcon;
 	struct hci_cp_create_accept_logical_link cp;
+	struct hci_conn *hcon;
 	struct hci_dev *hdev;
 
-	BT_DBG("chan %p hs_hcon %p dst %pMR", chan, hs_hcon,
-	       &chan->conn->hcon->dst);
+	BT_DBG("chan %p", chan);
 
-	if (!hs_hcon)
+	if (!chan->hs_hcon)
 		return;
 
 	hdev = hci_dev_hold(chan->hs_hcon->hdev);
 	if (!hdev)
 		return;
 
-	cp.phy_handle = hs_hcon->handle;
+	BT_DBG("chan %p dst %pMR", chan, chan->conn->dst);
+
+	hcon = hci_conn_hash_lookup_ba(hdev, AMP_LINK, chan->conn->dst);
+	if (!hcon)
+		goto done;
+
+	cp.phy_handle = hcon->handle;
 
 	cp.tx_flow_spec.id = chan->local_id;
 	cp.tx_flow_spec.stype = chan->local_stype;
@@ -436,13 +438,14 @@ void amp_create_logical_link(struct l2cap_chan *chan)
 	cp.rx_flow_spec.acc_lat = cpu_to_le32(chan->remote_acc_lat);
 	cp.rx_flow_spec.flush_to = cpu_to_le32(chan->remote_flush_to);
 
-	if (hs_hcon->out)
+	if (hcon->out)
 		hci_send_cmd(hdev, HCI_OP_CREATE_LOGICAL_LINK, sizeof(cp),
 			     &cp);
 	else
 		hci_send_cmd(hdev, HCI_OP_ACCEPT_LOGICAL_LINK, sizeof(cp),
 			     &cp);
 
+done:
 	hci_dev_put(hdev);
 }
 

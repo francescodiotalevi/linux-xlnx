@@ -25,38 +25,82 @@
 
 #include <linux/msi.h>
 #include <linux/irq.h>
-#include <linux/irqdomain.h>
-#include <linux/module.h>
+#include "common.h"
 
-#define XILINX_NUM_MSI_IRQS	128
+#define XILINX_NUM_MSI_IRQS	127
 
-static unsigned long xaxipcie_msg_addr;
-static struct irq_domain *xaxipcie_irq_domain;
-static int xaxipcie_msi_irq_base;
-int xaxipcie_alloc_msi_irqdescs(struct device_node *node,
-					unsigned long msg_addr);
+static DECLARE_BITMAP(msi_irq_in_use, XILINX_NUM_MSI_IRQS);
+
+extern unsigned long xaxipcie_msg_addr;
+
+/* Dynamic irq allocate and deallocation */
 
 /**
- * arch_teardown_msi_irq-Teardown the Interrupt
- * @irq: Interrupt number to teardown
- *
- * @return: None
- *
- * @note: This function  is called when pci_disable_msi is called
- */
-void arch_teardown_msi_irq(unsigned int irq)
+* create_irq- Dynamic irq allocate
+* void
+*
+* @return: Interrupt number allocated/ error
+*
+* @note: None
+*/
+int create_irq(void)
 {
-	irq_free_desc(irq);
+	int irq, pos;
+again:
+	pos = find_first_zero_bit(msi_irq_in_use, XILINX_NUM_MSI_IRQS);
+
+	irq = IRQ_XILINX_MSI_0 + pos;
+	if (irq > NR_IRQS)
+		return -ENOSPC;
+
+	/* test_and_set_bit operates on 32-bits at a time */
+	if (test_and_set_bit(pos, msi_irq_in_use))
+		goto again;
+
+	dynamic_irq_init(irq);
+	set_irq_flags(irq, IRQF_VALID);
+
+	return irq;
 }
 
 /**
- * xilinx_msi_nop-No operation handler
- * @irq: Interrupt number
- *
- * @return: None
- *
- * @note: None
- */
+* destroy_irq- Dynamic irq de-allocate
+* @irq: Interrupt number to de-allocate
+*
+* @return: None
+*
+* @note: None
+*/
+void destroy_irq(unsigned int irq)
+{
+	int pos = irq - IRQ_XILINX_MSI_0;
+
+	dynamic_irq_cleanup(irq);
+
+	clear_bit(pos, msi_irq_in_use);
+}
+
+/**
+* arch_teardown_msi_irq-Teardown the Interrupt
+* @irq: Interrupt number to teardown
+*
+* @return: None
+*
+* @note: This function  is called when pci_disable_msi is called
+*/
+void arch_teardown_msi_irq(unsigned int irq)
+{
+	destroy_irq(irq);
+}
+
+/**
+* xilinx_msi_nop-No operation handler
+* @irq: Interrupt number
+*
+* @return: None
+*
+* @note: None
+*/
 static void xilinx_msi_nop(struct irq_data *d)
 {
 	return;
@@ -72,26 +116,21 @@ static struct irq_chip xilinx_msi_chip = {
 };
 
 /**
- * arch_setup_msi_irq-Setup MSI interrupt
- * @pdev: Pointer to current pci device structure
- * @desc: Pointer to MSI description structure
- *
- * @return: Error/ no-error
- *
- * @note: This function  is called when pci_enable_msi is called
- */
+* arch_setup_msi_irq-Setup MSI interrupt
+* @pdev: Pointer to current pci device structure
+* @desc: Pointer to MSI description structure
+*
+* @return: Error/ no-error
+*
+* @note: This function  is called when pci_enable_msi is called
+*/
 int arch_setup_msi_irq(struct pci_dev *pdev, struct msi_desc *desc)
 {
-	int irq = irq_alloc_desc_from(xaxipcie_msi_irq_base, -1);
+	int irq = create_irq();
 	struct msi_msg msg;
 
 	if (irq < 0)
 		return irq;
-
-	if (irq >= (xaxipcie_msi_irq_base + XILINX_NUM_MSI_IRQS + 1)) {
-		irq_free_desc(irq);
-		return -ENOSPC;
-	}
 
 	irq_set_msi_desc(irq, desc);
 
@@ -108,38 +147,3 @@ int arch_setup_msi_irq(struct pci_dev *pdev, struct msi_desc *desc)
 
 	return 0;
 }
-
-/**
- * xaxipcie_alloc_msi_irqdescs - allocate msi irq descs
- * @node: Pointer to device node structure
- * @msg_addr: PCIe MSI message address
- *
- * @return: Allocated MSI IRQ Base/ error
- *
- * @note: This function is called when xaxipcie_init_port() is called
- */
-int xaxipcie_alloc_msi_irqdescs(struct device_node *node,
-					unsigned long msg_addr)
-{
-	/* Store the PCIe MSI message address */
-	xaxipcie_msg_addr = msg_addr;
-
-	/* Allocate MSI IRQ descriptors */
-	xaxipcie_msi_irq_base = irq_alloc_descs(-1, 0,
-					XILINX_NUM_MSI_IRQS, 0);
-
-	if (xaxipcie_msi_irq_base < 0)
-		return -ENODEV;
-
-	/* Register IRQ domain */
-	xaxipcie_irq_domain = irq_domain_add_legacy(node,
-				XILINX_NUM_MSI_IRQS,
-				xaxipcie_msi_irq_base,
-				0, &irq_domain_simple_ops, NULL);
-
-	if (!xaxipcie_irq_domain)
-		return -ENOMEM;
-
-	return xaxipcie_msi_irq_base;
-}
-EXPORT_SYMBOL(xaxipcie_alloc_msi_irqdescs);

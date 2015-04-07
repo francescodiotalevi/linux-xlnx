@@ -57,7 +57,7 @@ static struct map_desc ts78xx_io_desc[] __initdata = {
 	},
 };
 
-static void __init ts78xx_map_io(void)
+void __init ts78xx_map_io(void)
 {
 	orion5x_map_io();
 	iotable_init(ts78xx_io_desc, ARRAY_SIZE(ts78xx_io_desc));
@@ -619,6 +619,6 @@ MACHINE_START(TS78XX, "Technologic Systems TS-78xx SBC")
 	.map_io		= ts78xx_map_io,
 	.init_early	= orion5x_init_early,
 	.init_irq	= orion5x_init_irq,
-	.init_time	= orion5x_timer_init,
+	.timer		= &orion5x_timer,
 	.restart	= orion5x_restart,
 MACHINE_END

@@ -13,8 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/irq.h>
-#include <linux/irqchip/mmp.h>
 #include <linux/platform_device.h>
 
 #include <asm/hardware/cache-tauros2.h>
@@ -28,7 +26,6 @@
 #include <mach/mfp.h>
 #include <mach/devices.h>
 #include <mach/mmp2.h>
-#include <mach/pm-mmp2.h>
 
 #include "common.h"
 
@@ -97,9 +94,6 @@ void mmp2_clear_pmic_int(void)
 void __init mmp2_init_irq(void)
 {
 	mmp2_init_icu();
-#ifdef CONFIG_PM
-	icu_irq_chip.irq_set_wake = mmp2_set_wake;
-#endif
 }
 
 static int __init mmp2_init(void)
@@ -120,7 +114,7 @@ postcore_initcall(mmp2_init);
 
 #define APBC_TIMERS	APBC_REG(0x024)
 
-void __init mmp2_timer_init(void)
+static void __init mmp2_timer_init(void)
 {
 	unsigned long clk_rst;
 
@@ -135,6 +129,10 @@ void __init mmp2_timer_init(void)
 
 	timer_init(IRQ_MMP2_TIMER1);
 }
+
+struct sys_timer mmp2_timer = {
+	.init	= mmp2_timer_init,
+};
 
 /* on-chip devices */
 MMP2_DEVICE(uart1, "pxa2xx-uart", 0, UART1, 0xd4030000, 0x30, 4, 5);
@@ -170,7 +168,7 @@ struct resource mmp2_resource_gpio[] = {
 };
 
 struct platform_device mmp2_device_gpio = {
-	.name		= "mmp2-gpio",
+	.name		= "pxa-gpio",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(mmp2_resource_gpio),
 	.resource	= mmp2_resource_gpio,

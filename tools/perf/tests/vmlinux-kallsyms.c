@@ -16,8 +16,6 @@ static int vmlinux_matches_kallsyms_filter(struct map *map __maybe_unused,
 	return 0;
 }
 
-#define UM(x) kallsyms_map->unmap_ip(kallsyms_map, (x))
-
 int test__vmlinux_matches_kallsyms(void)
 {
 	int err = -1;
@@ -26,7 +24,7 @@ int test__vmlinux_matches_kallsyms(void)
 	struct map *kallsyms_map, *vmlinux_map;
 	struct machine kallsyms, vmlinux;
 	enum map_type type = MAP__FUNCTION;
-	u64 mem_start, mem_end;
+	struct ref_reloc_sym ref_reloc_sym = { .name = "_stext", };
 
 	/*
 	 * Step 1:
@@ -46,7 +44,7 @@ int test__vmlinux_matches_kallsyms(void)
 	 */
 	if (machine__create_kernel_maps(&kallsyms) < 0) {
 		pr_debug("machine__create_kernel_maps ");
-		goto out;
+		return -1;
 	}
 
 	/*
@@ -69,6 +67,14 @@ int test__vmlinux_matches_kallsyms(void)
 	 */
 	kallsyms_map = machine__kernel_map(&kallsyms, type);
 
+	sym = map__find_symbol_by_name(kallsyms_map, ref_reloc_sym.name, NULL);
+	if (sym == NULL) {
+		pr_debug("dso__find_symbol_by_name ");
+		goto out;
+	}
+
+	ref_reloc_sym.addr = sym->start;
+
 	/*
 	 * Step 5:
 	 *
@@ -80,6 +86,7 @@ int test__vmlinux_matches_kallsyms(void)
 	}
 
 	vmlinux_map = machine__kernel_map(&vmlinux, type);
+	map__kmap(vmlinux_map)->ref_reloc_sym = &ref_reloc_sym;
 
 	/*
 	 * Step 6:
@@ -94,8 +101,7 @@ int test__vmlinux_matches_kallsyms(void)
 	 */
 	if (machine__load_vmlinux_path(&vmlinux, type,
 				       vmlinux_matches_kallsyms_filter) <= 0) {
-		pr_debug("Couldn't find a vmlinux that matches the kernel running on this machine, skipping test\n");
-		err = TEST_SKIP;
+		pr_debug("machine__load_vmlinux_path ");
 		goto out;
 	}
 
@@ -116,14 +122,10 @@ int test__vmlinux_matches_kallsyms(void)
 		if (sym->start == sym->end)
 			continue;
 
-		mem_start = vmlinux_map->unmap_ip(vmlinux_map, sym->start);
-		mem_end = vmlinux_map->unmap_ip(vmlinux_map, sym->end);
-
-		first_pair = machine__find_kernel_symbol(&kallsyms, type,
-							 mem_start, NULL, NULL);
+		first_pair = machine__find_kernel_symbol(&kallsyms, type, sym->start, NULL, NULL);
 		pair = first_pair;
 
-		if (pair && UM(pair->start) == mem_start) {
+		if (pair && pair->start == sym->start) {
 next_pair:
 			if (strcmp(sym->name, pair->name) == 0) {
 				/*
@@ -135,20 +137,12 @@ next_pair:
 				 * off the real size. More than that and we
 				 * _really_ have a problem.
 				 */
-				s64 skew = mem_end - UM(pair->end);
-				if (llabs(skew) >= page_size)
-					pr_debug("%#" PRIx64 ": diff end addr for %s v: %#" PRIx64 " k: %#" PRIx64 "\n",
-						 mem_start, sym->name, mem_end,
-						 UM(pair->end));
+				s64 skew = sym->end - pair->end;
+				if (llabs(skew) < page_size)
+					continue;
 
-				/*
-				 * Do not count this as a failure, because we
-				 * could really find a case where it's not
-				 * possible to get proper function end from
-				 * kallsyms.
-				 */
-				continue;
-
+				pr_debug("%#" PRIx64 ": diff end addr for %s v: %#" PRIx64 " k: %#" PRIx64 "\n",
+					 sym->start, sym->name, sym->end, pair->end);
 			} else {
 				struct rb_node *nnd;
 detour:
@@ -157,7 +151,7 @@ detour:
 				if (nnd) {
 					struct symbol *next = rb_entry(nnd, struct symbol, rb_node);
 
-					if (UM(next->start) == mem_start) {
+					if (next->start == sym->start) {
 						pair = next;
 						goto next_pair;
 					}
@@ -170,11 +164,10 @@ detour:
 				}
 
 				pr_debug("%#" PRIx64 ": diff name v: %s k: %s\n",
-					 mem_start, sym->name, pair->name);
+					 sym->start, sym->name, pair->name);
 			}
 		} else
-			pr_debug("%#" PRIx64 ": %s not on kallsyms\n",
-				 mem_start, sym->name);
+			pr_debug("%#" PRIx64 ": %s not on kallsyms\n", sym->start, sym->name);
 
 		err = -1;
 	}
@@ -207,19 +200,16 @@ detour:
 	for (nd = rb_first(&vmlinux.kmaps.maps[type]); nd; nd = rb_next(nd)) {
 		struct map *pos = rb_entry(nd, struct map, rb_node), *pair;
 
-		mem_start = vmlinux_map->unmap_ip(vmlinux_map, pos->start);
-		mem_end = vmlinux_map->unmap_ip(vmlinux_map, pos->end);
-
-		pair = map_groups__find(&kallsyms.kmaps, type, mem_start);
+		pair = map_groups__find(&kallsyms.kmaps, type, pos->start);
 		if (pair == NULL || pair->priv)
 			continue;
 
-		if (pair->start == mem_start) {
+		if (pair->start == pos->start) {
 			pair->priv = 1;
 			pr_info(" %" PRIx64 "-%" PRIx64 " %" PRIx64 " %s in kallsyms as",
 				pos->start, pos->end, pos->pgoff, pos->dso->name);
-			if (mem_end != pair->end)
-				pr_info(":\n*%" PRIx64 "-%" PRIx64 " %" PRIx64,
+			if (pos->pgoff != pair->pgoff || pos->end != pair->end)
+				pr_info(": \n*%" PRIx64 "-%" PRIx64 " %" PRIx64 "",
 					pair->start, pair->end, pair->pgoff);
 			pr_info(" %s\n", pair->dso->name);
 			pair->priv = 1;
@@ -236,7 +226,5 @@ detour:
 			map__fprintf(pos, stderr);
 	}
 out:
-	machine__exit(&kallsyms);
-	machine__exit(&vmlinux);
 	return err;
 }

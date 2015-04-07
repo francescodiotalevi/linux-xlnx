@@ -271,8 +271,7 @@ static int crypto_ccm_auth(struct aead_request *req, struct scatterlist *plain,
 	}
 
 	/* compute plaintext into mac */
-	if (cryptlen)
-		get_data_to_compute(cipher, pctx, plain, cryptlen);
+	get_data_to_compute(cipher, pctx, plain, cryptlen);
 
 out:
 	return err;
@@ -364,7 +363,7 @@ static void crypto_ccm_decrypt_done(struct crypto_async_request *areq,
 
 	if (!err) {
 		err = crypto_ccm_auth(req, req->dst, cryptlen);
-		if (!err && crypto_memneq(pctx->auth_tag, pctx->odata, authsize))
+		if (!err && memcmp(pctx->auth_tag, pctx->odata, authsize))
 			err = -EBADMSG;
 	}
 	aead_request_complete(req, err);
@@ -423,7 +422,7 @@ static int crypto_ccm_decrypt(struct aead_request *req)
 		return err;
 
 	/* verify */
-	if (crypto_memneq(authtag, odata, authsize))
+	if (memcmp(authtag, odata, authsize))
 		return -EBADMSG;
 
 	return err;
@@ -485,16 +484,18 @@ static struct crypto_instance *crypto_ccm_alloc_common(struct rtattr **tb,
 	int err;
 
 	algt = crypto_get_attr_type(tb);
+	err = PTR_ERR(algt);
 	if (IS_ERR(algt))
-		return ERR_CAST(algt);
+		return ERR_PTR(err);
 
 	if ((algt->type ^ CRYPTO_ALG_TYPE_AEAD) & algt->mask)
 		return ERR_PTR(-EINVAL);
 
 	cipher = crypto_alg_mod_lookup(cipher_name,  CRYPTO_ALG_TYPE_CIPHER,
 				       CRYPTO_ALG_TYPE_MASK);
+	err = PTR_ERR(cipher);
 	if (IS_ERR(cipher))
-		return ERR_CAST(cipher);
+		return ERR_PTR(err);
 
 	err = -EINVAL;
 	if (cipher->cra_blocksize != 16)
@@ -572,13 +573,15 @@ out_put_cipher:
 
 static struct crypto_instance *crypto_ccm_alloc(struct rtattr **tb)
 {
+	int err;
 	const char *cipher_name;
 	char ctr_name[CRYPTO_MAX_ALG_NAME];
 	char full_name[CRYPTO_MAX_ALG_NAME];
 
 	cipher_name = crypto_attr_alg_name(tb[1]);
+	err = PTR_ERR(cipher_name);
 	if (IS_ERR(cipher_name))
-		return ERR_CAST(cipher_name);
+		return ERR_PTR(err);
 
 	if (snprintf(ctr_name, CRYPTO_MAX_ALG_NAME, "ctr(%s)",
 		     cipher_name) >= CRYPTO_MAX_ALG_NAME)
@@ -609,17 +612,20 @@ static struct crypto_template crypto_ccm_tmpl = {
 
 static struct crypto_instance *crypto_ccm_base_alloc(struct rtattr **tb)
 {
+	int err;
 	const char *ctr_name;
 	const char *cipher_name;
 	char full_name[CRYPTO_MAX_ALG_NAME];
 
 	ctr_name = crypto_attr_alg_name(tb[1]);
+	err = PTR_ERR(ctr_name);
 	if (IS_ERR(ctr_name))
-		return ERR_CAST(ctr_name);
+		return ERR_PTR(err);
 
 	cipher_name = crypto_attr_alg_name(tb[2]);
+	err = PTR_ERR(cipher_name);
 	if (IS_ERR(cipher_name))
-		return ERR_CAST(cipher_name);
+		return ERR_PTR(err);
 
 	if (snprintf(full_name, CRYPTO_MAX_ALG_NAME, "ccm_base(%s,%s)",
 		     ctr_name, cipher_name) >= CRYPTO_MAX_ALG_NAME)
@@ -754,15 +760,17 @@ static struct crypto_instance *crypto_rfc4309_alloc(struct rtattr **tb)
 	int err;
 
 	algt = crypto_get_attr_type(tb);
+	err = PTR_ERR(algt);
 	if (IS_ERR(algt))
-		return ERR_CAST(algt);
+		return ERR_PTR(err);
 
 	if ((algt->type ^ CRYPTO_ALG_TYPE_AEAD) & algt->mask)
 		return ERR_PTR(-EINVAL);
 
 	ccm_name = crypto_attr_alg_name(tb[1]);
+	err = PTR_ERR(ccm_name);
 	if (IS_ERR(ccm_name))
-		return ERR_CAST(ccm_name);
+		return ERR_PTR(err);
 
 	inst = kzalloc(sizeof(*inst) + sizeof(*spawn), GFP_KERNEL);
 	if (!inst)

@@ -80,7 +80,7 @@ static int raw_open(struct inode *inode, struct file *filp)
 	filp->f_flags |= O_DIRECT;
 	filp->f_mapping = bdev->bd_inode->i_mapping;
 	if (++raw_devices[minor].inuse == 1)
-		file_inode(filp)->i_mapping =
+		filp->f_path.dentry->d_inode->i_mapping =
 			bdev->bd_inode->i_mapping;
 	filp->private_data = bdev;
 	mutex_unlock(&raw_mutex);
@@ -190,7 +190,7 @@ static int bind_get(int number, dev_t *dev)
 	struct raw_device_data *rawdev;
 	struct block_device *bdev;
 
-	if (number <= 0 || number >= max_raw_minors)
+	if (number <= 0 || number >= MAX_RAW_MINORS)
 		return -EINVAL;
 
 	rawdev = &raw_devices[number];
@@ -284,10 +284,10 @@ static long raw_ctl_compat_ioctl(struct file *file, unsigned int cmd,
 #endif
 
 static const struct file_operations raw_fops = {
-	.read		= new_sync_read,
-	.read_iter	= generic_file_read_iter,
-	.write		= new_sync_write,
-	.write_iter	= blkdev_write_iter,
+	.read		= do_sync_read,
+	.aio_read	= generic_file_aio_read,
+	.write		= do_sync_write,
+	.aio_write	= blkdev_aio_write,
 	.fsync		= blkdev_fsync,
 	.open		= raw_open,
 	.release	= raw_release,

@@ -20,8 +20,9 @@
 #include <asm/pci-bridge.h>
 #include <asm/machdep.h>
 
-int indirect_read_config(struct pci_bus *bus, unsigned int devfn,
-			 int offset, int len, u32 *val)
+static int
+indirect_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
+		     int len, u32 *val)
 {
 	struct pci_controller *hose = pci_bus_to_host(bus);
 	volatile void __iomem *cfg_data;
@@ -77,8 +78,9 @@ int indirect_read_config(struct pci_bus *bus, unsigned int devfn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int indirect_write_config(struct pci_bus *bus, unsigned int devfn,
-			  int offset, int len, u32 val)
+static int
+indirect_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
+		      int len, u32 val)
 {
 	struct pci_controller *hose = pci_bus_to_host(bus);
 	volatile void __iomem *cfg_data;
@@ -152,8 +154,10 @@ static struct pci_ops indirect_pci_ops =
 	.write = indirect_write_config,
 };
 
-void setup_indirect_pci(struct pci_controller *hose, resource_size_t cfg_addr,
-			resource_size_t cfg_data, u32 flags)
+void __init
+setup_indirect_pci(struct pci_controller* hose,
+		   resource_size_t cfg_addr,
+		   resource_size_t cfg_data, u32 flags)
 {
 	resource_size_t base = cfg_addr & PAGE_MASK;
 	void __iomem *mbase;

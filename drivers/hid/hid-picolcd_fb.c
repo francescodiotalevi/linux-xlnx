@@ -19,6 +19,8 @@
 
 #include <linux/hid.h>
 #include <linux/vmalloc.h>
+#include "usbhid/usbhid.h"
+#include <linux/usb.h>
 
 #include <linux/fb.h>
 #include <linux/module.h>
@@ -141,8 +143,8 @@ static int picolcd_fb_send_tile(struct picolcd_data *data, u8 *vbitmap,
 		else
 			hid_set_field(report2->field[0], 4 + i - 32, tdata[i]);
 
-	hid_hw_request(data->hdev, report1, HID_REQ_SET_REPORT);
-	hid_hw_request(data->hdev, report2, HID_REQ_SET_REPORT);
+	usbhid_submit_report(data->hdev, report1, USB_DIR_OUT);
+	usbhid_submit_report(data->hdev, report2, USB_DIR_OUT);
 	spin_unlock_irqrestore(&data->lock, flags);
 	return 0;
 }
@@ -212,7 +214,7 @@ int picolcd_fb_reset(struct picolcd_data *data, int clear)
 				hid_set_field(report->field[0], j, mapcmd[j]);
 			else
 				hid_set_field(report->field[0], j, 0);
-		hid_hw_request(data->hdev, report, HID_REQ_SET_REPORT);
+		usbhid_submit_report(data->hdev, report, USB_DIR_OUT);
 	}
 	spin_unlock_irqrestore(&data->lock, flags);
 
@@ -268,7 +270,7 @@ static void picolcd_fb_update(struct fb_info *info)
 				mutex_unlock(&info->lock);
 				if (!data)
 					return;
-				hid_hw_wait(data->hdev);
+				usbhid_wait_io(data->hdev);
 				mutex_lock(&info->lock);
 				n = 0;
 			}
@@ -286,7 +288,7 @@ static void picolcd_fb_update(struct fb_info *info)
 		spin_unlock_irqrestore(&fbdata->lock, flags);
 		mutex_unlock(&info->lock);
 		if (data)
-			hid_hw_wait(data->hdev);
+			usbhid_wait_io(data->hdev);
 		return;
 	}
 out:
@@ -501,7 +503,7 @@ static ssize_t picolcd_fb_update_rate_store(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(fb_update_rate, 0664, picolcd_fb_update_rate_show,
+static DEVICE_ATTR(fb_update_rate, 0666, picolcd_fb_update_rate_show,
 		picolcd_fb_update_rate_store);
 
 /* initialize Framebuffer device */
@@ -593,14 +595,10 @@ err_nomem:
 void picolcd_exit_framebuffer(struct picolcd_data *data)
 {
 	struct fb_info *info = data->fb_info;
-	struct picolcd_fb_data *fbdata;
+	struct picolcd_fb_data *fbdata = info->par;
 	unsigned long flags;
 
-	if (!info)
-		return;
-
 	device_remove_file(&data->hdev->dev, &dev_attr_fb_update_rate);
-	fbdata = info->par;
 
 	/* disconnect framebuffer from HID dev */
 	spin_lock_irqsave(&fbdata->lock, flags);

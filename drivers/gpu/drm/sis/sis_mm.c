@@ -109,8 +109,7 @@ static int sis_drm_alloc(struct drm_device *dev, struct drm_file *file,
 	if (pool == AGP_TYPE) {
 		retval = drm_mm_insert_node(&dev_priv->agp_mm,
 					    &item->mm_node,
-					    mem->size, 0,
-					    DRM_MM_SEARCH_DEFAULT);
+					    mem->size, 0);
 		offset = item->mm_node.start;
 	} else {
 #if defined(CONFIG_FB_SIS) || defined(CONFIG_FB_SIS_MODULE)
@@ -122,18 +121,24 @@ static int sis_drm_alloc(struct drm_device *dev, struct drm_file *file,
 #else
 		retval = drm_mm_insert_node(&dev_priv->vram_mm,
 					    &item->mm_node,
-					    mem->size, 0,
-					    DRM_MM_SEARCH_DEFAULT);
+					    mem->size, 0);
 		offset = item->mm_node.start;
 #endif
 	}
 	if (retval)
 		goto fail_alloc;
 
-	retval = idr_alloc(&dev_priv->object_idr, item, 1, 0, GFP_KERNEL);
-	if (retval < 0)
+again:
+	if (idr_pre_get(&dev_priv->object_idr, GFP_KERNEL) == 0) {
+		retval = -ENOMEM;
 		goto fail_idr;
-	user_key = retval;
+	}
+
+	retval = idr_get_new_above(&dev_priv->object_idr, item, 1, &user_key);
+	if (retval == -EAGAIN)
+		goto again;
+	if (retval)
+		goto fail_idr;
 
 	list_add(&item->owner_list, &file_priv->obj_list);
 	mutex_unlock(&dev->struct_mutex);
@@ -266,7 +271,7 @@ int sis_idle(struct drm_device *dev)
 	 * because its polling frequency is too low.
 	 */
 
-	end = jiffies + (HZ * 3);
+	end = jiffies + (DRM_HZ * 3);
 
 	for (i = 0; i < 4; ++i) {
 		do {
@@ -350,7 +355,7 @@ void sis_reclaim_buffers_locked(struct drm_device *dev,
 	return;
 }
 
-const struct drm_ioctl_desc sis_ioctls[] = {
+struct drm_ioctl_desc sis_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(SIS_FB_ALLOC, sis_fb_alloc, DRM_AUTH),
 	DRM_IOCTL_DEF_DRV(SIS_FB_FREE, sis_drm_free, DRM_AUTH),
 	DRM_IOCTL_DEF_DRV(SIS_AGP_INIT, sis_ioctl_agp_init, DRM_AUTH | DRM_MASTER | DRM_ROOT_ONLY),
@@ -359,4 +364,4 @@ const struct drm_ioctl_desc sis_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(SIS_FB_INIT, sis_fb_init, DRM_AUTH | DRM_MASTER | DRM_ROOT_ONLY),
 };
 
-int sis_max_ioctl = ARRAY_SIZE(sis_ioctls);
+int sis_max_ioctl = DRM_ARRAY_SIZE(sis_ioctls);

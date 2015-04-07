@@ -297,9 +297,6 @@ enum xfrm_attr_type_t {
 	XFRMA_MARK,		/* struct xfrm_mark */
 	XFRMA_TFCPAD,		/* __u32 */
 	XFRMA_REPLAY_ESN_VAL,	/* struct xfrm_replay_esn */
-	XFRMA_SA_EXTRA_FLAGS,	/* __u32 */
-	XFRMA_PROTO,		/* __u8 */
-	XFRMA_ADDRESS_FILTER,	/* struct xfrm_address_filter */
 	__XFRMA_MAX
 
 #define XFRMA_MAX (__XFRMA_MAX - 1)
@@ -369,8 +366,6 @@ struct xfrm_usersa_info {
 #define XFRM_STATE_ALIGN4	64
 #define XFRM_STATE_ESN		128
 };
-
-#define XFRM_SA_XFLAG_DONT_ENCAP_DSCP	1
 
 struct xfrm_usersa_id {
 	xfrm_address_t			daddr;
@@ -474,14 +469,6 @@ struct xfrm_user_mapping {
 	xfrm_address_t			new_saddr;
 	__be16				old_sport;
 	__be16				new_sport;
-};
-
-struct xfrm_address_filter {
-	xfrm_address_t			saddr;
-	xfrm_address_t			daddr;
-	__u16				family;
-	__u8				splen;
-	__u8				dplen;
 };
 
 #ifndef __KERNEL__

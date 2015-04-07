@@ -46,12 +46,6 @@ enum ccdc_input_entity {
 
 #define	OMAP3ISP_CCDC_NEVENTS	16
 
-struct ispccdc_fpc {
-	void *addr;
-	dma_addr_t dma;
-	unsigned int fpnum;
-};
-
 enum ispccdc_lsc_state {
 	LSC_STATE_STOPPED = 0,
 	LSC_STATE_STOPPING = 1,
@@ -63,16 +57,18 @@ struct ispccdc_lsc_config_req {
 	struct list_head list;
 	struct omap3isp_ccdc_lsc_config config;
 	unsigned char enable;
-
-	struct {
-		void *addr;
-		dma_addr_t dma;
-		struct sg_table sgt;
-	} table;
+	u32 table;
+	struct iovm_struct *iovm;
 };
 
 /*
  * ispccdc_lsc - CCDC LSC parameters
+ * @update_config: Set when user changes config
+ * @request_enable: Whether LSC is requested to be enabled
+ * @config: LSC config set by user
+ * @update_table: Set when user provides a new LSC table to table_new
+ * @table_new: LSC table set by user, ISP address
+ * @table_inuse: LSC table currently in use, ISP address
  */
 struct ispccdc_lsc {
 	enum ispccdc_lsc_state state;
@@ -146,7 +142,7 @@ struct isp_ccdc_device {
 		     fpc_en:1;
 	struct omap3isp_ccdc_blcomp blcomp;
 	struct omap3isp_ccdc_bclamp clamp;
-	struct ispccdc_fpc fpc;
+	struct omap3isp_ccdc_fpc fpc;
 	struct ispccdc_lsc lsc;
 	unsigned int update;
 	unsigned int shadow_update;

@@ -2267,11 +2267,13 @@ static unsigned int tomoyo_stat_modified[TOMOYO_MAX_POLICY_STAT];
  */
 void tomoyo_update_stat(const u8 index)
 {
+	struct timeval tv;
+	do_gettimeofday(&tv);
 	/*
 	 * I don't use atomic operations because race condition is not fatal.
 	 */
 	tomoyo_stat_updated[index]++;
-	tomoyo_stat_modified[index] = get_seconds();
+	tomoyo_stat_modified[index] = tv.tv_sec;
 }
 
 /**
@@ -2679,8 +2681,10 @@ out:
  * tomoyo_close_control - close() for /sys/kernel/security/tomoyo/ interface.
  *
  * @head: Pointer to "struct tomoyo_io_buffer".
+ *
+ * Returns 0.
  */
-void tomoyo_close_control(struct tomoyo_io_buffer *head)
+int tomoyo_close_control(struct tomoyo_io_buffer *head)
 {
 	/*
 	 * If the file is /sys/kernel/security/tomoyo/query , decrement the
@@ -2690,6 +2694,7 @@ void tomoyo_close_control(struct tomoyo_io_buffer *head)
 	    atomic_dec_and_test(&tomoyo_query_observers))
 		wake_up_all(&tomoyo_answer_wait);
 	tomoyo_notify_gc(head, false);
+	return 0;
 }
 
 /**

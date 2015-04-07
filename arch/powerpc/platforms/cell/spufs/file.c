@@ -149,6 +149,7 @@ static int __fops ## _open(struct inode *inode, struct file *file)	\
 	return spufs_attr_open(inode, file, __get, __set, __fmt);	\
 }									\
 static const struct file_operations __fops = {				\
+	.owner	 = THIS_MODULE,						\
 	.open	 = __fops ## _open,					\
 	.release = spufs_attr_release,					\
 	.read	 = spufs_attr_read,					\
@@ -351,7 +352,7 @@ static unsigned long spufs_get_unmapped_area(struct file *file,
 
 	/* Else, try to obtain a 64K pages slice */
 	return slice_get_unmapped_area(addr, len, flags,
-				       MMU_PAGE_64K, 1);
+				       MMU_PAGE_64K, 1, 0);
 }
 #endif /* CONFIG_SPU_FS_64K_LS */
 
@@ -1851,7 +1852,7 @@ out:
 
 static int spufs_mfc_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	int err = filemap_write_and_wait_range(inode->i_mapping, start, end);
 	if (!err) {
 		mutex_lock(&inode->i_mutex);
@@ -2338,6 +2339,7 @@ static const char *ctx_state_names[] = {
 static unsigned long long spufs_acct_time(struct spu_context *ctx,
 		enum spu_utilization_state state)
 {
+	struct timespec ts;
 	unsigned long long time = ctx->stats.times[state];
 
 	/*
@@ -2350,7 +2352,8 @@ static unsigned long long spufs_acct_time(struct spu_context *ctx,
 	 * of the spu context.
 	 */
 	if (ctx->spu && ctx->stats.util_state == state) {
-		time += ktime_get_ns() - ctx->stats.tstamp;
+		ktime_get_ts(&ts);
+		time += timespec_to_ns(&ts) - ctx->stats.tstamp;
 	}
 
 	return time / NSEC_PER_MSEC;
@@ -2498,7 +2501,7 @@ static int switch_log_sprint(struct spu_context *ctx, char *tbuf, int n)
 static ssize_t spufs_switch_log_read(struct file *file, char __user *buf,
 			     size_t len, loff_t *ppos)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	struct spu_context *ctx = SPUFS_I(inode)->i_ctx;
 	int error = 0, cnt = 0;
 
@@ -2568,7 +2571,7 @@ static ssize_t spufs_switch_log_read(struct file *file, char __user *buf,
 
 static unsigned int spufs_switch_log_poll(struct file *file, poll_table *wait)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	struct spu_context *ctx = SPUFS_I(inode)->i_ctx;
 	unsigned int mask = 0;
 	int rc;
@@ -2588,6 +2591,7 @@ static unsigned int spufs_switch_log_poll(struct file *file, poll_table *wait)
 }
 
 static const struct file_operations spufs_switch_log_fops = {
+	.owner		= THIS_MODULE,
 	.open		= spufs_switch_log_open,
 	.read		= spufs_switch_log_read,
 	.poll		= spufs_switch_log_poll,

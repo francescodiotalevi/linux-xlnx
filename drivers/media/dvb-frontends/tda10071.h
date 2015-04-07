@@ -21,7 +21,6 @@
 #ifndef TDA10071_H
 #define TDA10071_H
 
-#include <linux/kconfig.h>
 #include <linux/dvb/frontend.h>
 
 struct tda10071_config {
@@ -29,13 +28,7 @@ struct tda10071_config {
 	 * Default: none, must set
 	 * Values: 0x55,
 	 */
-	u8 demod_i2c_addr;
-
-	/* Tuner I2C address.
-	 * Default: none, must set
-	 * Values: 0x14, 0x54, ...
-	 */
-	u8 tuner_i2c_addr;
+	u8 i2c_address;
 
 	/* Max bytes I2C provider can write at once.
 	 * Note: Buffer is taken from the stack currently!
@@ -72,14 +65,15 @@ struct tda10071_config {
 };
 
 
-#if IS_ENABLED(CONFIG_DVB_TDA10071)
+#if defined(CONFIG_DVB_TDA10071) || \
+	(defined(CONFIG_DVB_TDA10071_MODULE) && defined(MODULE))
 extern struct dvb_frontend *tda10071_attach(
 	const struct tda10071_config *config, struct i2c_adapter *i2c);
 #else
 static inline struct dvb_frontend *tda10071_attach(
 	const struct tda10071_config *config, struct i2c_adapter *i2c)
 {
-	dev_warn(&i2c->dev, "%s: driver disabled by Kconfig\n", __func__);
+	printk(KERN_WARNING "%s: driver disabled by Kconfig\n", __func__);
 	return NULL;
 }
 #endif

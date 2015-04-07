@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
+#include <linux/ipipe.h>
 
 #include <trace/events/irq.h>
 
@@ -40,9 +41,10 @@ int irq_set_chip(unsigned int irq, struct irq_chip *chip)
 	irq_put_desc_unlock(desc, flags);
 	/*
 	 * For !CONFIG_SPARSE_IRQ make the irq show up in
-	 * allocated_irqs.
+	 * allocated_irqs. For the CONFIG_SPARSE_IRQ case, it is
+	 * already marked, and this call is harmless.
 	 */
-	irq_mark_irq(irq);
+	irq_reserve_irq(irq);
 	return 0;
 }
 EXPORT_SYMBOL(irq_set_chip);
@@ -89,29 +91,6 @@ int irq_set_handler_data(unsigned int irq, void *data)
 EXPORT_SYMBOL(irq_set_handler_data);
 
 /**
- *	irq_set_msi_desc_off - set MSI descriptor data for an irq at offset
- *	@irq_base:	Interrupt number base
- *	@irq_offset:	Interrupt number offset
- *	@entry:		Pointer to MSI descriptor data
- *
- *	Set the MSI descriptor entry for an irq at offset
- */
-int irq_set_msi_desc_off(unsigned int irq_base, unsigned int irq_offset,
-			 struct msi_desc *entry)
-{
-	unsigned long flags;
-	struct irq_desc *desc = irq_get_desc_lock(irq_base + irq_offset, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
-
-	if (!desc)
-		return -EINVAL;
-	desc->irq_data.msi_desc = entry;
-	if (entry && !irq_offset)
-		entry->irq = irq_base;
-	irq_put_desc_unlock(desc, flags);
-	return 0;
-}
-
-/**
  *	irq_set_msi_desc - set MSI descriptor data for an irq
  *	@irq:	Interrupt number
  *	@entry:	Pointer to MSI descriptor data
@@ -120,7 +99,16 @@ int irq_set_msi_desc_off(unsigned int irq_base, unsigned int irq_offset,
  */
 int irq_set_msi_desc(unsigned int irq, struct msi_desc *entry)
 {
-	return irq_set_msi_desc_off(irq, 0, entry);
+	unsigned long flags;
+	struct irq_desc *desc = irq_get_desc_lock(irq, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
+
+	if (!desc)
+		return -EINVAL;
+	desc->irq_data.msi_desc = entry;
+	if (entry)
+		entry->irq = irq;
+	irq_put_desc_unlock(desc, flags);
+	return 0;
 }
 
 /**
@@ -179,8 +167,10 @@ int irq_startup(struct irq_desc *desc, bool resend)
 	desc->depth = 0;
 
 	if (desc->irq_data.chip->irq_startup) {
+		unsigned long flags = hard_cond_local_irq_save();
 		ret = desc->irq_data.chip->irq_startup(&desc->irq_data);
 		irq_state_clr_masked(desc);
+		hard_cond_local_irq_restore(flags);
 	} else {
 		irq_enable(desc);
 	}
@@ -204,27 +194,16 @@ void irq_shutdown(struct irq_desc *desc)
 
 void irq_enable(struct irq_desc *desc)
 {
+	unsigned long flags = hard_cond_local_irq_save();
 	irq_state_clr_disabled(desc);
 	if (desc->irq_data.chip->irq_enable)
 		desc->irq_data.chip->irq_enable(&desc->irq_data);
 	else
 		desc->irq_data.chip->irq_unmask(&desc->irq_data);
 	irq_state_clr_masked(desc);
+	hard_cond_local_irq_restore(flags);
 }
 
-/**
- * irq_disable - Mark interrupt disabled
- * @desc:	irq descriptor which should be disabled
- *
- * If the chip does not implement the irq_disable callback, we
- * use a lazy disable approach. That means we mark the interrupt
- * disabled, but leave the hardware unmasked. That's an
- * optimization because we avoid the hardware access for the
- * common case where no interrupt happens after we marked it
- * disabled. If an interrupt happens, then the interrupt flow
- * handler masks the line at the hardware level and marks it
- * pending.
- */
 void irq_disable(struct irq_desc *desc)
 {
 	irq_state_set_disabled(desc);
@@ -236,11 +215,13 @@ void irq_disable(struct irq_desc *desc)
 
 void irq_percpu_enable(struct irq_desc *desc, unsigned int cpu)
 {
+	unsigned long flags = hard_cond_local_irq_save();
 	if (desc->irq_data.chip->irq_enable)
 		desc->irq_data.chip->irq_enable(&desc->irq_data);
 	else
 		desc->irq_data.chip->irq_unmask(&desc->irq_data);
 	cpumask_set_cpu(cpu, desc->percpu_enabled);
+	hard_cond_local_irq_restore(flags);
 }
 
 void irq_percpu_disable(struct irq_desc *desc, unsigned int cpu)
@@ -274,22 +255,13 @@ void mask_irq(struct irq_desc *desc)
 
 void unmask_irq(struct irq_desc *desc)
 {
+	unsigned long flags;
+
 	if (desc->irq_data.chip->irq_unmask) {
+		flags = hard_cond_local_irq_save();
 		desc->irq_data.chip->irq_unmask(&desc->irq_data);
 		irq_state_clr_masked(desc);
-	}
-}
-
-void unmask_threaded_irq(struct irq_desc *desc)
-{
-	struct irq_chip *chip = desc->irq_data.chip;
-
-	if (chip->flags & IRQCHIP_EOI_THREADED)
-		chip->irq_eoi(&desc->irq_data);
-
-	if (chip->irq_unmask) {
-		chip->irq_unmask(&desc->irq_data);
-		irq_state_clr_masked(desc);
+		hard_cond_local_irq_restore(flags);
 	}
 }
 
@@ -410,7 +382,9 @@ void
 handle_level_irq(unsigned int irq, struct irq_desc *desc)
 {
 	raw_spin_lock(&desc->lock);
+#ifndef CONFIG_IPIPE
 	mask_ack_irq(desc);
+#endif
 
 	if (unlikely(irqd_irq_inprogress(&desc->irq_data)))
 		if (!irq_check_poll(desc))
@@ -447,26 +421,14 @@ static inline void preflow_handler(struct irq_desc *desc)
 static inline void preflow_handler(struct irq_desc *desc) { }
 #endif
 
-static void cond_unmask_eoi_irq(struct irq_desc *desc, struct irq_chip *chip)
+#ifdef CONFIG_IPIPE
+static void cond_release_fasteoi_irq(struct irq_desc *desc)
 {
-	if (!(desc->istate & IRQS_ONESHOT)) {
-		chip->irq_eoi(&desc->irq_data);
-		return;
-	}
-	/*
-	 * We need to unmask in the following cases:
-	 * - Oneshot irq which did not wake the thread (caused by a
-	 *   spurious interrupt or a primary handler handling it
-	 *   completely).
-	 */
-	if (!irqd_irq_disabled(&desc->irq_data) &&
-	    irqd_irq_masked(&desc->irq_data) && !desc->threads_oneshot) {
-		chip->irq_eoi(&desc->irq_data);
-		unmask_irq(desc);
-	} else if (!(chip->flags & IRQCHIP_EOI_THREADED)) {
-		chip->irq_eoi(&desc->irq_data);
-	}
+	if (desc->irq_data.chip->irq_release && 
+	    !irqd_irq_disabled(&desc->irq_data) && !desc->threads_oneshot)
+		desc->irq_data.chip->irq_release(&desc->irq_data);
 }
+#endif /* CONFIG_IPIPE */
 
 /**
  *	handle_fasteoi_irq - irq handler for transparent controllers
@@ -481,8 +443,6 @@ static void cond_unmask_eoi_irq(struct irq_desc *desc, struct irq_chip *chip)
 void
 handle_fasteoi_irq(unsigned int irq, struct irq_desc *desc)
 {
-	struct irq_chip *chip = desc->irq_data.chip;
-
 	raw_spin_lock(&desc->lock);
 
 	if (unlikely(irqd_irq_inprogress(&desc->irq_data)))
@@ -502,22 +462,34 @@ handle_fasteoi_irq(unsigned int irq, struct irq_desc *desc)
 		goto out;
 	}
 
+#ifndef CONFIG_IPIPE
 	if (desc->istate & IRQS_ONESHOT)
 		mask_irq(desc);
+#endif
 
 	preflow_handler(desc);
 	handle_irq_event(desc);
 
-	cond_unmask_eoi_irq(desc, chip);
+#ifdef CONFIG_IPIPE
+	/* IRQCHIP_EOI_IF_HANDLED is ignored as I-pipe ends it early on
+	 * acceptance. */
+	cond_release_fasteoi_irq(desc);
+out_eoi:
+#else  /* !CONFIG_IPIPE */
+	if (desc->istate & IRQS_ONESHOT)
+		cond_unmask_irq(desc);
 
+out_eoi:
+	desc->irq_data.chip->irq_eoi(&desc->irq_data);
+#endif	/* !CONFIG_IPIPE */
+out_unlock:
 	raw_spin_unlock(&desc->lock);
 	return;
 out:
-	if (!(chip->flags & IRQCHIP_EOI_IF_HANDLED))
-		chip->irq_eoi(&desc->irq_data);
-	raw_spin_unlock(&desc->lock);
+	if (!(desc->irq_data.chip->flags & IRQCHIP_EOI_IF_HANDLED))
+		goto out_eoi;
+	goto out_unlock;
 }
-EXPORT_SYMBOL_GPL(handle_fasteoi_irq);
 
 /**
  *	handle_edge_irq - edge type IRQ handler
@@ -557,7 +529,9 @@ handle_edge_irq(unsigned int irq, struct irq_desc *desc)
 	kstat_incr_irqs_this_cpu(irq, desc);
 
 	/* Start handling the irq */
+#ifndef CONFIG_IPIPE
 	desc->irq_data.chip->irq_ack(&desc->irq_data);
+#endif
 
 	do {
 		if (unlikely(!desc->action)) {
@@ -645,6 +619,16 @@ handle_percpu_irq(unsigned int irq, struct irq_desc *desc)
 
 	kstat_incr_irqs_this_cpu(irq, desc);
 
+#ifdef CONFIG_IPIPE
+	(void)chip;
+
+	handle_irq_event_percpu(desc, desc->action);
+
+	if (cpumask_test_cpu(smp_processor_id(), desc->percpu_enabled) &&
+	    !irqd_irq_masked(&desc->irq_data) &&
+	    !desc->threads_oneshot)
+		desc->ipipe_end(desc->irq_data.irq, desc);
+#else
 	if (chip->irq_ack)
 		chip->irq_ack(&desc->irq_data);
 
@@ -652,6 +636,7 @@ handle_percpu_irq(unsigned int irq, struct irq_desc *desc)
 
 	if (chip->irq_eoi)
 		chip->irq_eoi(&desc->irq_data);
+#endif
 }
 
 /**
@@ -675,16 +660,142 @@ void handle_percpu_devid_irq(unsigned int irq, struct irq_desc *desc)
 
 	kstat_incr_irqs_this_cpu(irq, desc);
 
+#ifndef CONFIG_IPIPE
 	if (chip->irq_ack)
 		chip->irq_ack(&desc->irq_data);
+#else
+	(void)chip;
+#endif
 
 	trace_irq_handler_entry(irq, action);
 	res = action->handler(irq, dev_id);
 	trace_irq_handler_exit(irq, action, res);
 
+#ifndef CONFIG_IPIPE
 	if (chip->irq_eoi)
 		chip->irq_eoi(&desc->irq_data);
+#else
+	;
+	if (cpumask_test_cpu(smp_processor_id(), desc->percpu_enabled) && 
+	    !irqd_irq_masked(&desc->irq_data) &&
+	    !desc->threads_oneshot)
+		desc->ipipe_end(desc->irq_data.irq, desc);
+#endif
 }
+
+#ifdef CONFIG_IPIPE
+
+void __ipipe_ack_level_irq(unsigned irq, struct irq_desc *desc)
+{
+	mask_ack_irq(desc);
+}
+
+void __ipipe_end_level_irq(unsigned irq, struct irq_desc *desc)
+{
+	desc->irq_data.chip->irq_unmask(&desc->irq_data);
+}
+
+void __ipipe_ack_fasteoi_irq(unsigned irq, struct irq_desc *desc)
+{
+	desc->irq_data.chip->irq_hold(&desc->irq_data);
+}
+
+void __ipipe_end_fasteoi_irq(unsigned irq, struct irq_desc *desc)
+{
+	if (desc->irq_data.chip->irq_release)
+		desc->irq_data.chip->irq_release(&desc->irq_data);
+}
+
+void __ipipe_ack_edge_irq(unsigned irq, struct irq_desc *desc)
+{
+	desc->irq_data.chip->irq_ack(&desc->irq_data);
+}
+
+void __ipipe_ack_percpu_irq(unsigned irq, struct irq_desc *desc)
+{
+	if (desc->irq_data.chip->irq_ack)
+		desc->irq_data.chip->irq_ack(&desc->irq_data);
+
+	if (desc->irq_data.chip->irq_eoi)
+		desc->irq_data.chip->irq_eoi(&desc->irq_data);
+}
+
+void __ipipe_nop_irq(unsigned irq, struct irq_desc *desc)
+{
+}
+
+void __ipipe_chained_irq(unsigned irq, struct irq_desc *desc)
+{
+	/*
+	 * XXX: Do NOT fold this into __ipipe_nop_irq(), see
+	 * ipipe_chained_irq_p().
+	 */
+}
+
+static void __ipipe_ack_bad_irq(unsigned irq, struct irq_desc *desc)
+{
+	handle_bad_irq(irq, desc);
+	WARN_ON_ONCE(1);
+}
+
+irq_flow_handler_t
+__fixup_irq_handler(struct irq_desc *desc, irq_flow_handler_t handle, int is_chained)
+{
+	if (unlikely(handle == NULL)) {
+		desc->ipipe_ack = __ipipe_ack_bad_irq;
+		desc->ipipe_end = __ipipe_nop_irq;
+	} else {
+		if (is_chained) {
+			desc->ipipe_ack = handle;
+			desc->ipipe_end = __ipipe_nop_irq;
+			handle = __ipipe_chained_irq;
+		} else if (handle == handle_simple_irq) {
+			desc->ipipe_ack = __ipipe_nop_irq;
+			desc->ipipe_end = __ipipe_nop_irq;
+		} else if (handle == handle_level_irq) {
+			desc->ipipe_ack = __ipipe_ack_level_irq;
+			desc->ipipe_end = __ipipe_end_level_irq;
+		} else if (handle == handle_edge_irq) {
+			desc->ipipe_ack = __ipipe_ack_edge_irq;
+			desc->ipipe_end = __ipipe_nop_irq;
+		} else if (handle == handle_fasteoi_irq) {
+			desc->ipipe_ack = __ipipe_ack_fasteoi_irq;
+			desc->ipipe_end = __ipipe_end_fasteoi_irq;
+		} else if (handle == handle_percpu_irq ||
+			   handle == handle_percpu_devid_irq) {
+			if (irq_desc_get_chip(desc) &&
+			    irq_desc_get_chip(desc)->irq_hold) {
+				desc->ipipe_ack = __ipipe_ack_fasteoi_irq;
+				desc->ipipe_end = __ipipe_end_fasteoi_irq;
+			} else {
+				desc->ipipe_ack = __ipipe_ack_percpu_irq;
+				desc->ipipe_end = __ipipe_nop_irq;
+			}
+		} else if (irq_desc_get_chip(desc) == &no_irq_chip) {
+			desc->ipipe_ack = __ipipe_nop_irq;
+			desc->ipipe_end = __ipipe_nop_irq;
+		} else {
+			desc->ipipe_ack = __ipipe_ack_bad_irq;
+			desc->ipipe_end = __ipipe_nop_irq;
+		}
+	}
+
+	/* Suppress intermediate trampoline routine. */
+	ipipe_root_domain->irqs[desc->irq_data.irq].ackfn = desc->ipipe_ack;
+
+	return handle;
+}
+
+#else /* !CONFIG_IPIPE */
+
+irq_flow_handler_t
+__fixup_irq_handler(struct irq_desc *desc, irq_flow_handler_t handle, int is_chained)
+{
+	return handle;
+}
+
+#endif /* !CONFIG_IPIPE */
+EXPORT_SYMBOL_GPL(__fixup_irq_handler);
 
 void
 __irq_set_handler(unsigned int irq, irq_flow_handler_t handle, int is_chained,
@@ -702,6 +813,8 @@ __irq_set_handler(unsigned int irq, irq_flow_handler_t handle, int is_chained,
 		if (WARN_ON(desc->irq_data.chip == &no_irq_chip))
 			goto out;
 	}
+
+	handle = __fixup_irq_handler(desc, handle, is_chained);
 
 	/* Uninstall? */
 	if (handle == handle_bad_irq) {

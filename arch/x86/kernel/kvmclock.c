@@ -48,9 +48,10 @@ static struct pvclock_wall_clock wall_clock;
  * have elapsed since the hypervisor wrote the data. So we try to account for
  * that with system time
  */
-static void kvm_get_wallclock(struct timespec *now)
+static unsigned long kvm_get_wallclock(void)
 {
 	struct pvclock_vcpu_time_info *vcpu_time;
+	struct timespec ts;
 	int low, high;
 	int cpu;
 
@@ -63,12 +64,14 @@ static void kvm_get_wallclock(struct timespec *now)
 	cpu = smp_processor_id();
 
 	vcpu_time = &hv_clock[cpu].pvti;
-	pvclock_read_wallclock(&wall_clock, vcpu_time, now);
+	pvclock_read_wallclock(&wall_clock, vcpu_time, &ts);
 
 	preempt_enable();
+
+	return ts.tv_sec;
 }
 
-static int kvm_set_wallclock(const struct timespec *now)
+static int kvm_set_wallclock(unsigned long now)
 {
 	return -1;
 }
@@ -139,7 +142,6 @@ bool kvm_check_and_clear_guest_paused(void)
 	src = &hv_clock[cpu].pvti;
 	if ((src->flags & PVCLOCK_GUEST_STOPPED) != 0) {
 		src->flags &= ~PVCLOCK_GUEST_STOPPED;
-		pvclock_touch_watchdogs();
 		ret = true;
 	}
 
@@ -158,14 +160,10 @@ int kvm_register_clock(char *txt)
 {
 	int cpu = smp_processor_id();
 	int low, high, ret;
-	struct pvclock_vcpu_time_info *src;
+	struct pvclock_vcpu_time_info *src = &hv_clock[cpu].pvti;
 
-	if (!hv_clock)
-		return 0;
-
-	src = &hv_clock[cpu].pvti;
-	low = (int)slow_virt_to_phys(src) | 1;
-	high = ((u64)slow_virt_to_phys(src) >> 32);
+	low = (int)__pa(src) | 1;
+	high = ((u64)__pa(src) >> 32);
 	ret = native_write_msr_safe(msr_kvm_system_time, low, high);
 	printk(KERN_INFO "kvm-clock: cpu %d, msr %x:%x, %s\n",
 	       cpu, high, low, txt);
@@ -183,7 +181,7 @@ static void kvm_restore_sched_clock_state(void)
 }
 
 #ifdef CONFIG_X86_LOCAL_APIC
-static void kvm_setup_secondary_clock(void)
+static void __cpuinit kvm_setup_secondary_clock(void)
 {
 	/*
 	 * Now that the first cpu already had this clocksource initialized,
@@ -220,9 +218,6 @@ static void kvm_shutdown(void)
 void __init kvmclock_init(void)
 {
 	unsigned long mem;
-	int size;
-
-	size = PAGE_ALIGN(sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS);
 
 	if (!kvm_para_available())
 		return;
@@ -236,15 +231,16 @@ void __init kvmclock_init(void)
 	printk(KERN_INFO "kvm-clock: Using msrs %x and %x",
 		msr_kvm_system_time, msr_kvm_wall_clock);
 
-	mem = memblock_alloc(size, PAGE_SIZE);
+	mem = memblock_alloc(sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS,
+			     PAGE_SIZE);
 	if (!mem)
 		return;
 	hv_clock = __va(mem);
-	memset(hv_clock, 0, size);
 
-	if (kvm_register_clock("primary cpu clock")) {
+	if (kvm_register_clock("boot clock")) {
 		hv_clock = NULL;
-		memblock_free(mem, size);
+		memblock_free(mem,
+			sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS);
 		return;
 	}
 	pv_time_ops.sched_clock = kvm_clock_read;
@@ -279,10 +275,7 @@ int __init kvm_setup_vsyscall_timeinfo(void)
 	struct pvclock_vcpu_time_info *vcpu_time;
 	unsigned int size;
 
-	if (!hv_clock)
-		return 0;
-
-	size = PAGE_ALIGN(sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS);
+	size = sizeof(struct pvclock_vsyscall_time_info)*NR_CPUS;
 
 	preempt_disable();
 	cpu = smp_processor_id();

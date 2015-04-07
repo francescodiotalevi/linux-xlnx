@@ -174,7 +174,7 @@ static int snd_at73c213_set_bitrate(struct snd_at73c213 *chip)
 		dac_rate_new = 8 * (ssc_rate / ssc_div);
 
 		status = clk_round_rate(chip->board->dac_clk, dac_rate_new);
-		if (status <= 0)
+		if (status < 0)
 			return status;
 
 		/* Ignore difference smaller than 256 Hz. */
@@ -927,6 +927,8 @@ static int snd_at73c213_dev_init(struct snd_card *card,
 	if (retval)
 		goto out_snd_dev;
 
+	snd_card_set_dev(card, &spi->dev);
+
 	goto out;
 
 out_snd_dev:
@@ -964,8 +966,8 @@ static int snd_at73c213_probe(struct spi_device *spi)
 
 	/* Allocate "card" using some unused identifiers. */
 	snprintf(id, sizeof id, "at73c213_%d", board->ssc_id);
-	retval = snd_card_new(&spi->dev, -1, id, THIS_MODULE,
-			      sizeof(struct snd_at73c213), &card);
+	retval = snd_card_create(-1, id, THIS_MODULE,
+				 sizeof(struct snd_at73c213), &card);
 	if (retval < 0)
 		goto out;
 
@@ -1068,15 +1070,15 @@ out:
 
 	ssc_free(chip->ssc);
 	snd_card_free(card);
+	dev_set_drvdata(&spi->dev, NULL);
 
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-
-static int snd_at73c213_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int snd_at73c213_suspend(struct spi_device *spi, pm_message_t msg)
 {
-	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_card *card = dev_get_drvdata(&spi->dev);
 	struct snd_at73c213 *chip = card->private_data;
 
 	ssc_writel(chip->ssc->regs, CR, SSC_BIT(CR_TXDIS));
@@ -1085,9 +1087,9 @@ static int snd_at73c213_suspend(struct device *dev)
 	return 0;
 }
 
-static int snd_at73c213_resume(struct device *dev)
+static int snd_at73c213_resume(struct spi_device *spi)
 {
-	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_card *card = dev_get_drvdata(&spi->dev);
 	struct snd_at73c213 *chip = card->private_data;
 
 	clk_enable(chip->board->dac_clk);
@@ -1095,21 +1097,18 @@ static int snd_at73c213_resume(struct device *dev)
 
 	return 0;
 }
-
-static SIMPLE_DEV_PM_OPS(at73c213_pm_ops, snd_at73c213_suspend,
-		snd_at73c213_resume);
-#define AT73C213_PM_OPS (&at73c213_pm_ops)
-
 #else
-#define AT73C213_PM_OPS NULL
+#define snd_at73c213_suspend NULL
+#define snd_at73c213_resume NULL
 #endif
 
 static struct spi_driver at73c213_driver = {
 	.driver		= {
 		.name	= "at73c213",
-		.pm	= AT73C213_PM_OPS,
 	},
 	.probe		= snd_at73c213_probe,
+	.suspend	= snd_at73c213_suspend,
+	.resume		= snd_at73c213_resume,
 	.remove		= snd_at73c213_remove,
 };
 

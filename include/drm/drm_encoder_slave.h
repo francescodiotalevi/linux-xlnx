@@ -159,47 +159,4 @@ static inline void drm_i2c_encoder_unregister(struct drm_i2c_encoder_driver *dri
 
 void drm_i2c_encoder_destroy(struct drm_encoder *encoder);
 
-/**
- * struct drm_platform_encoder_driver
- * @platform_driver: platform device driver
- * @encoder_init: callback to initialize the slave encoder
- *
- * Describes a device driver for an encoder connected to
- * through a platform bus. In addition to the entry points in @platform_driver
- * an @encoder_init function should be provided. It will be called to
- * give the driver an opportunity to allocate any per-encoder data
- * structures and to initialize the @slave_funcs and (optionally)
- * @slave_priv members of @encoder.
- */
-struct drm_platform_encoder_driver {
-	struct platform_driver platform_driver;
-
-	int (*encoder_init)(struct platform_device *pdev,
-			    struct drm_device *dev,
-			    struct drm_encoder_slave *encoder);
-
-};
-#define to_drm_platform_encoder_driver(x) container_of((x), \
-						       struct drm_platform_encoder_driver, \
-						       platform_driver)
-
-/*
- * Wrapper fxns which can be plugged in to drm_encoder_helper_funcs:
- */
-
-void drm_i2c_encoder_dpms(struct drm_encoder *encoder, int mode);
-bool drm_i2c_encoder_mode_fixup(struct drm_encoder *encoder,
-		const struct drm_display_mode *mode,
-		struct drm_display_mode *adjusted_mode);
-void drm_i2c_encoder_prepare(struct drm_encoder *encoder);
-void drm_i2c_encoder_commit(struct drm_encoder *encoder);
-void drm_i2c_encoder_mode_set(struct drm_encoder *encoder,
-		struct drm_display_mode *mode,
-		struct drm_display_mode *adjusted_mode);
-enum drm_connector_status drm_i2c_encoder_detect(struct drm_encoder *encoder,
-	    struct drm_connector *connector);
-void drm_i2c_encoder_save(struct drm_encoder *encoder);
-void drm_i2c_encoder_restore(struct drm_encoder *encoder);
-
-
 #endif

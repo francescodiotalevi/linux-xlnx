@@ -23,9 +23,8 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/module.h>
-#include <linux/i2c.h>
 #include "cx25821.h"
+#include <linux/i2c.h>
 
 static unsigned int i2c_debug;
 module_param(i2c_debug, int, 0644);

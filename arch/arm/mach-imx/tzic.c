@@ -17,7 +17,6 @@
 #include <linux/io.h>
 #include <linux/irqdomain.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 
 #include <asm/mach/irq.h>
 #include <asm/exception.h>
@@ -50,7 +49,7 @@
 #define TZIC_SWINT	0x0F00	/* Software Interrupt Rigger Register */
 #define TZIC_ID0	0x0FD0	/* Indentification Register 0 */
 
-static void __iomem *tzic_base;
+void __iomem *tzic_base; /* Used as irq controller base in entry-macro.S */
 static struct irq_domain *domain;
 
 #define TZIC_NUM_IRQS 128
@@ -117,6 +116,9 @@ static __init void tzic_init_gc(int idx, unsigned int irq_start)
 	ct = gc->chip_types;
 	ct->chip.irq_mask = irq_gc_mask_disable_reg;
 	ct->chip.irq_unmask = irq_gc_unmask_enable_reg;
+#ifdef CONFIG_IPIPE
+	ct->chip.irq_mask_ack = irq_gc_mask_disable_reg;
+#endif /* CONFIG_IPIPE */
 	ct->chip.irq_set_wake = irq_gc_set_wake;
 	ct->chip.irq_suspend = tzic_irq_suspend;
 	ct->chip.irq_resume = tzic_irq_resume;
@@ -126,7 +128,7 @@ static __init void tzic_init_gc(int idx, unsigned int irq_start)
 	irq_setup_generic_chip(gc, IRQ_MSK(32), 0, IRQ_NOREQUEST, 0);
 }
 
-static void __exception_irq_entry tzic_handle_irq(struct pt_regs *regs)
+asmlinkage void __exception_irq_entry tzic_handle_irq(struct pt_regs *regs)
 {
 	u32 stat;
 	int i, irqofs, handled;
@@ -141,7 +143,7 @@ static void __exception_irq_entry tzic_handle_irq(struct pt_regs *regs)
 			while (stat) {
 				handled = 1;
 				irqofs = fls(stat) - 1;
-				handle_IRQ(irq_find_mapping(domain,
+				ipipe_handle_multi_irq(irq_find_mapping(domain,
 						irqofs + i * 32), regs);
 				stat &= ~(1 << irqofs);
 			}
@@ -149,29 +151,52 @@ static void __exception_irq_entry tzic_handle_irq(struct pt_regs *regs)
 	} while (handled);
 }
 
+ 
+#if defined(CONFIG_IPIPE)
+void tzic_set_irq_prio(unsigned irq, unsigned hi)
+{
+	if (irq >= TZIC_NUM_IRQS)
+		return;
+
+	__raw_writeb(hi ? 0 : 0x80, tzic_base + TZIC_PRIORITY0 + irq);
+}
+
+void tzic_mute_pic(void)
+{
+	__raw_writel(0x10, tzic_base + TZIC_PRIOMASK);
+}
+
+void tzic_unmute_pic(void)
+{
+	__raw_writel(0xf0, tzic_base + TZIC_PRIOMASK);
+}
+#endif /* CONFIG_IPIPE */
+
 /*
  * This function initializes the TZIC hardware and disables all the
  * interrupts. It registers the interrupt enable and disable functions
  * to the kernel for each interrupt source.
  */
-void __init tzic_init_irq(void)
+void __init tzic_init_irq(void __iomem *irqbase)
 {
 	struct device_node *np;
 	int irq_base;
 	int i;
 
-	np = of_find_compatible_node(NULL, NULL, "fsl,tzic");
-	tzic_base = of_iomap(np, 0);
-	WARN_ON(!tzic_base);
-
+	tzic_base = irqbase;
 	/* put the TZIC into the reset value with
 	 * all interrupts disabled
 	 */
 	i = __raw_readl(tzic_base + TZIC_INTCNTL);
 
 	__raw_writel(0x80010001, tzic_base + TZIC_INTCNTL);
+#ifndef CONFIG_IPIPE
 	__raw_writel(0x1f, tzic_base + TZIC_PRIOMASK);
 	__raw_writel(0x02, tzic_base + TZIC_SYNCCTRL);
+#else
+	__raw_writel(0xf0, tzic_base + TZIC_PRIOMASK);
+	__raw_writel(0, tzic_base + TZIC_SYNCCTRL);
+#endif
 
 	for (i = 0; i < 4; i++)
 		__raw_writel(0xFFFFFFFF, tzic_base + TZIC_INTSEC0(i));
@@ -185,14 +210,13 @@ void __init tzic_init_irq(void)
 	irq_base = irq_alloc_descs(-1, 0, TZIC_NUM_IRQS, numa_node_id());
 	WARN_ON(irq_base < 0);
 
+	np = of_find_compatible_node(NULL, NULL, "fsl,tzic");
 	domain = irq_domain_add_legacy(np, TZIC_NUM_IRQS, irq_base, 0,
 				       &irq_domain_simple_ops, NULL);
 	WARN_ON(!domain);
 
 	for (i = 0; i < 4; i++, irq_base += 32)
 		tzic_init_gc(i, irq_base);
-
-	set_handle_irq(tzic_handle_irq);
 
 #ifdef CONFIG_FIQ
 	/* Initialize FIQ */

@@ -55,8 +55,6 @@ struct sdo_device {
 	struct clk *dacphy;
 	/** clock for control of VPLL */
 	struct clk *fout_vpll;
-	/** vpll rate before sdo stream was on */
-	unsigned long vpll_rate;
 	/** regulator for SDO IP power */
 	struct regulator *vdac;
 	/** regulator for SDO plug detection */
@@ -195,33 +193,17 @@ static int sdo_s_power(struct v4l2_subdev *sd, int on)
 
 static int sdo_streamon(struct sdo_device *sdev)
 {
-	int ret;
-
 	/* set proper clock for Timing Generator */
-	sdev->vpll_rate = clk_get_rate(sdev->fout_vpll);
-	ret = clk_set_rate(sdev->fout_vpll, 54000000);
-	if (ret < 0) {
-		dev_err(sdev->dev, "Failed to set vpll rate\n");
-		return ret;
-	}
+	clk_set_rate(sdev->fout_vpll, 54000000);
 	dev_info(sdev->dev, "fout_vpll.rate = %lu\n",
 	clk_get_rate(sdev->fout_vpll));
 	/* enable clock in SDO */
 	sdo_write_mask(sdev, SDO_CLKCON, ~0, SDO_TVOUT_CLOCK_ON);
-	ret = clk_prepare_enable(sdev->dacphy);
-	if (ret < 0) {
-		dev_err(sdev->dev, "clk_prepare_enable(dacphy) failed\n");
-		goto fail;
-	}
+	clk_enable(sdev->dacphy);
 	/* enable DAC */
 	sdo_write_mask(sdev, SDO_DAC, ~0, SDO_POWER_ON_DAC);
 	sdo_reg_debug(sdev);
 	return 0;
-
-fail:
-	sdo_write_mask(sdev, SDO_CLKCON, 0, SDO_TVOUT_CLOCK_ON);
-	clk_set_rate(sdev->fout_vpll, sdev->vpll_rate);
-	return ret;
 }
 
 static int sdo_streamoff(struct sdo_device *sdev)
@@ -229,7 +211,7 @@ static int sdo_streamoff(struct sdo_device *sdev)
 	int tries;
 
 	sdo_write_mask(sdev, SDO_DAC, 0, SDO_POWER_ON_DAC);
-	clk_disable_unprepare(sdev->dacphy);
+	clk_disable(sdev->dacphy);
 	sdo_write_mask(sdev, SDO_CLKCON, 0, SDO_TVOUT_CLOCK_ON);
 	for (tries = 100; tries; --tries) {
 		if (sdo_read(sdev, SDO_CLKCON) & SDO_TVOUT_CLOCK_READY)
@@ -238,7 +220,6 @@ static int sdo_streamoff(struct sdo_device *sdev)
 	}
 	if (tries == 0)
 		dev_err(sdev->dev, "failed to stop streaming\n");
-	clk_set_rate(sdev->fout_vpll, sdev->vpll_rate);
 	return tries ? 0 : -EIO;
 }
 
@@ -273,7 +254,7 @@ static int sdo_runtime_suspend(struct device *dev)
 	dev_info(dev, "suspend\n");
 	regulator_disable(sdev->vdet);
 	regulator_disable(sdev->vdac);
-	clk_disable_unprepare(sdev->sclk_dac);
+	clk_disable(sdev->sclk_dac);
 	return 0;
 }
 
@@ -281,21 +262,11 @@ static int sdo_runtime_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct sdo_device *sdev = sd_to_sdev(sd);
-	int ret;
 
 	dev_info(dev, "resume\n");
-
-	ret = clk_prepare_enable(sdev->sclk_dac);
-	if (ret < 0)
-		return ret;
-
-	ret = regulator_enable(sdev->vdac);
-	if (ret < 0)
-		goto dac_clk_dis;
-
-	ret = regulator_enable(sdev->vdet);
-	if (ret < 0)
-		goto vdac_r_dis;
+	clk_enable(sdev->sclk_dac);
+	regulator_enable(sdev->vdac);
+	regulator_enable(sdev->vdet);
 
 	/* software reset */
 	sdo_write_mask(sdev, SDO_CLKCON, ~0, SDO_TVOUT_SW_RESET);
@@ -314,12 +285,6 @@ static int sdo_runtime_resume(struct device *dev)
 		SDO_COMPENSATION_CVBS_COMP_OFF);
 	sdo_reg_debug(sdev);
 	return 0;
-
-vdac_r_dis:
-	regulator_disable(sdev->vdac);
-dac_clk_dis:
-	clk_disable_unprepare(sdev->sclk_dac);
-	return ret;
 }
 
 static const struct dev_pm_ops sdo_pm_ops = {
@@ -336,7 +301,7 @@ static int sdo_probe(struct platform_device *pdev)
 	struct clk *sclk_vpll;
 
 	dev_info(dev, "probe start\n");
-	sdev = devm_kzalloc(&pdev->dev, sizeof(*sdev), GFP_KERNEL);
+	sdev = devm_kzalloc(&pdev->dev, sizeof *sdev, GFP_KERNEL);
 	if (!sdev) {
 		dev_err(dev, "not enough memory.\n");
 		ret = -ENOMEM;
@@ -376,59 +341,52 @@ static int sdo_probe(struct platform_device *pdev)
 
 	/* acquire clocks */
 	sdev->sclk_dac = clk_get(dev, "sclk_dac");
-	if (IS_ERR(sdev->sclk_dac)) {
+	if (IS_ERR_OR_NULL(sdev->sclk_dac)) {
 		dev_err(dev, "failed to get clock 'sclk_dac'\n");
-		ret = PTR_ERR(sdev->sclk_dac);
+		ret = -ENXIO;
 		goto fail;
 	}
 	sdev->dac = clk_get(dev, "dac");
-	if (IS_ERR(sdev->dac)) {
+	if (IS_ERR_OR_NULL(sdev->dac)) {
 		dev_err(dev, "failed to get clock 'dac'\n");
-		ret = PTR_ERR(sdev->dac);
+		ret = -ENXIO;
 		goto fail_sclk_dac;
 	}
 	sdev->dacphy = clk_get(dev, "dacphy");
-	if (IS_ERR(sdev->dacphy)) {
+	if (IS_ERR_OR_NULL(sdev->dacphy)) {
 		dev_err(dev, "failed to get clock 'dacphy'\n");
-		ret = PTR_ERR(sdev->dacphy);
+		ret = -ENXIO;
 		goto fail_dac;
 	}
 	sclk_vpll = clk_get(dev, "sclk_vpll");
-	if (IS_ERR(sclk_vpll)) {
+	if (IS_ERR_OR_NULL(sclk_vpll)) {
 		dev_err(dev, "failed to get clock 'sclk_vpll'\n");
-		ret = PTR_ERR(sclk_vpll);
+		ret = -ENXIO;
 		goto fail_dacphy;
 	}
 	clk_set_parent(sdev->sclk_dac, sclk_vpll);
 	clk_put(sclk_vpll);
 	sdev->fout_vpll = clk_get(dev, "fout_vpll");
-	if (IS_ERR(sdev->fout_vpll)) {
+	if (IS_ERR_OR_NULL(sdev->fout_vpll)) {
 		dev_err(dev, "failed to get clock 'fout_vpll'\n");
-		ret = PTR_ERR(sdev->fout_vpll);
 		goto fail_dacphy;
 	}
 	dev_info(dev, "fout_vpll.rate = %lu\n", clk_get_rate(sclk_vpll));
 
 	/* acquire regulator */
 	sdev->vdac = devm_regulator_get(dev, "vdd33a_dac");
-	if (IS_ERR(sdev->vdac)) {
+	if (IS_ERR_OR_NULL(sdev->vdac)) {
 		dev_err(dev, "failed to get regulator 'vdac'\n");
-		ret = PTR_ERR(sdev->vdac);
 		goto fail_fout_vpll;
 	}
 	sdev->vdet = devm_regulator_get(dev, "vdet");
-	if (IS_ERR(sdev->vdet)) {
+	if (IS_ERR_OR_NULL(sdev->vdet)) {
 		dev_err(dev, "failed to get regulator 'vdet'\n");
-		ret = PTR_ERR(sdev->vdet);
 		goto fail_fout_vpll;
 	}
 
 	/* enable gate for dac clock, because mixer uses it */
-	ret = clk_prepare_enable(sdev->dac);
-	if (ret < 0) {
-		dev_err(dev, "clk_prepare_enable(dac) failed\n");
-		goto fail_fout_vpll;
-	}
+	clk_enable(sdev->dac);
 
 	/* configure power management */
 	pm_runtime_enable(dev);
@@ -436,7 +394,7 @@ static int sdo_probe(struct platform_device *pdev)
 	/* configuration of interface subdevice */
 	v4l2_subdev_init(&sdev->sd, &sdo_sd_ops);
 	sdev->sd.owner = THIS_MODULE;
-	strlcpy(sdev->sd.name, "s5p-sdo", sizeof(sdev->sd.name));
+	strlcpy(sdev->sd.name, "s5p-sdo", sizeof sdev->sd.name);
 
 	/* set default format */
 	sdev->fmt = sdo_find_format(SDO_DEFAULT_STD);
@@ -467,7 +425,7 @@ static int sdo_remove(struct platform_device *pdev)
 	struct sdo_device *sdev = sd_to_sdev(sd);
 
 	pm_runtime_disable(&pdev->dev);
-	clk_disable_unprepare(sdev->dac);
+	clk_disable(sdev->dac);
 	clk_put(sdev->fout_vpll);
 	clk_put(sdev->dacphy);
 	clk_put(sdev->dac);

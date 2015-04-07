@@ -8,13 +8,24 @@
 struct real_mode_header *real_mode_header;
 u32 *trampoline_cr4_features;
 
-void __init reserve_real_mode(void)
+void __init setup_real_mode(void)
 {
 	phys_addr_t mem;
+	u16 real_mode_seg;
+	u32 *rel;
+	u32 count;
+	u32 *ptr;
+	u16 *seg;
+	int i;
 	unsigned char *base;
+	struct trampoline_header *trampoline_header;
 	size_t size = PAGE_ALIGN(real_mode_blob_end - real_mode_blob);
+#ifdef CONFIG_X86_64
+	u64 *trampoline_pgd;
+	u64 efer;
+#endif
 
-	/* Has to be under 1M so we can execute real-mode AP code. */
+	/* Has to be in very low memory so we can execute real-mode AP code. */
 	mem = memblock_find_in_range(0, 1<<20, size, PAGE_SIZE);
 	if (!mem)
 		panic("Cannot allocate trampoline\n");
@@ -24,43 +35,26 @@ void __init reserve_real_mode(void)
 	real_mode_header = (struct real_mode_header *) base;
 	printk(KERN_DEBUG "Base memory trampoline at [%p] %llx size %zu\n",
 	       base, (unsigned long long)mem, size);
-}
-
-void __init setup_real_mode(void)
-{
-	u16 real_mode_seg;
-	const u32 *rel;
-	u32 count;
-	unsigned char *base;
-	unsigned long phys_base;
-	struct trampoline_header *trampoline_header;
-	size_t size = PAGE_ALIGN(real_mode_blob_end - real_mode_blob);
-#ifdef CONFIG_X86_64
-	u64 *trampoline_pgd;
-	u64 efer;
-#endif
-
-	base = (unsigned char *)real_mode_header;
 
 	memcpy(base, real_mode_blob, size);
 
-	phys_base = __pa(base);
-	real_mode_seg = phys_base >> 4;
-
+	real_mode_seg = __pa(base) >> 4;
 	rel = (u32 *) real_mode_relocs;
 
 	/* 16-bit segment relocations. */
-	count = *rel++;
-	while (count--) {
-		u16 *seg = (u16 *) (base + *rel++);
+	count = rel[0];
+	rel = &rel[1];
+	for (i = 0; i < count; i++) {
+		seg = (u16 *) (base + rel[i]);
 		*seg = real_mode_seg;
 	}
 
 	/* 32-bit linear relocations. */
-	count = *rel++;
-	while (count--) {
-		u32 *ptr = (u32 *) (base + *rel++);
-		*ptr += phys_base;
+	count = rel[i];
+	rel =  &rel[i + 1];
+	for (i = 0; i < count; i++) {
+		ptr = (u32 *) (base + rel[i]);
+		*ptr += __pa(base);
 	}
 
 	/* Must be perfomed *after* relocation. */
@@ -68,9 +62,9 @@ void __init setup_real_mode(void)
 		__va(real_mode_header->trampoline_header);
 
 #ifdef CONFIG_X86_32
-	trampoline_header->start = __pa_symbol(startup_32_smp);
+	trampoline_header->start = __pa(startup_32_smp);
 	trampoline_header->gdt_limit = __BOOT_DS + 7;
-	trampoline_header->gdt_base = __pa_symbol(boot_gdt);
+	trampoline_header->gdt_base = __pa(boot_gdt);
 #else
 	/*
 	 * Some AMD processors will #GP(0) if EFER.LMA is set in WRMSR
@@ -84,18 +78,16 @@ void __init setup_real_mode(void)
 	*trampoline_cr4_features = read_cr4();
 
 	trampoline_pgd = (u64 *) __va(real_mode_header->trampoline_pgd);
-	trampoline_pgd[0] = init_level4_pgt[pgd_index(__PAGE_OFFSET)].pgd;
-	trampoline_pgd[511] = init_level4_pgt[511].pgd;
+	trampoline_pgd[0] = __pa(level3_ident_pgt) + _KERNPG_TABLE;
+	trampoline_pgd[511] = __pa(level3_kernel_pgt) + _KERNPG_TABLE;
 #endif
 }
 
 /*
- * reserve_real_mode() gets called very early, to guarantee the
- * availability of low memory. This is before the proper kernel page
+ * set_real_mode_permissions() gets called very early, to guarantee the
+ * availability of low memory.  This is before the proper kernel page
  * tables are set up, so we cannot set page permissions in that
- * function. Also trampoline code will be executed by APs so we
- * need to mark it executable at do_pre_smp_initcalls() at least,
- * thus run it as a early_initcall().
+ * function.  Thus, we use an arch_initcall instead.
  */
 static int __init set_real_mode_permissions(void)
 {
@@ -119,4 +111,5 @@ static int __init set_real_mode_permissions(void)
 
 	return 0;
 }
-early_initcall(set_real_mode_permissions);
+
+arch_initcall(set_real_mode_permissions);

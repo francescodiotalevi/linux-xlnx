@@ -80,7 +80,6 @@
 #include <linux/slab.h>
 #include <linux/prefetch.h>
 #include <net/tcp.h>
-#include <net/checksum.h>
 
 #include <asm/div64.h>
 #include <asm/irq.h>
@@ -471,7 +470,7 @@ module_param_array(rts_frm_len, uint, NULL, 0);
  * S2IO device table.
  * This table lists all the devices that this driver supports.
  */
-static const struct pci_device_id s2io_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(s2io_tbl) = {
 	{PCI_VENDOR_ID_S2IO, PCI_DEVICE_ID_S2IO_WIN,
 	 PCI_ANY_ID, PCI_ANY_ID},
 	{PCI_VENDOR_ID_S2IO, PCI_DEVICE_ID_S2IO_UNI,
@@ -531,6 +530,15 @@ static inline void s2io_start_all_tx_queue(struct s2io_nic *sp)
 		for (i = 0; i < sp->config.tx_fifo_num; i++)
 			sp->mac_control.fifos[i].queue_state = FIFO_QUEUE_START;
 	}
+	netif_tx_start_all_queues(sp->dev);
+}
+
+static inline void s2io_start_tx_queue(struct s2io_nic *sp, int fifo_no)
+{
+	if (!sp->config.multiq)
+		sp->mac_control.fifos[fifo_no].queue_state =
+			FIFO_QUEUE_START;
+
 	netif_tx_start_all_queues(sp->dev);
 }
 
@@ -2905,9 +2913,6 @@ static int rx_intr_handler(struct ring_info *ring_data, int budget)
 	struct RxD1 *rxdp1;
 	struct RxD3 *rxdp3;
 
-	if (budget <= 0)
-		return napi_pkts;
-
 	get_info = ring_data->rx_curr_get_info;
 	get_block = get_info.block_index;
 	memcpy(&put_info, &ring_data->rx_curr_put_info, sizeof(put_info));
@@ -3786,10 +3791,9 @@ static int s2io_enable_msi_x(struct s2io_nic *nic)
 	writeq(rx_mat, &bar0->rx_mat);
 	readq(&bar0->rx_mat);
 
-	ret = pci_enable_msix_range(nic->pdev, nic->entries,
-				    nic->num_entries, nic->num_entries);
+	ret = pci_enable_msix(nic->pdev, nic->entries, nic->num_entries);
 	/* We fail init if error or we get less vectors than min required */
-	if (ret < 0) {
+	if (ret) {
 		DBG_PRINT(ERR_DBG, "Enabling MSI-X failed\n");
 		kfree(nic->entries);
 		swstats->mem_freed += nic->num_entries *
@@ -4040,7 +4044,7 @@ static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (!is_s2io_card_up(sp)) {
 		DBG_PRINT(TX_DBG, "%s: Card going down for reset\n",
 			  dev->name);
-		dev_kfree_skb_any(skb);
+		dev_kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
 
@@ -4113,7 +4117,7 @@ static netdev_tx_t s2io_xmit(struct sk_buff *skb, struct net_device *dev)
 	    ((put_off+1) == queue_len ? 0 : (put_off+1)) == get_off) {
 		DBG_PRINT(TX_DBG, "Error in xmit, No free TXDs.\n");
 		s2io_stop_tx_queue(sp, fifo->fifo_no);
-		dev_kfree_skb_any(skb);
+		dev_kfree_skb(skb);
 		spin_unlock_irqrestore(&fifo->tx_lock, flags);
 		return NETDEV_TX_OK;
 	}
@@ -4235,7 +4239,7 @@ pci_map_failed:
 	swstats->pci_map_fail_cnt++;
 	s2io_stop_tx_queue(sp, fifo->fifo_no);
 	swstats->mem_freed += skb->truesize;
-	dev_kfree_skb_any(skb);
+	dev_kfree_skb(skb);
 	spin_unlock_irqrestore(&fifo->tx_lock, flags);
 	return NETDEV_TX_OK;
 }
@@ -5360,8 +5364,8 @@ static int s2io_ethtool_gset(struct net_device *dev, struct ethtool_cmd *info)
 		ethtool_cmd_speed_set(info, SPEED_10000);
 		info->duplex = DUPLEX_FULL;
 	} else {
-		ethtool_cmd_speed_set(info, SPEED_UNKNOWN);
-		info->duplex = DUPLEX_UNKNOWN;
+		ethtool_cmd_speed_set(info, -1);
+		info->duplex = -1;
 	}
 
 	info->autoneg = AUTONEG_DISABLE;
@@ -7910,12 +7914,12 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 
 	/*  Driver entry points */
 	dev->netdev_ops = &s2io_netdev_ops;
-	dev->ethtool_ops = &netdev_ethtool_ops;
+	SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
 	dev->hw_features = NETIF_F_SG | NETIF_F_IP_CSUM |
 		NETIF_F_TSO | NETIF_F_TSO6 |
 		NETIF_F_RXCSUM | NETIF_F_LRO;
 	dev->features |= dev->hw_features |
-		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
+		NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
 	if (sp->device_type & XFRAME_II_DEVICE) {
 		dev->hw_features |= NETIF_F_UFO;
 		if (ufo)
@@ -8010,6 +8014,7 @@ s2io_init_nic(struct pci_dev *pdev, const struct pci_device_id *pre)
 	/*  Set the factory defined MAC address initially   */
 	dev->addr_len = ETH_ALEN;
 	memcpy(dev->dev_addr, sp->def_mac_addr, ETH_ALEN);
+	memcpy(dev->perm_addr, dev->dev_addr, ETH_ALEN);
 
 	/* initialize number of multicast & unicast MAC entries variables */
 	if (sp->device_type == XFRAME_I_DEVICE) {
@@ -8180,6 +8185,7 @@ mem_alloc_failed:
 	free_shared_mem(sp);
 	pci_disable_device(pdev);
 	pci_release_regions(pdev);
+	pci_set_drvdata(pdev, NULL);
 	free_netdev(dev);
 
 	return ret;
@@ -8215,6 +8221,7 @@ static void s2io_rem_nic(struct pci_dev *pdev)
 	iounmap(sp->bar0);
 	iounmap(sp->bar1);
 	pci_release_regions(pdev);
+	pci_set_drvdata(pdev, NULL);
 	free_netdev(dev);
 	pci_disable_device(pdev);
 }
@@ -8331,13 +8338,16 @@ static void update_L3L4_header(struct s2io_nic *sp, struct lro *lro)
 {
 	struct iphdr *ip = lro->iph;
 	struct tcphdr *tcp = lro->tcph;
+	__sum16 nchk;
 	struct swStat *swstats = &sp->mac_control.stats_info->sw_stat;
 
 	DBG_PRINT(INFO_DBG, "%s: Been here...\n", __func__);
 
 	/* Update L3 header */
-	csum_replace2(&ip->check, ip->tot_len, htons(lro->total_len));
 	ip->tot_len = htons(lro->total_len);
+	ip->check = 0;
+	nchk = ip_fast_csum((u8 *)lro->iph, ip->ihl);
+	ip->check = nchk;
 
 	/* Update L4 header */
 	tcp->ack_seq = lro->tcp_ack;
@@ -8548,7 +8558,7 @@ static void queue_rx_frame(struct sk_buff *skb, u16 vlan_tag)
 
 	skb->protocol = eth_type_trans(skb, dev);
 	if (vlan_tag && sp->vlan_strip_flag)
-		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan_tag);
+		__vlan_hwaccel_put_tag(skb, vlan_tag);
 	if (sp->config.napi)
 		netif_receive_skb(skb);
 	else

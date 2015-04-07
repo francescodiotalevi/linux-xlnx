@@ -2,13 +2,14 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/mman.h>
-#include <linux/types.h>
+#include "types.h"
 #include "perf.h"
 #include "debug.h"
 #include "tests.h"
-#include "cloexec.h"
 
 #if defined(__x86_64__) || defined(__i386__)
+
+#define barrier() asm volatile("" ::: "memory")
 
 static u64 rdpmc(unsigned int counter)
 {
@@ -105,8 +106,7 @@ static int __test__rdpmc(void)
 	sa.sa_sigaction = segfault_handler;
 	sigaction(SIGSEGV, &sa, NULL);
 
-	fd = sys_perf_event_open(&attr, 0, -1, -1,
-				 perf_event_open_cloexec_flag());
+	fd = sys_perf_event_open(&attr, 0, -1, -1, 0);
 	if (fd < 0) {
 		pr_err("Error: sys_perf_event_open() syscall returned "
 		       "with %d (%s)\n", fd, strerror(errno));

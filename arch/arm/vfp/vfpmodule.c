@@ -20,7 +20,6 @@
 #include <linux/init.h>
 #include <linux/uaccess.h>
 #include <linux/user.h>
-#include <linux/export.h>
 
 #include <asm/cp15.h>
 #include <asm/cputype.h>
@@ -93,6 +92,7 @@ static void vfp_force_reload(unsigned int cpu, struct thread_info *thread)
 static void vfp_thread_flush(struct thread_info *thread)
 {
 	union vfp_state *vfp = &thread->vfpstate;
+	unsigned long flags;
 	unsigned int cpu;
 
 	/*
@@ -103,11 +103,11 @@ static void vfp_thread_flush(struct thread_info *thread)
 	 * Do this first to ensure that preemption won't overwrite our
 	 * state saving should access to the VFP be enabled at this point.
 	 */
-	cpu = get_cpu();
+	cpu = __ipipe_get_cpu(flags);
 	if (vfp_current_hw_state[cpu] == vfp)
 		vfp_current_hw_state[cpu] = NULL;
 	fmxr(FPEXC, fmrx(FPEXC) & ~FPEXC_EN);
-	put_cpu();
+	__ipipe_put_cpu(flags);
 
 	memset(vfp, 0, sizeof(union vfp_state));
 
@@ -122,11 +122,12 @@ static void vfp_thread_exit(struct thread_info *thread)
 {
 	/* release case: Per-thread VFP cleanup. */
 	union vfp_state *vfp = &thread->vfpstate;
-	unsigned int cpu = get_cpu();
+	unsigned long flags;
+	unsigned int cpu = __ipipe_get_cpu(flags);
 
 	if (vfp_current_hw_state[cpu] == vfp)
 		vfp_current_hw_state[cpu] = NULL;
-	put_cpu();
+	__ipipe_put_cpu(flags);
 }
 
 static void vfp_thread_copy(struct thread_info *thread)
@@ -166,6 +167,7 @@ static void vfp_thread_copy(struct thread_info *thread)
 static int vfp_notifier(struct notifier_block *self, unsigned long cmd, void *v)
 {
 	struct thread_info *thread = v;
+	unsigned long flags;
 	u32 fpexc;
 #ifdef CONFIG_SMP
 	unsigned int cpu;
@@ -173,8 +175,9 @@ static int vfp_notifier(struct notifier_block *self, unsigned long cmd, void *v)
 
 	switch (cmd) {
 	case THREAD_NOTIFY_SWITCH:
-		fpexc = fmrx(FPEXC);
 
+		flags = hard_cond_local_irq_save();
+		fpexc = fmrx(FPEXC);
 #ifdef CONFIG_SMP
 		cpu = thread->cpu;
 
@@ -192,6 +195,7 @@ static int vfp_notifier(struct notifier_block *self, unsigned long cmd, void *v)
 		 * old state.
 		 */
 		fmxr(FPEXC, fpexc & ~FPEXC_EN);
+		hard_cond_local_irq_restore(flags);
 		break;
 
 	case THREAD_NOTIFY_FLUSH:
@@ -335,7 +339,7 @@ static u32 vfp_emulate_instruction(u32 inst, u32 fpscr, struct pt_regs *regs)
  */
 void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 {
-	u32 fpscr, orig_fpscr, fpsid, exceptions;
+	u32 fpscr, orig_fpscr, fpsid, exceptions, next_trigger = 0;
 
 	pr_debug("VFP: bounce: trigger %08x fpexc %08x\n", trigger, fpexc);
 
@@ -365,6 +369,7 @@ void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 		/*
 		 * Synchronous exception, emulate the trigger instruction
 		 */
+		hard_cond_local_irq_enable();
 		goto emulate;
 	}
 
@@ -377,7 +382,18 @@ void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 		trigger = fmrx(FPINST);
 		regs->ARM_pc -= 4;
 #endif
-	} else if (!(fpexc & FPEXC_DEX)) {
+		if (fpexc & FPEXC_FP2V) {
+			/*
+			 * The barrier() here prevents fpinst2 being read
+			 * before the condition above.
+			 */
+			barrier();
+			next_trigger = fmrx(FPINST2);
+		}
+	}
+	hard_cond_local_irq_enable();
+
+	if (!(fpexc & (FPEXC_EX | FPEXC_DEX))) {
 		/*
 		 * Illegal combination of bits. It can be caused by an
 		 * unallocated VFP instruction but with FPSCR.IXE set and not
@@ -414,21 +430,17 @@ void VFP_bounce(u32 trigger, u32 fpexc, struct pt_regs *regs)
 	 * If there isn't a second FP instruction, exit now. Note that
 	 * the FPEXC.FP2V bit is valid only if FPEXC.EX is 1.
 	 */
-	if ((fpexc & (FPEXC_EX | FPEXC_FP2V)) != (FPEXC_EX | FPEXC_FP2V))
+	if (fpexc ^ (FPEXC_EX | FPEXC_FP2V))
 		goto exit;
 
-	/*
-	 * The barrier() here prevents fpinst2 being read
-	 * before the condition above.
-	 */
-	barrier();
-	trigger = fmrx(FPINST2);
+	trigger = next_trigger;
 
  emulate:
 	exceptions = vfp_emulate_instruction(trigger, orig_fpscr, regs);
 	if (exceptions)
 		vfp_raise_exceptions(exceptions, trigger, orig_fpscr, regs);
  exit:
+	hard_cond_local_irq_enable();
 	preempt_enable();
 }
 
@@ -515,7 +527,8 @@ static inline void vfp_pm_init(void) { }
  */
 void vfp_sync_hwstate(struct thread_info *thread)
 {
-	unsigned int cpu = get_cpu();
+	unsigned long flags;
+	unsigned int cpu = __ipipe_get_cpu(flags);
 
 	if (vfp_state_in_hw(cpu, thread)) {
 		u32 fpexc = fmrx(FPEXC);
@@ -528,17 +541,18 @@ void vfp_sync_hwstate(struct thread_info *thread)
 		fmxr(FPEXC, fpexc);
 	}
 
-	put_cpu();
+	__ipipe_put_cpu(flags);
 }
 
 /* Ensure that the thread reloads the hardware VFP state on the next use. */
 void vfp_flush_hwstate(struct thread_info *thread)
 {
-	unsigned int cpu = get_cpu();
+	unsigned long flags;
+	unsigned int cpu = __ipipe_get_cpu(flags);
 
 	vfp_force_reload(cpu, thread);
 
-	put_cpu();
+	__ipipe_put_cpu(flags);
 }
 
 /*
@@ -642,78 +656,12 @@ int vfp_restore_user_hwstate(struct user_vfp __user *ufp,
 static int vfp_hotplug(struct notifier_block *b, unsigned long action,
 	void *hcpu)
 {
-	if (action == CPU_DYING || action == CPU_DYING_FROZEN)
-		vfp_current_hw_state[(long)hcpu] = NULL;
-	else if (action == CPU_STARTING || action == CPU_STARTING_FROZEN)
+	if (action == CPU_DYING || action == CPU_DYING_FROZEN) {
+		vfp_force_reload((long)hcpu, current_thread_info());
+	} else if (action == CPU_STARTING || action == CPU_STARTING_FROZEN)
 		vfp_enable(NULL);
 	return NOTIFY_OK;
 }
-
-void vfp_kmode_exception(void)
-{
-	/*
-	 * If we reach this point, a floating point exception has been raised
-	 * while running in kernel mode. If the NEON/VFP unit was enabled at the
-	 * time, it means a VFP instruction has been issued that requires
-	 * software assistance to complete, something which is not currently
-	 * supported in kernel mode.
-	 * If the NEON/VFP unit was disabled, and the location pointed to below
-	 * is properly preceded by a call to kernel_neon_begin(), something has
-	 * caused the task to be scheduled out and back in again. In this case,
-	 * rebuilding and running with CONFIG_DEBUG_ATOMIC_SLEEP enabled should
-	 * be helpful in localizing the problem.
-	 */
-	if (fmrx(FPEXC) & FPEXC_EN)
-		pr_crit("BUG: unsupported FP instruction in kernel mode\n");
-	else
-		pr_crit("BUG: FP instruction issued in kernel mode with FP unit disabled\n");
-}
-
-#ifdef CONFIG_KERNEL_MODE_NEON
-
-/*
- * Kernel-side NEON support functions
- */
-void kernel_neon_begin(void)
-{
-	struct thread_info *thread = current_thread_info();
-	unsigned int cpu;
-	u32 fpexc;
-
-	/*
-	 * Kernel mode NEON is only allowed outside of interrupt context
-	 * with preemption disabled. This will make sure that the kernel
-	 * mode NEON register contents never need to be preserved.
-	 */
-	BUG_ON(in_interrupt());
-	cpu = get_cpu();
-
-	fpexc = fmrx(FPEXC) | FPEXC_EN;
-	fmxr(FPEXC, fpexc);
-
-	/*
-	 * Save the userland NEON/VFP state. Under UP,
-	 * the owner could be a task other than 'current'
-	 */
-	if (vfp_state_in_hw(cpu, thread))
-		vfp_save_state(&thread->vfpstate, fpexc);
-#ifndef CONFIG_SMP
-	else if (vfp_current_hw_state[cpu] != NULL)
-		vfp_save_state(vfp_current_hw_state[cpu], fpexc);
-#endif
-	vfp_current_hw_state[cpu] = NULL;
-}
-EXPORT_SYMBOL(kernel_neon_begin);
-
-void kernel_neon_end(void)
-{
-	/* Disable the NEON/VFP unit. */
-	fmxr(FPEXC, fmrx(FPEXC) & ~FPEXC_EN);
-	put_cpu();
-}
-EXPORT_SYMBOL(kernel_neon_end);
-
-#endif /* CONFIG_KERNEL_MODE_NEON */
 
 /*
  * VFP support code initialisation.
@@ -798,4 +746,4 @@ static int __init vfp_init(void)
 	return 0;
 }
 
-core_initcall(vfp_init);
+late_initcall(vfp_init);

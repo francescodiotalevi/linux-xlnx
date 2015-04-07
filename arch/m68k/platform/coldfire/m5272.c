@@ -39,7 +39,6 @@ DEFINE_CLK(mcftmr2, "mcftmr.2", MCF_BUSCLK);
 DEFINE_CLK(mcftmr3, "mcftmr.3", MCF_BUSCLK);
 DEFINE_CLK(mcfuart0, "mcfuart.0", MCF_BUSCLK);
 DEFINE_CLK(mcfuart1, "mcfuart.1", MCF_BUSCLK);
-DEFINE_CLK(mcfqspi0, "mcfqspi.0", MCF_BUSCLK);
 DEFINE_CLK(fec0, "fec.0", MCF_BUSCLK);
 
 struct clk *mcf_clks[] = {
@@ -51,7 +50,6 @@ struct clk *mcf_clks[] = {
 	&clk_mcftmr3,
 	&clk_mcfuart0,
 	&clk_mcfuart1,
-	&clk_mcfqspi0,
 	&clk_fec0,
 	NULL
 };

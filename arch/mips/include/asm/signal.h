@@ -21,6 +21,4 @@
 #include <asm/sigcontext.h>
 #include <asm/siginfo.h>
 
-#define __ARCH_HAS_IRIX_SIGACTION
-
 #endif /* _ASM_SIGNAL_H */

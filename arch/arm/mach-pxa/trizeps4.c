@@ -332,7 +332,8 @@ static int trizeps4_mci_init(struct device *dev, irq_handler_t mci_detect_int,
 	int err;
 
 	err = request_irq(TRIZEPS4_MMC_IRQ, mci_detect_int,
-			  IRQF_TRIGGER_RISING, "MMC card detect", data);
+			  IRQF_DISABLED | IRQF_TRIGGER_RISING,
+			  "MMC card detect", data);
 	if (err) {
 		printk(KERN_ERR "trizeps4_mci_init: MMC/SD: can't request"
 						"MMC card detect IRQ\n");
@@ -560,7 +561,7 @@ MACHINE_START(TRIZEPS4, "Keith und Koep Trizeps IV module")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
 	.handle_irq	= pxa27x_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer		= &pxa_timer,
 	.restart	= pxa_restart,
 MACHINE_END
 
@@ -572,6 +573,6 @@ MACHINE_START(TRIZEPS4WL, "Keith und Koep Trizeps IV-WL module")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
 	.handle_irq	= pxa27x_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer		= &pxa_timer,
 	.restart	= pxa_restart,
 MACHINE_END

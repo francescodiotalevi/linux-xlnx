@@ -214,6 +214,10 @@ void ptrace_break(struct task_struct *tsk, struct pt_regs *regs)
 
 static int break_trap(struct pt_regs *regs, unsigned int instr)
 {
+
+	if (__ipipe_report_trap(IPIPE_TRAP_BREAK,regs))
+		return 0;
+
 	ptrace_break(current, regs);
 	return 0;
 }
@@ -849,7 +853,7 @@ long arch_ptrace(struct task_struct *child, long request,
 #endif
 
 		case PTRACE_GET_THREAD_AREA:
-			ret = put_user(task_thread_info(child)->tp_value[0],
+			ret = put_user(task_thread_info(child)->tp_value,
 				       datap);
 			break;
 
@@ -886,12 +890,20 @@ long arch_ptrace(struct task_struct *child, long request,
 
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 		case PTRACE_GETHBPREGS:
+			if (ptrace_get_breakpoints(child) < 0)
+				return -ESRCH;
+
 			ret = ptrace_gethbpregs(child, addr,
 						(unsigned long __user *)data);
+			ptrace_put_breakpoints(child);
 			break;
 		case PTRACE_SETHBPREGS:
+			if (ptrace_get_breakpoints(child) < 0)
+				return -ESRCH;
+
 			ret = ptrace_sethbpregs(child, addr,
 						(unsigned long __user *)data);
+			ptrace_put_breakpoints(child);
 			break;
 #endif
 
@@ -908,7 +920,7 @@ enum ptrace_syscall_dir {
 	PTRACE_SYSCALL_EXIT,
 };
 
-static void tracehook_report_syscall(struct pt_regs *regs,
+static int tracehook_report_syscall(struct pt_regs *regs,
 				    enum ptrace_syscall_dir dir)
 {
 	unsigned long ip;
@@ -926,6 +938,7 @@ static void tracehook_report_syscall(struct pt_regs *regs,
 		current_thread_info()->syscall = -1;
 
 	regs->ARM_ip = ip;
+	return current_thread_info()->syscall;
 }
 
 asmlinkage int syscall_trace_enter(struct pt_regs *regs, int scno)
@@ -937,9 +950,7 @@ asmlinkage int syscall_trace_enter(struct pt_regs *regs, int scno)
 		return -1;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall(regs, PTRACE_SYSCALL_ENTER);
-
-	scno = current_thread_info()->syscall;
+		scno = tracehook_report_syscall(regs, PTRACE_SYSCALL_ENTER);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
 		trace_sys_enter(regs, scno);

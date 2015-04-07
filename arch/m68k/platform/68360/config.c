@@ -11,7 +11,6 @@
  */
 
 #include <stdarg.h>
-#include <linux/init.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -59,7 +58,7 @@ static irqreturn_t hw_tick(int irq, void *dummy)
 
 static struct irqaction m68360_timer_irq = {
 	.name	 = "timer",
-	.flags	 = IRQF_TIMER,
+	.flags	 = IRQF_DISABLED | IRQF_TIMER,
 	.handler = hw_tick,
 };
 
@@ -141,7 +140,7 @@ _bsc1(char *, getbenv, char *, a)
 #endif
 
 
-void __init config_BSP(char *command, int len)
+void config_BSP(char *command, int len)
 {
   unsigned char *p;
 

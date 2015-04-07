@@ -24,7 +24,6 @@ class Unsup(Exception):
 
 class Event(dict):
     terms = [
-        'cpu',
         'flags',
         'type',
         'size',
@@ -69,7 +68,7 @@ class Event(dict):
             self[key] = val
 
     def __init__(self, name, data, base):
-        log.debug("    Event %s" % name);
+        log.info("    Event %s" % name);
         self.name  = name;
         self.group = ''
         self.add(base)
@@ -97,14 +96,6 @@ class Event(dict):
             if not self.compare_data(self[t], other[t]):
                 return False
         return True
-
-    def diff(self, other):
-        for t in Event.terms:
-            if not self.has_key(t) or not other.has_key(t):
-                continue
-            if not self.compare_data(self[t], other[t]):
-		log.warning("expected %s=%s, got %s" % (t, self[t], other[t]))
-                
 
 # Test file description needs to have following sections:
 # [config]
@@ -137,7 +128,7 @@ class Test(object):
 
         self.expect   = {}
         self.result   = {}
-        log.debug("  loading expected events");
+        log.info("  loading expected events");
         self.load_events(path, self.expect)
 
     def is_event(self, name):
@@ -173,7 +164,7 @@ class Test(object):
               self.perf, self.command, tempdir, self.args)
         ret = os.WEXITSTATUS(os.system(cmd))
 
-        log.info("  '%s' ret %d " % (cmd, ret))
+        log.info("  running '%s' ret %d " % (cmd, ret))
 
         if ret != int(self.ret):
             raise Unsup(self)
@@ -181,7 +172,7 @@ class Test(object):
     def compare(self, expect, result):
         match = {}
 
-        log.debug("  compare");
+        log.info("  compare");
 
         # For each expected event find all matching
         # events in result. Fail if there's not any.
@@ -196,11 +187,10 @@ class Test(object):
                 else:
                     log.debug("    ->FAIL");
 
-            log.debug("    match: [%s] matches %s" % (exp_name, str(exp_list)))
+            log.info("    match: [%s] matches %s" % (exp_name, str(exp_list)))
 
             # we did not any matching event - fail
             if (not exp_list):
-		exp_event.diff(res_event)
                 raise Fail(self, 'match failure');
 
             match[exp_name] = exp_list
@@ -218,10 +208,10 @@ class Test(object):
                 if res_group not in match[group]:
                     raise Fail(self, 'group failure')
 
-                log.debug("    group: [%s] matches group leader %s" %
+                log.info("    group: [%s] matches group leader %s" %
                          (exp_name, str(match[group])))
 
-        log.debug("  matched")
+        log.info("  matched")
 
     def resolve_groups(self, events):
         for name, event in events.items():
@@ -243,7 +233,7 @@ class Test(object):
             self.run_cmd(tempdir);
 
             # load events expectation for the test
-            log.debug("  loading result events");
+            log.info("  loading result events");
             for f in glob.glob(tempdir + '/event*'):
                 self.load_events(f, self.result);
 

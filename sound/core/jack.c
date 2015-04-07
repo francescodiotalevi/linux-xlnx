@@ -34,23 +34,6 @@ static int jack_switch_types[SND_JACK_SWITCH_TYPES] = {
 	SW_LINEIN_INSERT,
 };
 
-static int snd_jack_dev_disconnect(struct snd_device *device)
-{
-	struct snd_jack *jack = device->device_data;
-
-	if (!jack->input_dev)
-		return 0;
-
-	/* If the input device is registered with the input subsystem
-	 * then we need to use a different deallocator. */
-	if (jack->registered)
-		input_unregister_device(jack->input_dev);
-	else
-		input_free_device(jack->input_dev);
-	jack->input_dev = NULL;
-	return 0;
-}
-
 static int snd_jack_dev_free(struct snd_device *device)
 {
 	struct snd_jack *jack = device->device_data;
@@ -58,7 +41,12 @@ static int snd_jack_dev_free(struct snd_device *device)
 	if (jack->private_free)
 		jack->private_free(jack);
 
-	snd_jack_dev_disconnect(device);
+	/* If the input device is registered with the input subsystem
+	 * then we need to use a different deallocator. */
+	if (jack->registered)
+		input_unregister_device(jack->input_dev);
+	else
+		input_free_device(jack->input_dev);
 
 	kfree(jack->id);
 	kfree(jack);
@@ -110,8 +98,8 @@ static int snd_jack_dev_register(struct snd_device *device)
  *
  * Creates a new jack object.
  *
- * Return: Zero if successful, or a negative error code on failure.
- * On success @jjack will be initialised.
+ * Returns zero if successful, or a negative error code on failure.
+ * On success jjack will be initialised.
  */
 int snd_jack_new(struct snd_card *card, const char *id, int type,
 		 struct snd_jack **jjack)
@@ -122,7 +110,6 @@ int snd_jack_new(struct snd_card *card, const char *id, int type,
 	static struct snd_device_ops ops = {
 		.dev_free = snd_jack_dev_free,
 		.dev_register = snd_jack_dev_register,
-		.dev_disconnect = snd_jack_dev_disconnect,
 	};
 
 	jack = kzalloc(sizeof(struct snd_jack), GFP_KERNEL);
@@ -202,8 +189,6 @@ EXPORT_SYMBOL(snd_jack_set_parent);
  * using this abstraction.
  *
  * This function may only be called prior to registration of the jack.
- *
- * Return: Zero if successful, or a negative error code on failure.
  */
 int snd_jack_set_key(struct snd_jack *jack, enum snd_jack_types type,
 		     int keytype)

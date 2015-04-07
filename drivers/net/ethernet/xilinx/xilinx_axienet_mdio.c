@@ -19,10 +19,10 @@
 /* Wait till MDIO interface is ready to accept a new transaction.*/
 int axienet_mdio_wait_until_ready(struct axienet_local *lp)
 {
-	unsigned long end = jiffies + 2;
+	long end = jiffies + 2;
 	while (!(axienet_ior(lp, XAE_MDIO_MCR_OFFSET) &
 		 XAE_MDIO_MCR_READY_MASK)) {
-		if (time_before_eq(end, jiffies)) {
+		if (end - jiffies <= 0) {
 			WARN_ON(1);
 			return -ETIMEDOUT;
 		}
@@ -37,7 +37,7 @@ int axienet_mdio_wait_until_ready(struct axienet_local *lp)
  * @phy_id:	Address of the PHY device
  * @reg:	PHY register to read
  *
- * Return:	The register contents on success, -ETIMEDOUT on a timeout
+ * returns:	The register contents on success, -ETIMEDOUT on a timeout
  *
  * Reads the contents of the requested register from the requested PHY
  * address by first writing the details into MCR register. After a while
@@ -80,7 +80,7 @@ static int axienet_mdio_read(struct mii_bus *bus, int phy_id, int reg)
  * @reg:	PHY register to write to
  * @val:	Value to be written into the register
  *
- * Return:	0 on success, -ETIMEDOUT on a timeout
+ * returns:	0 on success, -ETIMEDOUT on a timeout
  *
  * Writes the value to the requested register by first writing the value
  * into MWD register. The the MCR register is then appropriately setup
@@ -119,7 +119,7 @@ static int axienet_mdio_write(struct mii_bus *bus, int phy_id, int reg,
  * @lp:		Pointer to axienet local data structure.
  * @np:		Pointer to device node
  *
- * Return:	0 on success, -ETIMEDOUT on a timeout, -ENOMEM when
+ * returns:	0 on success, -ETIMEDOUT on a timeout, -ENOMEM when
  *		mdiobus_alloc (to allocate memory for mii bus structure) fails.
  *
  * Sets up the MDIO interface by initializing the MDIO clock and enabling the
@@ -132,8 +132,7 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 	struct mii_bus *bus;
 	struct resource res;
 	struct device_node *np1;
-	/* the ethernet controller device node */
-	struct device_node *npp = NULL;
+	struct device_node *npp = 0; /* the ethernet controller device node */
 
 	/* clk_div can be calculated by deriving it from the equation:
 	 * fMDIO = fHOST / ((1 + clk_div) * 2)
@@ -160,10 +159,8 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 	 * "clock-frequency" from the CPU
 	 */
 	np1 = of_get_parent(lp->phy_node);
-	if (np1) {
+	if (np1)
 		npp = of_get_parent(np1);
-		of_node_put(np1);
-	}
 	if (!npp) {
 		dev_warn(lp->dev,
 			"Could not find ethernet controller device node.");
@@ -176,9 +173,8 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 		property_p = (uint32_t *)of_get_property(npp,
 						"clock-frequency", NULL);
 		if (!property_p) {
-			dev_warn(lp->dev,
-				"Could not find clock ethernet "
-				"controller property.");
+			dev_warn(lp->dev, "Could not find clock ethernet " \
+						      "controller property.");
 			dev_warn(lp->dev,
 				 "Setting MDIO clock divisor to default %d\n",
 							DEFAULT_CLOCK_DIVISOR);
@@ -191,16 +187,13 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 			/* If there is any remainder from the division of
 			 * fHOST / (MAX_MDIO_FREQ * 2), then we need to add 1
 			 * to the clock divisor or we will surely be
-			 * above 2.5 MHz
-			 */
+			 * above 2.5 MHz */
 			if (host_clock % (MAX_MDIO_FREQ * 2))
 				clk_div++;
-			dev_dbg(lp->dev,
-				"Setting MDIO clock divisor to %u "
-				"based on %u Hz host clock.\n",
-				clk_div, host_clock);
+			dev_dbg(lp->dev, "Setting MDIO clock divisor to %u " \
+						"based on %u Hz host clock.\n",
+						clk_div, host_clock);
 		}
-		of_node_put(npp);
 	}
 
 	axienet_iow(lp, XAE_MDIO_MC_OFFSET, (((u32)clk_div) |
@@ -243,6 +236,7 @@ int axienet_mdio_setup(struct axienet_local *lp, struct device_node *np)
 void axienet_mdio_teardown(struct axienet_local *lp)
 {
 	mdiobus_unregister(lp->mii_bus);
+	kfree(lp->mii_bus->irq);
 	mdiobus_free(lp->mii_bus);
 	lp->mii_bus = NULL;
 }

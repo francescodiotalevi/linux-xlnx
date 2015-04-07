@@ -30,7 +30,7 @@
 #include "remoteproc_internal.h"
 
 /* kick the remote processor, and let it know which virtqueue to poke at */
-static bool rproc_virtio_notify(struct virtqueue *vq)
+static void rproc_virtio_notify(struct virtqueue *vq)
 {
 	struct rproc_vring *rvring = vq->priv;
 	struct rproc *rproc = rvring->rvdev->rproc;
@@ -39,7 +39,6 @@ static bool rproc_virtio_notify(struct virtqueue *vq)
 	dev_dbg(&rproc->dev, "kicking vq index: %d\n", notifyid);
 
 	rproc->ops->kick(rproc, notifyid);
-	return true;
 }
 
 /**
@@ -174,35 +173,25 @@ error:
 	return ret;
 }
 
+/*
+ * We don't support yet real virtio status semantics.
+ *
+ * The plan is to provide this via the VDEV resource entry
+ * which is part of the firmware: this way the remote processor
+ * will be able to access the status values as set by us.
+ */
 static u8 rproc_virtio_get_status(struct virtio_device *vdev)
 {
-	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-
-	return rsc->status;
+	return 0;
 }
 
 static void rproc_virtio_set_status(struct virtio_device *vdev, u8 status)
 {
-	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-
-	rsc->status = status;
 	dev_dbg(&vdev->dev, "status: %d\n", status);
 }
 
 static void rproc_virtio_reset(struct virtio_device *vdev)
 {
-	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-
-	rsc->status = 0;
 	dev_dbg(&vdev->dev, "reset !\n");
 }
 
@@ -210,19 +199,13 @@ static void rproc_virtio_reset(struct virtio_device *vdev)
 static u32 rproc_virtio_get_features(struct virtio_device *vdev)
 {
 	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
 
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-
-	return rsc->dfeatures;
+	return rvdev->dfeatures;
 }
 
 static void rproc_virtio_finalize_features(struct virtio_device *vdev)
 {
 	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
 
 	/* Give virtio_ring a chance to accept features */
 	vring_transport_features(vdev);
@@ -230,47 +213,16 @@ static void rproc_virtio_finalize_features(struct virtio_device *vdev)
 	/*
 	 * Remember the finalized features of our vdev, and provide it
 	 * to the remote processor once it is powered on.
+	 *
+	 * Similarly to the status field, we don't expose yet the negotiated
+	 * features to the remote processors at this point. This will be
+	 * fixed as part of a small resource table overhaul and then an
+	 * extension of the virtio resource entries.
 	 */
-	rsc->gfeatures = vdev->features[0];
+	rvdev->gfeatures = vdev->features[0];
 }
 
-static void rproc_virtio_get(struct virtio_device *vdev, unsigned offset,
-							void *buf, unsigned len)
-{
-	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-	void *cfg;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-	cfg = &rsc->vring[rsc->num_of_vrings];
-
-	if (offset + len > rsc->config_len || offset + len < len) {
-		dev_err(&vdev->dev, "rproc_virtio_get: access out of bounds\n");
-		return;
-	}
-
-	memcpy(buf, cfg + offset, len);
-}
-
-static void rproc_virtio_set(struct virtio_device *vdev, unsigned offset,
-		      const void *buf, unsigned len)
-{
-	struct rproc_vdev *rvdev = vdev_to_rvdev(vdev);
-	struct fw_rsc_vdev *rsc;
-	void *cfg;
-
-	rsc = (void *)rvdev->rproc->table_ptr + rvdev->rsc_offset;
-	cfg = &rsc->vring[rsc->num_of_vrings];
-
-	if (offset + len > rsc->config_len || offset + len < len) {
-		dev_err(&vdev->dev, "rproc_virtio_set: access out of bounds\n");
-		return;
-	}
-
-	memcpy(cfg + offset, buf, len);
-}
-
-static const struct virtio_config_ops rproc_virtio_config_ops = {
+static struct virtio_config_ops rproc_virtio_config_ops = {
 	.get_features	= rproc_virtio_get_features,
 	.finalize_features = rproc_virtio_finalize_features,
 	.find_vqs	= rproc_virtio_find_vqs,
@@ -278,8 +230,6 @@ static const struct virtio_config_ops rproc_virtio_config_ops = {
 	.reset		= rproc_virtio_reset,
 	.set_status	= rproc_virtio_set_status,
 	.get_status	= rproc_virtio_get_status,
-	.get		= rproc_virtio_get,
-	.set		= rproc_virtio_set,
 };
 
 /*

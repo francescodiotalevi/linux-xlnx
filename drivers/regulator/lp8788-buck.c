@@ -103,6 +103,16 @@ static const int lp8788_buck_vtbl[] = {
 	1950000, 2000000,
 };
 
+static const u8 buck1_vout_addr[] = {
+	LP8788_BUCK1_VOUT0, LP8788_BUCK1_VOUT1,
+	LP8788_BUCK1_VOUT2, LP8788_BUCK1_VOUT3,
+};
+
+static const u8 buck2_vout_addr[] = {
+	LP8788_BUCK2_VOUT0, LP8788_BUCK2_VOUT1,
+	LP8788_BUCK2_VOUT2, LP8788_BUCK2_VOUT3,
+};
+
 static void lp8788_buck1_set_dvs(struct lp8788_buck *buck)
 {
 	struct lp8788_buck1_dvs *dvs = (struct lp8788_buck1_dvs *)buck->dvs;
@@ -225,7 +235,7 @@ static u8 lp8788_select_buck_vout_addr(struct lp8788_buck *buck,
 			lp8788_read_byte(buck->lp, LP8788_BUCK_DVS_SEL, &val);
 			idx = (val & LP8788_BUCK1_DVS_M) >> LP8788_BUCK1_DVS_S;
 		}
-		addr = LP8788_BUCK1_VOUT0 + idx;
+		addr = buck1_vout_addr[idx];
 		break;
 	case BUCK2:
 		if (mode == EXTPIN) {
@@ -248,7 +258,7 @@ static u8 lp8788_select_buck_vout_addr(struct lp8788_buck *buck,
 			lp8788_read_byte(buck->lp, LP8788_BUCK_DVS_SEL, &val);
 			idx = (val & LP8788_BUCK2_DVS_M) >> LP8788_BUCK2_DVS_S;
 		}
-		addr = LP8788_BUCK2_VOUT0 + idx;
+		addr = buck2_vout_addr[idx];
 		break;
 	default:
 		goto err;
@@ -346,7 +356,6 @@ static unsigned int lp8788_buck_get_mode(struct regulator_dev *rdev)
 
 static struct regulator_ops lp8788_buck12_ops = {
 	.list_voltage = regulator_list_voltage_table,
-	.map_voltage = regulator_map_voltage_ascend,
 	.set_voltage_sel = lp8788_buck12_set_voltage_sel,
 	.get_voltage_sel = lp8788_buck12_get_voltage_sel,
 	.enable = regulator_enable_regmap,
@@ -359,7 +368,6 @@ static struct regulator_ops lp8788_buck12_ops = {
 
 static struct regulator_ops lp8788_buck34_ops = {
 	.list_voltage = regulator_list_voltage_table,
-	.map_voltage = regulator_map_voltage_ascend,
 	.set_voltage_sel = regulator_set_voltage_sel_regmap,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 	.enable = regulator_enable_regmap,
@@ -421,8 +429,7 @@ static struct regulator_desc lp8788_buck_desc[] = {
 	},
 };
 
-static int lp8788_dvs_gpio_request(struct platform_device *pdev,
-				struct lp8788_buck *buck,
+static int lp8788_dvs_gpio_request(struct lp8788_buck *buck,
 				enum lp8788_buck_id id)
 {
 	struct lp8788_platform_data *pdata = buck->lp->pdata;
@@ -433,7 +440,7 @@ static int lp8788_dvs_gpio_request(struct platform_device *pdev,
 	switch (id) {
 	case BUCK1:
 		gpio = pdata->buck1_dvs->gpio;
-		ret = devm_gpio_request_one(&pdev->dev, gpio, DVS_LOW,
+		ret = devm_gpio_request_one(buck->lp->dev, gpio, DVS_LOW,
 					    b1_name);
 		if (ret)
 			return ret;
@@ -441,9 +448,9 @@ static int lp8788_dvs_gpio_request(struct platform_device *pdev,
 		buck->dvs = pdata->buck1_dvs;
 		break;
 	case BUCK2:
-		for (i = 0; i < LP8788_NUM_BUCK2_DVS; i++) {
+		for (i = 0 ; i < LP8788_NUM_BUCK2_DVS ; i++) {
 			gpio = pdata->buck2_dvs->gpio[i];
-			ret = devm_gpio_request_one(&pdev->dev, gpio,
+			ret = devm_gpio_request_one(buck->lp->dev, gpio,
 						    DVS_LOW, b2_name[i]);
 			if (ret)
 				return ret;
@@ -457,8 +464,7 @@ static int lp8788_dvs_gpio_request(struct platform_device *pdev,
 	return 0;
 }
 
-static int lp8788_init_dvs(struct platform_device *pdev,
-			struct lp8788_buck *buck, enum lp8788_buck_id id)
+static int lp8788_init_dvs(struct lp8788_buck *buck, enum lp8788_buck_id id)
 {
 	struct lp8788_platform_data *pdata = buck->lp->pdata;
 	u8 mask[] = { LP8788_BUCK1_DVS_SEL_M, LP8788_BUCK2_DVS_SEL_M };
@@ -466,7 +472,7 @@ static int lp8788_init_dvs(struct platform_device *pdev,
 	u8 default_dvs_mode[] = { LP8788_BUCK1_DVS_I2C, LP8788_BUCK2_DVS_I2C };
 
 	/* no dvs for buck3, 4 */
-	if (id > BUCK2)
+	if (id == BUCK3 || id == BUCK4)
 		return 0;
 
 	/* no dvs platform data, then dvs will be selected by I2C registers */
@@ -477,7 +483,7 @@ static int lp8788_init_dvs(struct platform_device *pdev,
 		(id == BUCK2 && !pdata->buck2_dvs))
 		goto set_default_dvs_mode;
 
-	if (lp8788_dvs_gpio_request(pdev, buck, id))
+	if (lp8788_dvs_gpio_request(buck, id))
 		goto set_default_dvs_mode;
 
 	return lp8788_update_bits(buck->lp, LP8788_BUCK_DVS_SEL, mask[id],
@@ -497,28 +503,25 @@ static int lp8788_buck_probe(struct platform_device *pdev)
 	struct regulator_dev *rdev;
 	int ret;
 
-	if (id >= LP8788_NUM_BUCKS)
-		return -EINVAL;
-
-	buck = devm_kzalloc(&pdev->dev, sizeof(struct lp8788_buck), GFP_KERNEL);
+	buck = devm_kzalloc(lp->dev, sizeof(struct lp8788_buck), GFP_KERNEL);
 	if (!buck)
 		return -ENOMEM;
 
 	buck->lp = lp;
 
-	ret = lp8788_init_dvs(pdev, buck, id);
+	ret = lp8788_init_dvs(buck, id);
 	if (ret)
 		return ret;
 
-	cfg.dev = pdev->dev.parent;
+	cfg.dev = lp->dev;
 	cfg.init_data = lp->pdata ? lp->pdata->buck_data[id] : NULL;
 	cfg.driver_data = buck;
 	cfg.regmap = lp->regmap;
 
-	rdev = devm_regulator_register(&pdev->dev, &lp8788_buck_desc[id], &cfg);
+	rdev = regulator_register(&lp8788_buck_desc[id], &cfg);
 	if (IS_ERR(rdev)) {
 		ret = PTR_ERR(rdev);
-		dev_err(&pdev->dev, "BUCK%d regulator register err = %d\n",
+		dev_err(lp->dev, "BUCK%d regulator register err = %d\n",
 				id + 1, ret);
 		return ret;
 	}
@@ -529,8 +532,19 @@ static int lp8788_buck_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int lp8788_buck_remove(struct platform_device *pdev)
+{
+	struct lp8788_buck *buck = platform_get_drvdata(pdev);
+
+	platform_set_drvdata(pdev, NULL);
+	regulator_unregister(buck->regulator);
+
+	return 0;
+}
+
 static struct platform_driver lp8788_buck_driver = {
 	.probe = lp8788_buck_probe,
+	.remove = lp8788_buck_remove,
 	.driver = {
 		.name = LP8788_DEV_BUCK,
 		.owner = THIS_MODULE,

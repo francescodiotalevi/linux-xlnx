@@ -134,8 +134,6 @@ struct ad7280_state {
 	unsigned char			aux_threshhigh;
 	unsigned char			aux_threshlow;
 	unsigned char			cb_mask[AD7280A_MAX_CHAIN];
-
-	__be32				buf[2] ____cacheline_aligned;
 };
 
 static void ad7280_crc8_build_table(unsigned char *crc_tab)
@@ -191,22 +189,26 @@ static void ad7280_delay(struct ad7280_state *st)
 		msleep(1);
 }
 
-static int __ad7280_read32(struct ad7280_state *st, unsigned *val)
+static int __ad7280_read32(struct spi_device *spi, unsigned *val)
 {
+	unsigned rx_buf, tx_buf = cpu_to_be32(AD7280A_READ_TXVAL);
 	int ret;
+
 	struct spi_transfer t = {
-		.tx_buf	= &st->buf[0],
-		.rx_buf = &st->buf[1],
+		.tx_buf	= &tx_buf,
+		.rx_buf = &rx_buf,
 		.len = 4,
 	};
+	struct spi_message m;
 
-	st->buf[0] = cpu_to_be32(AD7280A_READ_TXVAL);
+	spi_message_init(&m);
+	spi_message_add_tail(&t, &m);
 
-	ret = spi_sync_transfer(st->spi, &t, 1);
+	ret = spi_sync(spi, &m);
 	if (ret)
 		return ret;
 
-	*val = be32_to_cpu(st->buf[1]);
+	*val = be32_to_cpu(rx_buf);
 
 	return 0;
 }
@@ -218,9 +220,9 @@ static int ad7280_write(struct ad7280_state *st, unsigned devaddr,
 			(val & 0xFF) << 13 | all << 12);
 
 	reg |= ad7280_calc_crc8(st->crc_tab, reg >> 11) << 3 | 0x2;
-	st->buf[0] = cpu_to_be32(reg);
+	reg = cpu_to_be32(reg);
 
-	return spi_write(st->spi, &st->buf[0], 4);
+	return spi_write(st->spi, &reg, 4);
 }
 
 static int ad7280_read(struct ad7280_state *st, unsigned devaddr,
@@ -250,7 +252,7 @@ static int ad7280_read(struct ad7280_state *st, unsigned devaddr,
 	if (ret)
 		return ret;
 
-	__ad7280_read32(st, &tmp);
+	__ad7280_read32(st->spi, &tmp);
 
 	if (ad7280_check_crc(st, tmp))
 		return -EIO;
@@ -288,7 +290,7 @@ static int ad7280_read_channel(struct ad7280_state *st, unsigned devaddr,
 
 	ad7280_delay(st);
 
-	__ad7280_read32(st, &tmp);
+	__ad7280_read32(st->spi, &tmp);
 
 	if (ad7280_check_crc(st, tmp))
 		return -EIO;
@@ -321,7 +323,7 @@ static int ad7280_read_all_channels(struct ad7280_state *st, unsigned cnt,
 	ad7280_delay(st);
 
 	for (i = 0; i < cnt; i++) {
-		__ad7280_read32(st, &tmp);
+		__ad7280_read32(st->spi, &tmp);
 
 		if (ad7280_check_crc(st, tmp))
 			return -EIO;
@@ -364,7 +366,7 @@ static int ad7280_chain_setup(struct ad7280_state *st)
 		return ret;
 
 	for (n = 0; n <= AD7280A_MAX_CHAIN; n++) {
-		__ad7280_read32(st, &val);
+		__ad7280_read32(st->spi, &val);
 		if (val == 0)
 			return n - 1;
 
@@ -443,7 +445,7 @@ static ssize_t ad7280_show_balance_timer(struct device *dev,
 
 	msecs = (ret >> 3) * 71500;
 
-	return sprintf(buf, "%u\n", msecs);
+	return sprintf(buf, "%d\n", msecs);
 }
 
 static ssize_t ad7280_store_balance_timer(struct device *dev,
@@ -505,10 +507,9 @@ static int ad7280_channel_init(struct ad7280_state *st)
 				st->channels[cnt].channel = (dev * 6) + ch - 6;
 			}
 			st->channels[cnt].indexed = 1;
-			st->channels[cnt].info_mask_separate =
-				BIT(IIO_CHAN_INFO_RAW);
-			st->channels[cnt].info_mask_shared_by_type =
-				BIT(IIO_CHAN_INFO_SCALE);
+			st->channels[cnt].info_mask =
+				IIO_CHAN_INFO_RAW_SEPARATE_BIT |
+				IIO_CHAN_INFO_SCALE_SHARED_BIT;
 			st->channels[cnt].address =
 				AD7280A_DEVADDR(dev) << 8 | ch;
 			st->channels[cnt].scan_index = cnt;
@@ -524,8 +525,9 @@ static int ad7280_channel_init(struct ad7280_state *st)
 	st->channels[cnt].channel2 = dev * 6;
 	st->channels[cnt].address = AD7280A_ALL_CELLS;
 	st->channels[cnt].indexed = 1;
-	st->channels[cnt].info_mask_separate = BIT(IIO_CHAN_INFO_RAW);
-	st->channels[cnt].info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE);
+	st->channels[cnt].info_mask =
+		IIO_CHAN_INFO_RAW_SEPARATE_BIT |
+		IIO_CHAN_INFO_SCALE_SHARED_BIT;
 	st->channels[cnt].scan_index = cnt;
 	st->channels[cnt].scan_type.sign = 'u';
 	st->channels[cnt].scan_type.realbits = 32;
@@ -619,7 +621,7 @@ static ssize_t ad7280_read_channel_config(struct device *dev,
 		return -EINVAL;
 	}
 
-	return sprintf(buf, "%u\n", val);
+	return sprintf(buf, "%d\n", val);
 }
 
 static ssize_t ad7280_write_channel_config(struct device *dev,
@@ -634,7 +636,7 @@ static ssize_t ad7280_write_channel_config(struct device *dev,
 	long val;
 	int ret;
 
-	ret = kstrtol(buf, 10, &val);
+	ret = strict_strtol(buf, 10, &val);
 	if (ret)
 		return ret;
 
@@ -785,6 +787,7 @@ static int ad7280_read_raw(struct iio_dev *indio_dev,
 			   long m)
 {
 	struct ad7280_state *st = iio_priv(indio_dev);
+	unsigned int scale_uv;
 	int ret;
 
 	switch (m) {
@@ -805,12 +808,13 @@ static int ad7280_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		if ((chan->address & 0xFF) <= AD7280A_CELL_VOLTAGE_6)
-			*val = 4000;
+			scale_uv = (4000 * 1000) >> AD7280A_BITS;
 		else
-			*val = 5000;
+			scale_uv = (5000 * 1000) >> AD7280A_BITS;
 
-		*val2 = AD7280A_BITS;
-		return IIO_VAL_FRACTIONAL_LOG2;
+		*val =  scale_uv / 1000;
+		*val2 = (scale_uv % 1000) * 1000;
+		return IIO_VAL_INT_PLUS_MICRO;
 	}
 	return -EINVAL;
 }
@@ -835,9 +839,8 @@ static int ad7280_probe(struct spi_device *spi)
 	int ret;
 	const unsigned short tACQ_ns[4] = {465, 1010, 1460, 1890};
 	const unsigned short nAVG[4] = {1, 2, 4, 8};
-	struct iio_dev *indio_dev;
+	struct iio_dev *indio_dev = iio_device_alloc(sizeof(*st));
 
-	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
@@ -861,7 +864,7 @@ static int ad7280_probe(struct spi_device *spi)
 
 	ret = ad7280_chain_setup(st);
 	if (ret < 0)
-		return ret;
+		goto error_free_device;
 
 	st->slave_num = ret;
 	st->scan_cnt = (st->slave_num + 1) * AD7280A_NUM_CH;
@@ -892,7 +895,7 @@ static int ad7280_probe(struct spi_device *spi)
 
 	ret = ad7280_channel_init(st);
 	if (ret < 0)
-		return ret;
+		goto error_free_device;
 
 	indio_dev->num_channels = ret;
 	indio_dev->channels = st->channels;
@@ -941,6 +944,9 @@ error_free_attr:
 error_free_channels:
 	kfree(st->channels);
 
+error_free_device:
+	iio_device_free(indio_dev);
+
 	return ret;
 }
 
@@ -958,6 +964,7 @@ static int ad7280_remove(struct spi_device *spi)
 
 	kfree(st->channels);
 	kfree(st->iio_attr);
+	iio_device_free(indio_dev);
 
 	return 0;
 }

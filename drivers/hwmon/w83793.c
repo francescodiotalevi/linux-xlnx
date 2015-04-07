@@ -59,8 +59,8 @@ static const unsigned short normal_i2c[] = { 0x2c, 0x2d, 0x2e, 0x2f,
 
 static unsigned short force_subclients[4];
 module_param_array(force_subclients, short, NULL, 0);
-MODULE_PARM_DESC(force_subclients,
-		 "List of subclient addresses: {bus, clientaddr, subclientaddr1, subclientaddr2}");
+MODULE_PARM_DESC(force_subclients, "List of subclient addresses: "
+		       "{bus, clientaddr, subclientaddr1, subclientaddr2}");
 
 static bool reset;
 module_param(reset, bool, 0);
@@ -191,7 +191,7 @@ static inline u16 FAN_TO_REG(long rpm)
 {
 	if (rpm <= 0)
 		return 0x0fff;
-	return clamp_val((1350000 + (rpm >> 1)) / rpm, 1, 0xffe);
+	return SENSORS_LIMIT((1350000 + (rpm >> 1)) / rpm, 1, 0xffe);
 }
 
 static inline unsigned long TIME_FROM_REG(u8 reg)
@@ -201,7 +201,7 @@ static inline unsigned long TIME_FROM_REG(u8 reg)
 
 static inline u8 TIME_TO_REG(unsigned long val)
 {
-	return clamp_val((val + 50) / 100, 0, 0xff);
+	return SENSORS_LIMIT((val + 50) / 100, 0, 0xff);
 }
 
 static inline long TEMP_FROM_REG(s8 reg)
@@ -211,7 +211,7 @@ static inline long TEMP_FROM_REG(s8 reg)
 
 static inline s8 TEMP_TO_REG(long val, s8 min, s8 max)
 {
-	return clamp_val((val + (val < 0 ? -500 : 500)) / 1000, min, max);
+	return SENSORS_LIMIT((val + (val < 0 ? -500 : 500)) / 1000, min, max);
 }
 
 struct w83793_data {
@@ -352,9 +352,6 @@ store_vrm(struct device *dev, struct device_attribute *attr,
 	err = kstrtoul(buf, 10, &val);
 	if (err)
 		return err;
-
-	if (val > 255)
-		return -EINVAL;
 
 	data->vrm = val;
 	return count;
@@ -561,7 +558,7 @@ store_pwm(struct device *dev, struct device_attribute *attr,
 		w83793_write_value(client, W83793_REG_PWM_STOP_TIME(index),
 				   val);
 	} else {
-		val = clamp_val(val, 0, 0xff) >> 2;
+		val = SENSORS_LIMIT(val, 0, 0xff) >> 2;
 		data->pwm[index][nr] =
 		    w83793_read_value(client, W83793_REG_PWM(index, nr)) & 0xc0;
 		data->pwm[index][nr] |= val;
@@ -742,7 +739,7 @@ store_sf_setup(struct device *dev, struct device_attribute *attr,
 	if (nr == SETUP_PWM_DEFAULT) {
 		data->pwm_default =
 		    w83793_read_value(client, W83793_REG_PWM_DEFAULT) & 0xc0;
-		data->pwm_default |= clamp_val(val, 0, 0xff) >> 2;
+		data->pwm_default |= SENSORS_LIMIT(val, 0, 0xff) >> 2;
 		w83793_write_value(client, W83793_REG_PWM_DEFAULT,
 							data->pwm_default);
 	} else if (nr == SETUP_PWM_UPTIME) {
@@ -811,7 +808,7 @@ show_sf_ctrl(struct device *dev, struct device_attribute *attr, char *buf)
 	if (nr == TEMP_FAN_MAP) {
 		val = data->temp_fan_map[index];
 	} else if (nr == TEMP_PWM_ENABLE) {
-		/* +2 to transform into 2 and 3 to conform with sysfs intf */
+		/* +2 to transfrom into 2 and 3 to conform with sysfs intf */
 		val = ((data->pwm_enable >> index) & 0x01) + 2;
 	} else if (nr == TEMP_CRUISE) {
 		val = TEMP_FROM_REG(data->temp_cruise[index] & 0x7f);
@@ -841,7 +838,7 @@ store_sf_ctrl(struct device *dev, struct device_attribute *attr,
 
 	mutex_lock(&data->update_lock);
 	if (nr == TEMP_FAN_MAP) {
-		val = clamp_val(val, 0, 255);
+		val = SENSORS_LIMIT(val, 0, 255);
 		w83793_write_value(client, W83793_REG_TEMP_FAN_MAP(index), val);
 		data->temp_fan_map[index] = val;
 	} else if (nr == TEMP_PWM_ENABLE) {
@@ -910,7 +907,7 @@ store_sf2_pwm(struct device *dev, struct device_attribute *attr,
 	err = kstrtoul(buf, 10, &val);
 	if (err)
 		return err;
-	val = clamp_val(val, 0, 0xff) >> 2;
+	val = SENSORS_LIMIT(val, 0, 0xff) >> 2;
 
 	mutex_lock(&data->update_lock);
 	data->sf2_pwm[index][nr] =
@@ -1006,9 +1003,9 @@ store_in(struct device *dev, struct device_attribute *attr,
 		/* fix the limit values of 5VDD and 5VSB to ALARM mechanism */
 		if (nr == 1 || nr == 2)
 			val -= scale_in_add[index] / scale_in[index];
-		val = clamp_val(val, 0, 255);
+		val = SENSORS_LIMIT(val, 0, 255);
 	} else {
-		val = clamp_val(val, 0, 0x3FF);
+		val = SENSORS_LIMIT(val, 0, 0x3FF);
 		data->in_low_bits[nr] =
 		    w83793_read_value(client, W83793_REG_IN_LOW_BITS[nr]);
 		data->in_low_bits[nr] &= ~(0x03 << (2 * index));
@@ -1202,8 +1199,7 @@ static void w83793_init_client(struct i2c_client *client)
 
 static int watchdog_set_timeout(struct w83793_data *data, int timeout)
 {
-	unsigned int mtimeout;
-	int ret;
+	int ret, mtimeout;
 
 	mtimeout = DIV_ROUND_UP(timeout, 60);
 
@@ -1925,8 +1921,8 @@ static int w83793_probe(struct i2c_client *client,
 	}
 	if (i == ARRAY_SIZE(watchdog_minors)) {
 		data->watchdog_miscdev.minor = 0;
-		dev_warn(&client->dev,
-			 "Couldn't register watchdog chardev (due to no free minor)\n");
+		dev_warn(&client->dev, "Couldn't register watchdog chardev "
+			"(due to no free minor)\n");
 	}
 
 	mutex_unlock(&watchdog_data_mutex);

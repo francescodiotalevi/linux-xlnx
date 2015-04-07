@@ -33,7 +33,6 @@
 #include <mach/at91sam9g45.h>
 #include <mach/at91sam9x5.h>
 #include <mach/at91sam9n12.h>
-#include <mach/sama5d3.h>
 
 /*
  * On all at91 except rm9200 and x40 have the System Controller starts
@@ -87,6 +86,27 @@
  */
 #define AT91_VA_BASE_SYS	AT91_IO_P2V(AT91_BASE_SYS)
 
+#ifdef CONFIG_IPIPE
+#if defined(CONFIG_ARCH_AT91RM9200)
+#define AT91_BASE_TCB0 AT91RM9200_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91SAM9260) || defined(CONFIG_ARCH_AT91SAM9G20)
+#define AT91_BASE_TCB0 AT91SAM9260_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91SAM9261)
+#define AT91_BASE_TCB0 AT91SAM9261_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91SAM9263)
+#define AT91_BASE_TCB0 AT91SAM9263_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91SAM9RL)
+#define AT91_BASE_TCB0 AT91SAM9RL_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91SAM9G45)
+#define AT91_BASE_TCB0 AT91SAM9G45_BASE_TCB0
+#elif defined(CONFIG_ARCH_AT91X40)
+#define AT91_BASE_TCB0 (AT91_BASE_SYS + AT91_TC)
+#else
+#error "AT91 processor unsupported by Adeos"
+#endif
+#define AT91_VA_BASE_TCB0 AT91_IO_P2V(AT91_BASE_TCB0)
+#endif
+
  /* Internal SRAM is mapped below the IO devices */
 #define AT91_SRAM_MAX		SZ_1M
 #define AT91_VIRT_BASE		(AT91_IO_VIRT_BASE - AT91_SRAM_MAX)
@@ -104,20 +124,5 @@
 /* Clocks */
 #define AT91_SLOW_CLOCK		32768		/* slow clock */
 
-/*
- * FIXME: this is needed to communicate between the pinctrl driver and
- * the PM implementation in the machine. Possibly part of the PM
- * implementation should be moved down into the pinctrl driver and get
- * called as part of the generic suspend/resume path.
- */
-#ifndef __ASSEMBLY__
-#ifdef CONFIG_PINCTRL_AT91
-extern void at91_pinctrl_gpio_suspend(void);
-extern void at91_pinctrl_gpio_resume(void);
-#else
-static inline void at91_pinctrl_gpio_suspend(void) {}
-static inline void at91_pinctrl_gpio_resume(void) {}
-#endif
-#endif
 
 #endif

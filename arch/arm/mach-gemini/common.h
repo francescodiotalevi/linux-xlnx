@@ -26,6 +26,4 @@ extern int platform_register_pflash(unsigned int size,
 				    struct mtd_partition *parts,
 				    unsigned int nr_parts);
 
-extern void gemini_restart(char mode, const char *cmd);
-
 #endif /* __GEMINI_COMMON_H__ */

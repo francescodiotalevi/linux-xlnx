@@ -54,6 +54,7 @@ void __init imx25_init_early(void)
 {
 	mxc_set_cpu_type(MXC_CPU_MX25);
 	mxc_iomux_v3_init(MX25_IO_ADDRESS(MX25_IOMUXC_BASE_ADDR));
+	mxc_arch_reset_init(MX25_IO_ADDRESS(MX25_WDOG_BASE_ADDR));
 }
 
 void __init mx25_init_irq(void)
@@ -61,8 +62,25 @@ void __init mx25_init_irq(void)
 	mxc_init_irq(MX25_IO_ADDRESS(MX25_AVIC_BASE_ADDR));
 }
 
+static struct sdma_script_start_addrs imx25_sdma_script __initdata = {
+	.ap_2_ap_addr = 729,
+	.uart_2_mcu_addr = 904,
+	.per_2_app_addr = 1255,
+	.mcu_2_app_addr = 834,
+	.uartsh_2_mcu_addr = 1120,
+	.per_2_shp_addr = 1329,
+	.mcu_2_shp_addr = 1048,
+	.ata_2_mcu_addr = 1560,
+	.mcu_2_ata_addr = 1479,
+	.app_2_per_addr = 1189,
+	.app_2_mcu_addr = 770,
+	.shp_2_per_addr = 1407,
+	.shp_2_mcu_addr = 979,
+};
+
 static struct sdma_platform_data imx25_sdma_pdata __initdata = {
 	.fw_name = "sdma-imx25.bin",
+	.script_addrs = &imx25_sdma_script,
 };
 
 static const struct resource imx25_audmux_res[] __initconst = {
@@ -71,7 +89,6 @@ static const struct resource imx25_audmux_res[] __initconst = {
 
 void __init imx25_soc_init(void)
 {
-	mxc_arch_reset_init(MX25_IO_ADDRESS(MX25_WDOG_BASE_ADDR));
 	mxc_device_init();
 
 	/* i.mx25 has the i.mx35 type gpio */
@@ -83,6 +100,13 @@ void __init imx25_soc_init(void)
 	pinctrl_provide_dummies();
 	/* i.mx25 has the i.mx35 type sdma */
 	imx_add_imx_sdma("imx35-sdma", MX25_SDMA_BASE_ADDR, MX25_INT_SDMA, &imx25_sdma_pdata);
+
+#ifdef CONFIG_IPIPE
+	/* Setup AIPS registers */
+	imx_set_aips(MX25_IO_ADDRESS(MX25_AIPS1_BASE_ADDR));
+	imx_set_aips(MX25_IO_ADDRESS(MX25_AIPS1_BASE_ADDR));
+#endif
+
 	/* i.mx25 has the i.mx31 type audmux */
 	platform_device_register_simple("imx31-audmux", 0, imx25_audmux_res,
 					ARRAY_SIZE(imx25_audmux_res));

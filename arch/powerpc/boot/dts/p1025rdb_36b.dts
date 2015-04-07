@@ -82,11 +82,6 @@
 				  0x0 0x100000>;
 		};
 	};
-
-	qe: qe@fffe80000 {
-		status = "disabled"; /* no firmware loaded */
-	};
-
 };
 
 /include/ "p1025rdb.dtsi"

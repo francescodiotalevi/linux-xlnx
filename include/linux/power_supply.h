@@ -15,8 +15,6 @@
 
 #include <linux/workqueue.h>
 #include <linux/leds.h>
-#include <linux/spinlock.h>
-#include <linux/notifier.h>
 
 struct device;
 
@@ -56,8 +54,6 @@ enum {
 	POWER_SUPPLY_HEALTH_OVERVOLTAGE,
 	POWER_SUPPLY_HEALTH_UNSPEC_FAILURE,
 	POWER_SUPPLY_HEALTH_COLD,
-	POWER_SUPPLY_HEALTH_WATCHDOG_TIMER_EXPIRE,
-	POWER_SUPPLY_HEALTH_SAFETY_TIMER_EXPIRE,
 };
 
 enum {
@@ -120,7 +116,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT,
 	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX,
-	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN,
 	POWER_SUPPLY_PROP_ENERGY_EMPTY_DESIGN,
 	POWER_SUPPLY_PROP_ENERGY_FULL,
@@ -132,8 +127,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_CAPACITY_ALERT_MAX, /* in percents! */
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 	POWER_SUPPLY_PROP_TEMP,
-	POWER_SUPPLY_PROP_TEMP_MAX,
-	POWER_SUPPLY_PROP_TEMP_MIN,
 	POWER_SUPPLY_PROP_TEMP_ALERT_MIN,
 	POWER_SUPPLY_PROP_TEMP_ALERT_MAX,
 	POWER_SUPPLY_PROP_TEMP_AMBIENT,
@@ -145,7 +138,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
 	POWER_SUPPLY_PROP_TYPE, /* use power_supply.type instead */
 	POWER_SUPPLY_PROP_SCOPE,
-	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
 	/* Properties of type `const char *' */
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
@@ -163,16 +155,10 @@ enum power_supply_type {
 	POWER_SUPPLY_TYPE_USB_ACA,	/* Accessory Charger Adapters */
 };
 
-enum power_supply_notifier_events {
-	PSY_EVENT_PROP_CHANGED,
-};
-
 union power_supply_propval {
 	int intval;
 	const char *strval;
 };
-
-struct device_node;
 
 struct power_supply {
 	const char *name;
@@ -182,10 +168,6 @@ struct power_supply {
 
 	char **supplied_to;
 	size_t num_supplicants;
-
-	char **supplied_from;
-	size_t num_supplies;
-	struct device_node *of_node;
 
 	int (*get_property)(struct power_supply *psy,
 			    enum power_supply_property psp,
@@ -204,8 +186,6 @@ struct power_supply {
 	/* private */
 	struct device *dev;
 	struct work_struct changed_work;
-	spinlock_t changed_lock;
-	bool changed;
 #ifdef CONFIG_THERMAL
 	struct thermal_zone_device *tzd;
 	struct thermal_cooling_device *tcd;
@@ -244,18 +224,7 @@ struct power_supply_info {
 	int use_for_apm;
 };
 
-extern struct atomic_notifier_head power_supply_notifier;
-extern int power_supply_reg_notifier(struct notifier_block *nb);
-extern void power_supply_unreg_notifier(struct notifier_block *nb);
-extern struct power_supply *power_supply_get_by_name(const char *name);
-#ifdef CONFIG_OF
-extern struct power_supply *power_supply_get_by_phandle(struct device_node *np,
-							const char *property);
-#else /* !CONFIG_OF */
-static inline struct power_supply *
-power_supply_get_by_phandle(struct device_node *np, const char *property)
-{ return NULL; }
-#endif /* CONFIG_OF */
+extern struct power_supply *power_supply_get_by_name(char *name);
 extern void power_supply_changed(struct power_supply *psy);
 extern int power_supply_am_i_supplied(struct power_supply *psy);
 extern int power_supply_set_battery_charged(struct power_supply *psy);
@@ -267,8 +236,6 @@ static inline int power_supply_is_system_supplied(void) { return -ENOSYS; }
 #endif
 
 extern int power_supply_register(struct device *parent,
-				 struct power_supply *psy);
-extern int power_supply_register_no_ws(struct device *parent,
 				 struct power_supply *psy);
 extern void power_supply_unregister(struct power_supply *psy);
 extern int power_supply_powers(struct power_supply *psy, struct device *dev);

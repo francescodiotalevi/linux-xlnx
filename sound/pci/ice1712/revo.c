@@ -35,7 +35,6 @@
 struct revo51_spec {
 	struct snd_i2c_device *dev;
 	struct snd_pt2258 *pt2258;
-	struct ak4114 *ak4114;
 };
 
 static void revo_i2s_mclk_changed(struct snd_ice1712 *ice)
@@ -360,9 +359,9 @@ static struct snd_ak4xxx_private akm_ap192_priv = {
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
 	.clk_mask = VT1724_REVO_CCLK,
-	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS3,
-	.cs_addr = VT1724_REVO_CS3,
-	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS3,
+	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1,
+	.cs_addr = VT1724_REVO_CS1,
+	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1,
 	.add_flags = VT1724_REVO_CCLK, /* high at init */
 	.mask_flags = 0,
 };
@@ -373,7 +372,7 @@ static struct snd_ak4xxx_private akm_ap192_priv = {
  * CCLK (pin 34) -- GPIO1 pin 51 (shared with AK4358)
  * CSN  (pin 35) -- GPIO7 pin 59
  */
-#define AK4114_ADDR	0x00
+#define AK4114_ADDR	0x02
 
 static void write_data(struct snd_ice1712 *ice, unsigned int gpio,
 		       unsigned int data, int idx)
@@ -427,7 +426,7 @@ static unsigned int ap192_4wire_start(struct snd_ice1712 *ice)
 	tmp = snd_ice1712_gpio_read(ice);
 	tmp |= VT1724_REVO_CCLK; /* high at init */
 	tmp |= VT1724_REVO_CS0;
-	tmp &= ~VT1724_REVO_CS3;
+	tmp &= ~VT1724_REVO_CS1;
 	snd_ice1712_gpio_write(ice, tmp);
 	udelay(1);
 	return tmp;
@@ -435,7 +434,7 @@ static unsigned int ap192_4wire_start(struct snd_ice1712 *ice)
 
 static void ap192_4wire_finish(struct snd_ice1712 *ice, unsigned int tmp)
 {
-	tmp |= VT1724_REVO_CS3;
+	tmp |= VT1724_REVO_CS1;
 	tmp |= VT1724_REVO_CS0;
 	snd_ice1712_gpio_write(ice, tmp);
 	udelay(1);
@@ -471,32 +470,27 @@ static unsigned char ap192_ak4114_read(void *private_data, unsigned char addr)
 static int ap192_ak4114_init(struct snd_ice1712 *ice)
 {
 	static const unsigned char ak4114_init_vals[] = {
-		AK4114_RST | AK4114_PWN | AK4114_OCKS0,
+		AK4114_RST | AK4114_PWN | AK4114_OCKS0 | AK4114_OCKS1,
 		AK4114_DIF_I24I2S,
 		AK4114_TX1E,
-		AK4114_EFH_1024 | AK4114_DIT | AK4114_IPS(0),
+		AK4114_EFH_1024 | AK4114_DIT | AK4114_IPS(1),
 		0,
 		0
 	};
 	static const unsigned char ak4114_init_txcsb[] = {
 		0x41, 0x02, 0x2c, 0x00, 0x00
 	};
+	struct ak4114 *ak;
 	int err;
-
-	struct revo51_spec *spec;
-	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
-	if (!spec)
-		return -ENOMEM;
-	ice->spec = spec;
 
 	err = snd_ak4114_create(ice->card,
 				 ap192_ak4114_read,
 				 ap192_ak4114_write,
 				 ak4114_init_vals, ak4114_init_txcsb,
-				 ice, &spec->ak4114);
+				 ice, &ak);
 	/* AK4114 in Revo cannot detect external rate correctly.
 	 * No reason to stop capture stream due to incorrect checks */
-	spec->ak4114->check_flags = AK4114_CHECK_NO_RATE;
+	ak->check_flags = AK4114_CHECK_NO_RATE;
 
 	return 0; /* error ignored; it's no fatal error */
 }
@@ -568,9 +562,6 @@ static int revo_init(struct snd_ice1712 *ice)
 					       ice);
 		if (err < 0)
 			return err;
-		err = ap192_ak4114_init(ice);
-		if (err < 0)
-			return err;
 		
 		/* unmute all codecs */
 		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE,
@@ -584,7 +575,7 @@ static int revo_init(struct snd_ice1712 *ice)
 
 static int revo_add_controls(struct snd_ice1712 *ice)
 {
-	struct revo51_spec *spec = ice->spec;
+	struct revo51_spec *spec;
 	int err;
 
 	switch (ice->eeprom.subvendor) {
@@ -606,9 +597,7 @@ static int revo_add_controls(struct snd_ice1712 *ice)
 		err = snd_ice1712_akm4xxx_build_controls(ice);
 		if (err < 0)
 			return err;
-		/* only capture SPDIF over AK4114 */
-		err = snd_ak4114_build(spec->ak4114, NULL,
-		   ice->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream);
+		err = ap192_ak4114_init(ice);
 		if (err < 0)
 			return err;
 		break;

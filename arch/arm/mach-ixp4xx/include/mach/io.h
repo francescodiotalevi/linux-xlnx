@@ -48,10 +48,9 @@ extern int ixp4xx_pci_write(u32 addr, u32 cmd, u32 data);
  * fallback to the default.
  */
 
-extern unsigned long pcibios_min_mem;
 static inline int is_pci_memory(u32 addr)
 {
-	return (addr >= pcibios_min_mem) && (addr <= 0x4FFFFFFF);
+	return (addr >= PCIBIOS_MIN_MEM) && (addr <= 0x4FFFFFFF);
 }
 
 #define writeb(v, p)			__indirect_writeb(v, p)

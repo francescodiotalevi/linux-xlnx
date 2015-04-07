@@ -1,7 +1,7 @@
 /*
  * Driver for ADAU1761/ADAU1461/ADAU1761/ADAU1961 codec
  *
- * Copyright 2011-2013 Analog Devices Inc.
+ * Copyright 2011-2012 Analog Devices Inc.
  * Author: Lars-Peter Clausen <lars@metafoo.de>
  *
  * Licensed under the GPL-2 or later.
@@ -17,10 +17,9 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
-#include <linux/platform_data/adau17x1.h>
+#include <sound/adau17x1.h>
 
 #include "adau17x1.h"
-#include "adau1761.h"
 
 #define ADAU1761_DIGMIC_JACKDETECT	0x4008
 #define ADAU1761_REC_MIXER_LEFT0	0x400a
@@ -50,21 +49,11 @@
 #define ADAU1761_DIGMIC_JACKDETECT_ACTIVE_LOW	BIT(0)
 #define ADAU1761_DIGMIC_JACKDETECT_DIGMIC	BIT(5)
 
-#define ADAU1761_DIFF_INPUT_VOL_LDEN		BIT(0)
-
-#define ADAU1761_PLAY_MONO_OUTPUT_VOL_MODE_HP	BIT(0)
-#define ADAU1761_PLAY_MONO_OUTPUT_VOL_UNMUTE	BIT(1)
-
-#define ADAU1761_PLAY_HP_RIGHT_VOL_MODE_HP	BIT(0)
-
-#define ADAU1761_PLAY_LINE_LEFT_VOL_MODE_HP	BIT(0)
-
-#define ADAU1761_PLAY_LINE_RIGHT_VOL_MODE_HP	BIT(0)
-
+#define ADAU1761_DIFF_INPUT_VOL_LDEN		0x01
 
 #define ADAU1761_FIRMWARE "adau1761.bin"
 
-static const struct reg_default adau1761_reg_defaults[] = {
+static struct reg_default adau1761_reg_defaults[] = {
 	{ ADAU1761_DEJITTER,			0x03 },
 	{ ADAU1761_DIGMIC_JACKDETECT,		0x00 },
 	{ ADAU1761_REC_MIXER_LEFT0,		0x00 },
@@ -104,8 +93,8 @@ static const struct reg_default adau1761_reg_defaults[] = {
 	{ ADAU17X1_DAC_CONTROL0,		0x00 },
 	{ ADAU17X1_DAC_CONTROL1,		0x00 },
 	{ ADAU17X1_DAC_CONTROL2,		0x00 },
-	{ ADAU17X1_SERIAL_PORT_PAD,		0xaa },
-	{ ADAU17X1_CONTROL_PORT_PAD0,		0xaa },
+	{ ADAU17X1_SERIAL_PORT_PAD,		0x00 },
+	{ ADAU17X1_CONTROL_PORT_PAD0,		0x00 },
 	{ ADAU17X1_CONTROL_PORT_PAD1,		0x00 },
 	{ ADAU17X1_DSP_SAMPLING_RATE,		0x01 },
 	{ ADAU17X1_SERIAL_INPUT_ROUTE,		0x00 },
@@ -135,28 +124,26 @@ static const char * const adau1761_bias_select_extreme_text[] = {
 	"Power saving",
 };
 
-static SOC_ENUM_SINGLE_DECL(adau1761_adc_bias_enum,
+static const SOC_ENUM_SINGLE_DECL(adau1761_adc_bias_enum,
 		ADAU17X1_REC_POWER_MGMT, 3, adau1761_bias_select_extreme_text);
-static SOC_ENUM_SINGLE_DECL(adau1761_hp_bias_enum,
+static const SOC_ENUM_SINGLE_DECL(adau1761_hp_bias_enum,
 		ADAU17X1_PLAY_POWER_MGMT, 6, adau1761_bias_select_extreme_text);
-static SOC_ENUM_SINGLE_DECL(adau1761_dac_bias_enum,
+static const SOC_ENUM_SINGLE_DECL(adau1761_dac_bias_enum,
 		ADAU17X1_PLAY_POWER_MGMT, 4, adau1761_bias_select_extreme_text);
-static SOC_VALUE_ENUM_SINGLE_DECL(adau1761_playback_bias_enum,
+static const SOC_VALUE_ENUM_SINGLE_DECL(adau1761_playback_bias_enum,
 		ADAU17X1_PLAY_POWER_MGMT, 2, 0x3, adau1761_bias_select_text,
 		adau1761_bias_select_values);
-static SOC_VALUE_ENUM_SINGLE_DECL(adau1761_capture_bias_enum,
+static const SOC_VALUE_ENUM_SINGLE_DECL(adau1761_capture_bias_enum,
 		ADAU17X1_REC_POWER_MGMT, 1, 0x3, adau1761_bias_select_text,
 		adau1761_bias_select_values);
 
 static const struct snd_kcontrol_new adau1761_jack_detect_controls[] = {
-	SOC_SINGLE("Speaker Auto-mute Switch", ADAU1761_DIGMIC_JACKDETECT,
-		4, 1, 0),
+	SOC_SINGLE("Jack Detect Switch", 4, 1, 0, ADAU1761_DIGMIC_JACKDETECT),
 };
 
 static const struct snd_kcontrol_new adau1761_differential_mode_controls[] = {
 	SOC_DOUBLE_R_TLV("Capture Volume", ADAU1761_LEFT_DIFF_INPUT_VOL,
-		ADAU1761_RIGHT_DIFF_INPUT_VOL, 2, 0x3f, 0,
-		adau1761_diff_in_tlv),
+		ADAU1761_RIGHT_DIFF_INPUT_VOL, 2, 0x3f, 0, adau1761_diff_in_tlv),
 	SOC_DOUBLE_R("Capture Switch", ADAU1761_LEFT_DIFF_INPUT_VOL,
 		ADAU1761_RIGHT_DIFF_INPUT_VOL, 1, 1, 0),
 
@@ -190,8 +177,8 @@ static const struct snd_kcontrol_new adau1761_controls[] = {
 
 	SOC_ENUM("ADC Bias", adau1761_adc_bias_enum),
 	SOC_ENUM("DAC Bias", adau1761_dac_bias_enum),
-	SOC_ENUM("Capture Bias", adau1761_capture_bias_enum),
-	SOC_ENUM("Playback Bias", adau1761_playback_bias_enum),
+	SOC_VALUE_ENUM("Capture Bias", adau1761_capture_bias_enum),
+	SOC_VALUE_ENUM("Playback Bias", adau1761_playback_bias_enum),
 	SOC_ENUM("Headphone Bias", adau1761_hp_bias_enum),
 };
 
@@ -203,10 +190,8 @@ static const struct snd_kcontrol_new adau1761_mono_controls[] = {
 };
 
 static const struct snd_kcontrol_new adau1761_left_mixer_controls[] = {
-	SOC_DAPM_SINGLE_AUTODISABLE("Left DAC Switch",
-		ADAU1761_PLAY_MIXER_LEFT0, 5, 1, 0),
-	SOC_DAPM_SINGLE_AUTODISABLE("Right DAC Switch",
-		ADAU1761_PLAY_MIXER_LEFT0, 6, 1, 0),
+	SOC_DAPM_SINGLE("Left DAC Switch", ADAU1761_PLAY_MIXER_LEFT0, 5, 1, 0),
+	SOC_DAPM_SINGLE("Right DAC Switch", ADAU1761_PLAY_MIXER_LEFT0, 6, 1, 0),
 	SOC_DAPM_SINGLE_TLV("Aux Bypass Volume",
 		ADAU1761_PLAY_MIXER_LEFT0, 1, 8, 0, adau1761_sidetone_tlv),
 	SOC_DAPM_SINGLE_TLV("Right Bypass Volume",
@@ -216,10 +201,8 @@ static const struct snd_kcontrol_new adau1761_left_mixer_controls[] = {
 };
 
 static const struct snd_kcontrol_new adau1761_right_mixer_controls[] = {
-	SOC_DAPM_SINGLE_AUTODISABLE("Left DAC Switch",
-		ADAU1761_PLAY_MIXER_RIGHT0, 5, 1, 0),
-	SOC_DAPM_SINGLE_AUTODISABLE("Right DAC Switch",
-		ADAU1761_PLAY_MIXER_RIGHT0, 6, 1, 0),
+	SOC_DAPM_SINGLE("Left DAC Switch", ADAU1761_PLAY_MIXER_RIGHT0, 5, 1, 0),
+	SOC_DAPM_SINGLE("Right DAC Switch", ADAU1761_PLAY_MIXER_RIGHT0, 6, 1, 0),
 	SOC_DAPM_SINGLE_TLV("Aux Bypass Volume",
 		ADAU1761_PLAY_MIXER_RIGHT0, 1, 8, 0, adau1761_sidetone_tlv),
 	SOC_DAPM_SINGLE_TLV("Right Bypass Volume",
@@ -246,7 +229,7 @@ static const char * const adau1761_input_mux_text[] = {
 	"ADC", "DMIC",
 };
 
-static SOC_ENUM_SINGLE_DECL(adau1761_input_mux_enum,
+static const SOC_ENUM_SINGLE_DECL(adau1761_input_mux_enum,
 	ADAU17X1_ADC_CONTROL, 2, adau1761_input_mux_text);
 
 static const struct snd_kcontrol_new adau1761_input_mux_control =
@@ -284,7 +267,7 @@ static const struct snd_soc_dapm_widget adau1x61_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("Headphone", ADAU1761_PLAY_HP_LEFT_VOL,
 		0, 0, NULL, 0),
 
-	SND_SOC_DAPM_SUPPLY_S("SYSCLK", 2, SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY("SYSCLK", SND_SOC_NOPM, 0, 0, NULL, 0),
 
 	SND_SOC_DAPM_POST("Dejitter fixup", adau1761_dejitter_fixup),
 
@@ -309,8 +292,15 @@ static const struct snd_soc_dapm_widget adau1761_mono_dapm_widgets[] = {
 };
 
 static const struct snd_soc_dapm_widget adau1761_capless_dapm_widgets[] = {
-	SND_SOC_DAPM_SUPPLY_S("Headphone VGND", 1, ADAU1761_PLAY_MIXER_MONO,
+	SND_SOC_DAPM_SUPPLY("Headphone VGND", ADAU1761_PLAY_MIXER_MONO,
 		0, 0, NULL, 0),
+};
+
+static const struct snd_soc_dapm_widget adau1761_dmic_widgets[] = {
+	SND_SOC_DAPM_MUX("Input Select", SND_SOC_NOPM, 0, 0,
+		&adau1761_input_mux_control),
+
+	SND_SOC_DAPM_INPUT("DMIC"),
 };
 
 static const struct snd_soc_dapm_route adau1x61_dapm_routes[] = {
@@ -338,6 +328,9 @@ static const struct snd_soc_dapm_route adau1x61_dapm_routes[] = {
 
 	{ "Right LR Playback Mixer", "Left Volume", "Left Playback Mixer" },
 	{ "Right LR Playback Mixer", "Right Volume", "Right Playback Mixer" },
+
+	{ "Left ADC", NULL, "Left Input Mixer" },
+	{ "Right ADC", NULL, "Right Input Mixer" },
 
 	{ "LHP", NULL, "Left Playback Mixer" },
 	{ "RHP", NULL, "Right Playback Mixer" },
@@ -367,28 +360,16 @@ static const struct snd_soc_dapm_route adau1761_capless_dapm_routes[] = {
 	{ "Headphone", NULL, "Headphone VGND" },
 };
 
-static const struct snd_soc_dapm_widget adau1761_dmic_widgets[] = {
-	SND_SOC_DAPM_MUX("Left Decimator Mux", SND_SOC_NOPM, 0, 0,
-		&adau1761_input_mux_control),
-	SND_SOC_DAPM_MUX("Right Decimator Mux", SND_SOC_NOPM, 0, 0,
-		&adau1761_input_mux_control),
-
-	SND_SOC_DAPM_INPUT("DMIC"),
-};
-
 static const struct snd_soc_dapm_route adau1761_dmic_routes[] = {
-	{ "Left Decimator Mux", "ADC", "Left Input Mixer" },
-	{ "Left Decimator Mux", "DMIC", "DMIC" },
-	{ "Right Decimator Mux", "ADC", "Right Input Mixer" },
-	{ "Right Decimator Mux", "DMIC", "DMIC" },
-
-	{ "Left Decimator", NULL, "Left Decimator Mux" },
-	{ "Right Decimator", NULL, "Right Decimator Mux" },
+	{ "Input Select", "ADC", "Left ADC" },
+	{ "Input Select", "ADC", "Right ADC" },
+	{ "Input Select", "DMIC", "DMIC" },
+	{ "AIFOUT", NULL, "Input Select" },
 };
 
 static const struct snd_soc_dapm_route adau1761_no_dmic_routes[] = {
-	{ "Left Decimator", NULL, "Left Input Mixer" },
-	{ "Right Decimator", NULL, "Right Input Mixer" },
+	{ "AIFOUT", NULL, "Left ADC" },
+	{ "AIFOUT", NULL, "Right ADC" },
 };
 
 static const struct snd_soc_dapm_widget adau1761_dapm_widgets[] = {
@@ -406,30 +387,38 @@ static const struct snd_soc_dapm_widget adau1761_dapm_widgets[] = {
 
 	SND_SOC_DAPM_SUPPLY("Slew Clock", ADAU1761_CLK_ENABLE0, 6, 0, NULL, 0),
 
-	SND_SOC_DAPM_SUPPLY_S("Digital Clock 0", 1, ADAU1761_CLK_ENABLE1,
+	SND_SOC_DAPM_SUPPLY("Digital Clock 0", ADAU1761_CLK_ENABLE1,
 		0, 0, NULL, 0),
-	SND_SOC_DAPM_SUPPLY_S("Digital Clock 1", 1, ADAU1761_CLK_ENABLE1,
+	SND_SOC_DAPM_SUPPLY("Digital Clock 1", ADAU1761_CLK_ENABLE1,
 		1, 0, NULL, 0),
 };
 
+static int adau1761_is_slave_mode(struct snd_soc_dapm_widget *source,
+	struct snd_soc_dapm_widget *sink)
+{
+	struct adau *adau = snd_soc_codec_get_drvdata(source->codec);
+
+	return !adau->master;
+}
+
 static const struct snd_soc_dapm_route adau1761_dapm_routes[] = {
-	{ "Left Decimator", NULL, "Digital Clock 0", },
-	{ "Right Decimator", NULL, "Digital Clock 0", },
+	{ "Left ADC", NULL, "Digital Clock 0", },
+	{ "Right ADC", NULL, "Digital Clock 0", },
 	{ "Left DAC", NULL, "Digital Clock 0", },
 	{ "Right DAC", NULL, "Digital Clock 0", },
 
 	{ "AIFCLK", NULL, "Digital Clock 1" },
 
-	{ "Playback", NULL, "Serial Port Clock" },
-	{ "Capture", NULL, "Serial Port Clock" },
-	{ "Playback", NULL, "Serial Input Routing Clock" },
-	{ "Capture", NULL, "Serial Output Routing Clock" },
+	{ "AIFIN", NULL, "Serial Port Clock" },
+	{ "AIFOUT", NULL, "Serial Port Clock" },
+	{ "AIFIN", NULL, "Serial Input Routing Clock" },
+	{ "AIFOUT", NULL, "Serial Output Routing Clock" },
 
-	{ "Left Decimator", NULL, "Decimator Resync Clock" },
-	{ "Right Decimator", NULL, "Decimator Resync Clock" },
-	{ "Left DAC", NULL, "Interpolator Resync Clock" },
-	{ "Right DAC", NULL, "Interpolator Resync Clock" },
+	{ "AIFIN", NULL, "Decimator Resync Clock" },
+	{ "AIFOUT", NULL, "Interpolator Resync Clock" },
 
+	{ "DSP", NULL, "Decimator Resync Clock" },
+	{ "DSP", NULL, "Interpolator Resync Clock" },
 	{ "DSP", NULL, "Digital Clock 0" },
 
 	{ "Slew Clock", NULL, "Digital Clock 0" },
@@ -438,6 +427,8 @@ static const struct snd_soc_dapm_route adau1761_dapm_routes[] = {
 
 	{ "Digital Clock 0", NULL, "SYSCLK" },
 	{ "Digital Clock 1", NULL, "SYSCLK" },
+
+	{ "AIFOUT", NULL, "Decimator Resync Clock" },
 };
 
 static int adau1761_set_bias_level(struct snd_soc_codec *codec,
@@ -504,12 +495,12 @@ static int adau1761_setup_digmic_jackdetect(struct snd_soc_codec *codec)
 		if (pdata->jackdetect_active_low)
 			val |= ADAU1761_DIGMIC_JACKDETECT_ACTIVE_LOW;
 
-		ret = snd_soc_add_codec_controls(codec,
+		ret = snd_soc_add_controls(codec,
 			adau1761_jack_detect_controls,
 			ARRAY_SIZE(adau1761_jack_detect_controls));
 		if (ret)
 			return ret;
-	case ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE: /* fallthrough */
+	case ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE: /* fall-through */
 		ret = snd_soc_dapm_add_routes(&codec->dapm,
 			adau1761_no_dmic_routes,
 			ARRAY_SIZE(adau1761_no_dmic_routes));
@@ -522,13 +513,11 @@ static int adau1761_setup_digmic_jackdetect(struct snd_soc_codec *codec)
 			ARRAY_SIZE(adau1761_dmic_widgets));
 		if (ret)
 			return ret;
-
 		ret = snd_soc_dapm_add_routes(&codec->dapm,
 			adau1761_dmic_routes,
 			ARRAY_SIZE(adau1761_dmic_routes));
 		if (ret)
 			return ret;
-
 		val |= ADAU1761_DIGMIC_JACKDETECT_DIGMIC;
 		break;
 	default:
@@ -556,16 +545,9 @@ static int adau1761_setup_headphone_mode(struct snd_soc_codec *codec)
 	case ADAU1761_OUTPUT_MODE_LINE:
 		break;
 	case ADAU1761_OUTPUT_MODE_HEADPHONE_CAPLESS:
-		regmap_update_bits(adau->regmap, ADAU1761_PLAY_MONO_OUTPUT_VOL,
-			ADAU1761_PLAY_MONO_OUTPUT_VOL_MODE_HP |
-			ADAU1761_PLAY_MONO_OUTPUT_VOL_UNMUTE,
-			ADAU1761_PLAY_MONO_OUTPUT_VOL_MODE_HP |
-			ADAU1761_PLAY_MONO_OUTPUT_VOL_UNMUTE);
-		/* fallthrough */
-	case ADAU1761_OUTPUT_MODE_HEADPHONE:
-		regmap_update_bits(adau->regmap, ADAU1761_PLAY_HP_RIGHT_VOL,
-			ADAU1761_PLAY_HP_RIGHT_VOL_MODE_HP,
-			ADAU1761_PLAY_HP_RIGHT_VOL_MODE_HP);
+		regmap_update_bits(adau->regmap, ADAU1761_PLAY_MONO_OUTPUT_VOL, 3, 3);
+	case ADAU1761_OUTPUT_MODE_HEADPHONE: /* fall-through */
+		regmap_update_bits(adau->regmap, ADAU1761_PLAY_HP_RIGHT_VOL, 1, 1);
 		break;
 	default:
 		return -EINVAL;
@@ -581,10 +563,6 @@ static int adau1761_setup_headphone_mode(struct snd_soc_codec *codec)
 			adau1761_capless_dapm_routes,
 			ARRAY_SIZE(adau1761_capless_dapm_routes));
 	} else {
-		ret = snd_soc_add_codec_controls(codec, adau1761_mono_controls,
-			ARRAY_SIZE(adau1761_mono_controls));
-		if (ret)
-			return ret;
 		ret = snd_soc_dapm_new_controls(&codec->dapm,
 			adau1761_mono_dapm_widgets,
 			ARRAY_SIZE(adau1761_mono_dapm_widgets));
@@ -633,15 +611,27 @@ static bool adau1761_readable_register(struct device *dev, unsigned int reg)
 	return adau17x1_readable_register(dev, reg);
 }
 
-static int adau1761_codec_probe(struct snd_soc_codec *codec)
+static struct adau1761_platform_data def_pdata = {
+	.input_differential = true,
+	.lineout_mode = ADAU1761_OUTPUT_MODE_LINE,
+	.headphone_mode = ADAU1761_OUTPUT_MODE_HEADPHONE_CAPLESS,
+	.digmic_jackdetect_pin_mode = ADAU1761_DIGMIC_JACKDET_PIN_MODE_NONE,
+};
+
+static int adau1761_probe(struct snd_soc_codec *codec)
 {
 	struct adau1761_platform_data *pdata = codec->dev->platform_data;
 	struct adau *adau = snd_soc_codec_get_drvdata(codec);
 	int ret;
 
-	ret = adau17x1_add_widgets(codec);
+	pdata = &def_pdata;
+	codec->dev->platform_data = &def_pdata;
+
+	ret = adau17x1_probe(codec);
 	if (ret < 0)
 		return ret;
+
+	adau1761_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	if (pdata && pdata->input_differential) {
 		regmap_update_bits(adau->regmap, ADAU1761_LEFT_DIFF_INPUT_VOL,
@@ -650,13 +640,13 @@ static int adau1761_codec_probe(struct snd_soc_codec *codec)
 		regmap_update_bits(adau->regmap, ADAU1761_RIGHT_DIFF_INPUT_VOL,
 			ADAU1761_DIFF_INPUT_VOL_LDEN,
 			ADAU1761_DIFF_INPUT_VOL_LDEN);
-		ret = snd_soc_add_codec_controls(codec,
+		ret = snd_soc_add_controls(codec,
 			adau1761_differential_mode_controls,
 			ARRAY_SIZE(adau1761_differential_mode_controls));
 		if (ret)
 			return ret;
 	} else {
-		ret = snd_soc_add_codec_controls(codec,
+		ret = snd_soc_add_controls(codec,
 			adau1761_single_mode_controls,
 			ARRAY_SIZE(adau1761_single_mode_controls));
 		if (ret)
@@ -667,12 +657,8 @@ static int adau1761_codec_probe(struct snd_soc_codec *codec)
 	case ADAU1761_OUTPUT_MODE_LINE:
 		break;
 	case ADAU1761_OUTPUT_MODE_HEADPHONE:
-		regmap_update_bits(adau->regmap, ADAU1761_PLAY_LINE_LEFT_VOL,
-			ADAU1761_PLAY_LINE_LEFT_VOL_MODE_HP,
-			ADAU1761_PLAY_LINE_LEFT_VOL_MODE_HP);
-		regmap_update_bits(adau->regmap, ADAU1761_PLAY_LINE_RIGHT_VOL,
-			ADAU1761_PLAY_LINE_RIGHT_VOL_MODE_HP,
-			ADAU1761_PLAY_LINE_RIGHT_VOL_MODE_HP);
+		regmap_update_bits(adau->regmap, ADAU1761_PLAY_LINE_LEFT_VOL, 1, 1);
+		regmap_update_bits(adau->regmap, ADAU1761_PLAY_LINE_RIGHT_VOL, 1, 1);
 		break;
 	default:
 		return -EINVAL;
@@ -705,25 +691,22 @@ static int adau1761_codec_probe(struct snd_soc_codec *codec)
 			dev_warn(codec->dev, "Failed to firmware\n");
 	}
 
-	ret = adau17x1_add_routes(codec);
-	if (ret < 0)
-		return ret;
-
 	return 0;
 }
 
-static const struct snd_soc_codec_driver adau1761_codec_driver = {
-	.probe = adau1761_codec_probe,
-	.suspend = adau17x1_suspend,
-	.resume	= adau17x1_resume,
-	.set_bias_level	= adau1761_set_bias_level,
+static struct snd_soc_codec_driver adau1761_codec_driver = {
+	.probe			= adau1761_probe,
+	.remove			= adau17x1_suspend,
+	.suspend		= adau17x1_suspend,
+	.resume			= adau17x1_resume,
+	.set_bias_level		= adau1761_set_bias_level,
 
-	.controls = adau1761_controls,
-	.num_controls = ARRAY_SIZE(adau1761_controls),
-	.dapm_widgets = adau1x61_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(adau1x61_dapm_widgets),
-	.dapm_routes = adau1x61_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(adau1x61_dapm_routes),
+	.controls		= adau1761_controls,
+	.num_controls		= ARRAY_SIZE(adau1761_controls),
+	.dapm_widgets		= adau1x61_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(adau1x61_dapm_widgets),
+	.dapm_routes		= adau1x61_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(adau1x61_dapm_routes),
 };
 
 #define ADAU1761_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
@@ -767,13 +750,14 @@ static struct snd_soc_dai_driver adau1761_dai_driver = {
 	.ops = &adau17x1_dai_ops,
 };
 
-int adau1761_probe(struct device *dev, struct regmap *regmap,
-	enum adau17x1_type type, void (*switch_mode)(struct device *dev))
+static int __devinit adau1761_bus_probe(struct device *dev,
+	struct regmap *regmap, enum adau17x1_type type,
+	enum snd_soc_control_type control_type)
 {
 	struct snd_soc_dai_driver *dai_drv;
 	int ret;
 
-	ret = adau17x1_probe(dev, regmap, type, switch_mode);
+	ret = adau17x1_bus_probe(dev, regmap, type, control_type);
 	if (ret)
 		return ret;
 
@@ -782,21 +766,160 @@ int adau1761_probe(struct device *dev, struct regmap *regmap,
 	else
 		dai_drv = &adau1761_dai_driver;
 
-	return snd_soc_register_codec(dev, &adau1761_codec_driver, dai_drv, 1);
+	return snd_soc_register_codec(dev, &adau1761_codec_driver,
+			dai_drv, 1);
 }
-EXPORT_SYMBOL_GPL(adau1761_probe);
 
-const struct regmap_config adau1761_regmap_config = {
-	.val_bits = 8,
-	.reg_bits = 16,
-	.max_register = 0x40fa,
-	.reg_defaults = adau1761_reg_defaults,
-	.num_reg_defaults = ARRAY_SIZE(adau1761_reg_defaults),
-	.readable_reg = adau1761_readable_register,
-	.volatile_reg = adau17x1_volatile_register,
-	.cache_type = REGCACHE_RBTREE,
+#if IS_ENABLED(CONFIG_SPI_MASTER)
+
+static const struct regmap_config adau1761_spi_regmap_config = {
+	.val_bits		= 8,
+	.reg_bits		= 24,
+	.read_flag_mask		= 0x01,
+	.max_register		= 0x40fa,
+	.reg_defaults		= adau1761_reg_defaults,
+	.num_reg_defaults	= ARRAY_SIZE(adau1761_reg_defaults),
+	.readable_reg		= adau1761_readable_register,
+	.volatile_reg		= adau17x1_volatile_register,
+	.cache_type		= REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_GPL(adau1761_regmap_config);
+
+static int __devinit adau1761_spi_probe(struct spi_device *spi)
+{
+	enum adau17x1_type type = spi_get_device_id(spi)->driver_data;
+	struct regmap *regmap;
+
+	regmap = devm_regmap_init_spi(spi, &adau1761_spi_regmap_config);
+
+	return adau1761_bus_probe(&spi->dev, regmap, type, SND_SOC_SPI);
+}
+
+static int __devexit adau1761_spi_remove(struct spi_device *spi)
+{
+	snd_soc_unregister_codec(&spi->dev);
+	return 0;
+}
+
+static const struct spi_device_id adau1761_spi_id[] = {
+	{ "adau1361", ADAU1361 },
+	{ "adau1461", ADAU1761 },
+	{ "adau1761", ADAU1761 },
+	{ "adau1961", ADAU1361 },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, adau1761_spi_id);
+
+static struct spi_driver adau1761_spi_driver = {
+	.driver = {
+		.name	= "adau1761",
+		.owner	= THIS_MODULE,
+	},
+	.probe		= adau1761_spi_probe,
+	.remove		= __devexit_p(adau1761_spi_remove),
+	.id_table	= adau1761_spi_id,
+};
+
+static int adau1761_spi_register_driver(void)
+{
+	return spi_register_driver(&adau1761_spi_driver);
+}
+
+static void adau1761_spi_unregister_driver(void)
+{
+	spi_unregister_driver(&adau1761_spi_driver);
+}
+
+#else
+static int adau1761_spi_register_driver(void) { return 0; }
+static void adau1761_spi_unregister_driver(void) {}
+#endif
+
+#if IS_ENABLED(CONFIG_I2C)
+
+static const struct regmap_config adau1761_i2c_regmap_config = {
+	.val_bits		= 8,
+	.reg_bits		= 16,
+	.max_register		= 0x40fa,
+	.reg_defaults		= adau1761_reg_defaults,
+	.num_reg_defaults	= ARRAY_SIZE(adau1761_reg_defaults),
+	.readable_reg		= adau1761_readable_register,
+	.volatile_reg		= adau17x1_volatile_register,
+	.cache_type		= REGCACHE_RBTREE,
+};
+
+static int __devinit adau1761_i2c_probe(struct i2c_client *client,
+	const struct i2c_device_id *id)
+{
+	enum adau17x1_type type = id->driver_data;
+	struct regmap *regmap;
+
+	regmap = devm_regmap_init_i2c(client, &adau1761_i2c_regmap_config);
+
+	return adau1761_bus_probe(&client->dev, regmap, type, SND_SOC_I2C);
+}
+
+static int __devexit adau1761_i2c_remove(struct i2c_client *client)
+{
+	snd_soc_unregister_codec(&client->dev);
+	return 0;
+}
+
+static const struct i2c_device_id adau1761_i2c_id[] = {
+	{ "adau1361", ADAU1361 },
+	{ "adau1461", ADAU1761 },
+	{ "adau1761", ADAU1761 },
+	{ "adau1961", ADAU1361 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, adau1761_i2c_id);
+
+static struct i2c_driver adau1761_i2c_driver = {
+	.driver = {
+		.name = "adau1761",
+		.owner = THIS_MODULE,
+	},
+	.probe = adau1761_i2c_probe,
+	.remove = __devexit_p(adau1761_i2c_remove),
+	.id_table = adau1761_i2c_id,
+};
+
+static int adau1761_i2c_register_driver(void)
+{
+	return i2c_add_driver(&adau1761_i2c_driver);
+}
+
+static void adau1761_i2c_unregister_driver(void)
+{
+	i2c_del_driver(&adau1761_i2c_driver);
+}
+
+#else
+static int adau1761_i2c_register_driver(void) { return 0; }
+static void adau1761_i2c_unregister_driver(void) {}
+#endif
+
+static int __init adau1761_init(void)
+{
+	int ret;
+
+	ret = adau1761_spi_register_driver();
+	if (ret)
+		return ret;
+
+	ret = adau1761_i2c_register_driver();
+	if (ret)
+		adau1761_spi_unregister_driver();
+
+	return ret;
+}
+module_init(adau1761_init);
+
+static void __exit adau1761_exit(void)
+{
+	adau1761_i2c_unregister_driver();
+	adau1761_spi_unregister_driver();
+}
+module_exit(adau1761_exit);
 
 MODULE_DESCRIPTION("ASoC ADAU1361/ADAU1461/ADAU1761/ADAU1961 CODEC driver");
 MODULE_AUTHOR("Lars-Peter Clausen <lars@metafoo.de>");

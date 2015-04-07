@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -457,7 +457,7 @@ struct acpi_hest_aer_common {
 	u8 enabled;
 	u32 records_to_preallocate;
 	u32 max_sections_per_record;
-	u32 bus;		/* Bus and Segment numbers */
+	u32 bus;
 	u16 device;
 	u16 function;
 	u16 device_control;
@@ -472,14 +472,6 @@ struct acpi_hest_aer_common {
 
 #define ACPI_HEST_FIRMWARE_FIRST        (1)
 #define ACPI_HEST_GLOBAL                (1<<1)
-
-/*
- * Macros to access the bus/segment numbers in Bus field above:
- *  Bus number is encoded in bits 7:0
- *  Segment number is encoded in bits 23:8
- */
-#define ACPI_HEST_BUS(bus)              ((bus) & 0xFF)
-#define ACPI_HEST_SEGMENT(bus)          (((bus) >> 8) & 0xFFFF)
 
 /* Hardware Error Notification */
 
@@ -671,13 +663,11 @@ enum acpi_madt_type {
 	ACPI_MADT_TYPE_LOCAL_X2APIC_NMI = 10,
 	ACPI_MADT_TYPE_GENERIC_INTERRUPT = 11,
 	ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR = 12,
-	ACPI_MADT_TYPE_GENERIC_MSI_FRAME = 13,
-	ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR = 14,
-	ACPI_MADT_TYPE_RESERVED = 15	/* 15 and greater are reserved */
+	ACPI_MADT_TYPE_RESERVED = 13	/* 13 and greater are reserved */
 };
 
 /*
- * MADT Subtables, correspond to Type in struct acpi_subtable_header
+ * MADT Sub-tables, correspond to Type in struct acpi_subtable_header
  */
 
 /* 0: Processor Local APIC */
@@ -778,7 +768,7 @@ struct acpi_madt_interrupt_source {
 
 struct acpi_madt_local_x2apic {
 	struct acpi_subtable_header header;
-	u16 reserved;		/* reserved - must be zero */
+	u16 reserved;		/* Reserved - must be zero */
 	u32 local_apic_id;	/* Processor x2APIC ID  */
 	u32 lapic_flags;
 	u32 uid;		/* ACPI processor UID */
@@ -791,33 +781,22 @@ struct acpi_madt_local_x2apic_nmi {
 	u16 inti_flags;
 	u32 uid;		/* ACPI processor UID */
 	u8 lint;		/* LINTn to which NMI is connected */
-	u8 reserved[3];		/* reserved - must be zero */
+	u8 reserved[3];
 };
 
 /* 11: Generic Interrupt (ACPI 5.0) */
 
 struct acpi_madt_generic_interrupt {
 	struct acpi_subtable_header header;
-	u16 reserved;		/* reserved - must be zero */
-	u32 cpu_interface_number;
+	u16 reserved;		/* Reserved - must be zero */
+	u32 gic_id;
 	u32 uid;
 	u32 flags;
 	u32 parking_version;
 	u32 performance_interrupt;
 	u64 parked_address;
 	u64 base_address;
-	u64 gicv_base_address;
-	u64 gich_base_address;
-	u32 vgic_interrupt;
-	u64 gicr_base_address;
-	u64 arm_mpidr;
 };
-
-/* Masks for Flags field above */
-
-/* ACPI_MADT_ENABLED                    (1)      Processor is usable if set */
-#define ACPI_MADT_PERFORMANCE_IRQ_MODE  (1<<1)	/* 01: Performance Interrupt Mode */
-#define ACPI_MADT_VGIC_IRQ_MODE         (1<<2)	/* 02: VGIC Maintenance Interrupt mode */
 
 /* 12: Generic Distributor (ACPI 5.0) */
 
@@ -830,36 +809,11 @@ struct acpi_madt_generic_distributor {
 	u32 reserved2;		/* reserved - must be zero */
 };
 
-/* 13: Generic MSI Frame (ACPI 5.1) */
-
-struct acpi_madt_generic_msi_frame {
-	struct acpi_subtable_header header;
-	u16 reserved;		/* reserved - must be zero */
-	u32 msi_frame_id;
-	u64 base_address;
-	u32 flags;
-	u16 spi_count;
-	u16 spi_base;
-};
-
-/* Masks for Flags field above */
-
-#define ACPI_MADT_OVERRIDE_SPI_VALUES   (1)
-
-/* 14: Generic Redistributor (ACPI 5.1) */
-
-struct acpi_madt_generic_redistributor {
-	struct acpi_subtable_header header;
-	u16 reserved;		/* reserved - must be zero */
-	u64 base_address;
-	u32 length;
-};
-
 /*
  * Common flags fields for MADT subtables
  */
 
-/* MADT Local APIC flags */
+/* MADT Local APIC flags (lapic_flags) and GIC flags */
 
 #define ACPI_MADT_ENABLED           (1)	/* 00: Processor is usable if set */
 
@@ -956,7 +910,7 @@ enum acpi_srat_type {
 };
 
 /*
- * SRAT Subtables, correspond to Type in struct acpi_subtable_header
+ * SRAT Sub-tables, correspond to Type in struct acpi_subtable_header
  */
 
 /* 0: Processor Local APIC/SAPIC Affinity */

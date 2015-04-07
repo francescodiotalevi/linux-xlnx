@@ -137,6 +137,7 @@ static void get_htc_packet_credit_based(struct htc_target *target,
 			credits_required = 0;
 
 		} else {
+
 			if (ep->cred_dist.credits < credits_required)
 				break;
 
@@ -168,6 +169,7 @@ static void get_htc_packet_credit_based(struct htc_target *target,
 		/* queue this packet into the caller's queue */
 		list_add_tail(&packet->list, queue);
 	}
+
 }
 
 static void get_htc_packet(struct htc_target *target,
@@ -277,6 +279,7 @@ static int htc_issue_packets(struct htc_target *target,
 			list_add(&packet->list, pkt_queue);
 			break;
 		}
+
 	}
 
 	if (status != 0) {
@@ -382,6 +385,7 @@ static enum htc_send_queue_result htc_try_send(struct htc_target *target,
 			 */
 			list_for_each_entry_safe(packet, tmp_pkt,
 						 txq, list) {
+
 				ath6kl_dbg(ATH6KL_DBG_HTC,
 					   "%s: Indicat overflowed TX pkts: %p\n",
 					   __func__, packet);
@@ -399,6 +403,7 @@ static enum htc_send_queue_result htc_try_send(struct htc_target *target,
 					list_move_tail(&packet->list,
 						       &send_queue);
 				}
+
 			}
 
 			if (list_empty(&send_queue)) {
@@ -449,6 +454,7 @@ static enum htc_send_queue_result htc_try_send(struct htc_target *target,
 	 * enough transmit resources.
 	 */
 	while (true) {
+
 		if (get_queue_depth(&ep->txq) == 0)
 			break;
 
@@ -489,8 +495,8 @@ static enum htc_send_queue_result htc_try_send(struct htc_target *target,
 		}
 
 		spin_lock_bh(&target->tx_lock);
-	}
 
+	}
 	/* done with this endpoint, we can clear the count */
 	ep->tx_proc_cnt = 0;
 	spin_unlock_bh(&target->tx_lock);
@@ -503,7 +509,9 @@ static void destroy_htc_txctrl_packet(struct htc_packet *packet)
 {
 	struct sk_buff *skb;
 	skb = packet->skb;
-	dev_kfree_skb(skb);
+	if (skb != NULL)
+		dev_kfree_skb(skb);
+
 	kfree(packet);
 }
 
@@ -961,26 +969,12 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 	u16 payload_len;
 	int status = 0;
 
-	/*
-	 * ar->htc_target can be NULL due to a race condition that can occur
-	 * during driver initialization(we do 'ath6kl_hif_power_on' before
-	 * initializing 'ar->htc_target' via 'ath6kl_htc_create').
-	 * 'ath6kl_hif_power_on' assigns 'ath6kl_recv_complete' as
-	 * usb_complete_t/callback function for 'usb_fill_bulk_urb'.
-	 * Thus the possibility of ar->htc_target being NULL
-	 * via ath6kl_recv_complete -> ath6kl_usb_io_comp_work.
-	 */
-	if (WARN_ON_ONCE(!target)) {
-		ath6kl_err("Target not yet initialized\n");
-		status = -EINVAL;
-		goto free_skb;
-	}
-
-
 	netdata = skb->data;
 	netlen = skb->len;
 
 	htc_hdr = (struct htc_frame_hdr *) netdata;
+
+	ep = &target->endpoint[htc_hdr->eid];
 
 	if (htc_hdr->eid >= ENDPOINT_MAX) {
 		ath6kl_dbg(ATH6KL_DBG_HTC,
@@ -989,7 +983,6 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 		status = -EINVAL;
 		goto free_skb;
 	}
-	ep = &target->endpoint[htc_hdr->eid];
 
 	payload_len = le16_to_cpu(get_unaligned(&htc_hdr->payld_len));
 
@@ -1061,7 +1054,6 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 
 		dev_kfree_skb(skb);
 		skb = NULL;
-
 		goto free_skb;
 	}
 
@@ -1097,9 +1089,11 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 	skb = NULL;
 
 free_skb:
-	dev_kfree_skb(skb);
+	if (skb != NULL)
+		dev_kfree_skb(skb);
 
 	return status;
+
 }
 
 static void htc_flush_rx_queue(struct htc_target *target,
@@ -1160,8 +1154,8 @@ static int htc_wait_recv_ctrl_message(struct htc_target *target)
 	}
 
 	if (count <= 0) {
-		ath6kl_warn("htc pipe control receive timeout!\n");
-		return -ETIMEDOUT;
+		ath6kl_dbg(ATH6KL_DBG_HTC, "%s: Timeout!\n", __func__);
+		return -ECOMM;
 	}
 
 	return 0;
@@ -1170,12 +1164,8 @@ static int htc_wait_recv_ctrl_message(struct htc_target *target)
 static void htc_rxctrl_complete(struct htc_target *context,
 				struct htc_packet *packet)
 {
-	struct sk_buff *skb = packet->skb;
-
-	if (packet->endpoint == ENDPOINT_0 &&
-	    packet->status == -ECANCELED &&
-	    skb != NULL)
-		dev_kfree_skb(skb);
+	/* TODO, can't really receive HTC control messages yet.... */
+	ath6kl_dbg(ATH6KL_DBG_HTC, "%s: invalid call function\n", __func__);
 }
 
 /* htc pipe initialization */
@@ -1194,7 +1184,7 @@ static void reset_endpoint_states(struct htc_target *target)
 		INIT_LIST_HEAD(&ep->pipe.tx_lookup_queue);
 		INIT_LIST_HEAD(&ep->rx_bufq);
 		ep->target = target;
-		ep->pipe.tx_credit_flow_enabled = true;
+		ep->pipe.tx_credit_flow_enabled = (bool) 1; /* FIXME */
 	}
 }
 
@@ -1255,6 +1245,7 @@ static int ath6kl_htc_pipe_conn_service(struct htc_target *target,
 		tx_alloc = 0;
 
 	} else {
+
 		tx_alloc = htc_get_credit_alloc(target, conn_req->svc_id);
 		if (tx_alloc == 0) {
 			status = -ENOMEM;
@@ -1577,16 +1568,16 @@ static int ath6kl_htc_pipe_wait_target(struct htc_target *target)
 		return status;
 
 	if (target->pipe.ctrl_response_len < sizeof(*ready_msg)) {
-		ath6kl_warn("invalid htc pipe ready msg len: %d\n",
-			    target->pipe.ctrl_response_len);
+		ath6kl_dbg(ATH6KL_DBG_HTC, "invalid htc ready msg len:%d!\n",
+			   target->pipe.ctrl_response_len);
 		return -ECOMM;
 	}
 
 	ready_msg = (struct htc_ready_ext_msg *) target->pipe.ctrl_response_buf;
 
 	if (ready_msg->ver2_0_info.msg_id != cpu_to_le16(HTC_MSG_READY_ID)) {
-		ath6kl_warn("invalid htc pipe ready msg: 0x%x\n",
-			    ready_msg->ver2_0_info.msg_id);
+		ath6kl_dbg(ATH6KL_DBG_HTC, "invalid htc ready msg : 0x%X !\n",
+			   ready_msg->ver2_0_info.msg_id);
 		return -ECOMM;
 	}
 
@@ -1682,29 +1673,7 @@ static void ath6kl_htc_pipe_activity_changed(struct htc_target *target,
 
 static void ath6kl_htc_pipe_flush_rx_buf(struct htc_target *target)
 {
-	struct htc_endpoint *endpoint;
-	struct htc_packet *packet, *tmp_pkt;
-	int i;
-
-	for (i = ENDPOINT_0; i < ENDPOINT_MAX; i++) {
-		endpoint = &target->endpoint[i];
-
-		spin_lock_bh(&target->rx_lock);
-
-		list_for_each_entry_safe(packet, tmp_pkt,
-					 &endpoint->rx_bufq, list) {
-			list_del(&packet->list);
-			spin_unlock_bh(&target->rx_lock);
-			ath6kl_dbg(ATH6KL_DBG_HTC,
-				   "htc rx flush pkt 0x%p len %d ep %d\n",
-				   packet, packet->buf_len,
-				   packet->endpoint);
-			dev_kfree_skb(packet->pkt_cntxt);
-			spin_lock_bh(&target->rx_lock);
-		}
-
-		spin_unlock_bh(&target->rx_lock);
-	}
+	/* TODO */
 }
 
 static int ath6kl_htc_pipe_credit_setup(struct htc_target *target,

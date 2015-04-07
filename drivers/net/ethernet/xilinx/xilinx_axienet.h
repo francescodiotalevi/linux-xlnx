@@ -9,18 +9,19 @@
 #define XILINX_AXIENET_H
 
 #include <linux/netdevice.h>
+#include <linux/of_irq.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
-#include <linux/if_vlan.h>
 
 /* Packet size info */
 #define XAE_HDR_SIZE			14 /* Size of Ethernet header */
+#define XAE_HDR_VLAN_SIZE		18 /* Size of an Ethernet hdr + VLAN */
 #define XAE_TRL_SIZE			 4 /* Size of Ethernet trailer (FCS) */
 #define XAE_MTU			      1500 /* Max MTU of an Ethernet frame */
 #define XAE_JUMBO_MTU		      9000 /* Max MTU of a jumbo Eth. frame */
 
 #define XAE_MAX_FRAME_SIZE	 (XAE_MTU + XAE_HDR_SIZE + XAE_TRL_SIZE)
-#define XAE_MAX_VLAN_FRAME_SIZE  (XAE_MTU + VLAN_ETH_HLEN + XAE_TRL_SIZE)
+#define XAE_MAX_VLAN_FRAME_SIZE  (XAE_MTU + XAE_HDR_VLAN_SIZE + XAE_TRL_SIZE)
 #define XAE_MAX_JUMBO_FRAME_SIZE (XAE_JUMBO_MTU + XAE_HDR_SIZE + XAE_TRL_SIZE)
 
 /* Configuration options */
@@ -396,6 +397,7 @@ struct axidma_bd {
  * @dma_err_tasklet: Tasklet structure to process Axi DMA errors
  * @tx_irq:	Axidma TX IRQ number
  * @rx_irq:	Axidma RX IRQ number
+ * @temac_type:	axienet type to identify between soft and hard temac
  * @phy_type:	Phy type to identify between MII/GMII/RGMII/SGMII/1000 Base-X
  * @options:	AxiEthernet option word
  * @last_link:	Phy link state in which the PHY was negotiated earlier
@@ -438,6 +440,7 @@ struct axienet_local {
 
 	int tx_irq;
 	int rx_irq;
+	u32 temac_type;
 	u32 phy_type;
 
 	u32 options;			/* Current options word */
@@ -454,7 +457,7 @@ struct axienet_local {
 	u32 rx_bd_ci;
 
 	u32 max_frm_size;
-	u32 rxmem;
+	u32 jumbo_support;
 
 	int csum_offload_on_tx_path;
 	int csum_offload_on_rx_path;

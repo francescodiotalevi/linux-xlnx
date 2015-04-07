@@ -1,7 +1,9 @@
 /*******************************************************************************
  * This file contains the iSCSI Target specific Task Management functions.
  *
- * (c) Copyright 2007-2013 Datera, Inc.
+ * \u00a9 Copyright 2007-2011 RisingTide Systems LLC.
+ *
+ * Licensed to the Linux Foundation under the General Public License (GPL) version 2.
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
@@ -21,7 +23,6 @@
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
-#include <target/iscsi/iscsi_transport.h>
 
 #include "iscsi_target_core.h"
 #include "iscsi_target_seq_pdu_list.h"
@@ -300,7 +301,7 @@ static int iscsit_task_reassign_complete_write(
 	/*
 	 * iscsit_build_r2ts_for_cmd() can handle the rest from here.
 	 */
-	return conn->conn_transport->iscsit_get_dataout(conn, cmd, true);
+	return iscsit_build_r2ts_for_cmd(cmd, conn, true);
 }
 
 static int iscsit_task_reassign_complete_read(
@@ -470,7 +471,6 @@ int iscsit_tmr_post_handler(struct iscsi_cmd *cmd, struct iscsi_conn *conn)
 
 	return 0;
 }
-EXPORT_SYMBOL(iscsit_tmr_post_handler);
 
 /*
  *	Nothing to do here, but leave it for good measure. :-)

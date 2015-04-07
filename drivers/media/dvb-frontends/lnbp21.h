@@ -27,8 +27,6 @@
 #ifndef _LNBP21_H
 #define _LNBP21_H
 
-#include <linux/kconfig.h>
-
 /* system register bits */
 /* [RO] 0=OK; 1=over current limit flag */
 #define LNBP21_OLF	0x01
@@ -57,7 +55,8 @@
 
 #include <linux/dvb/frontend.h>
 
-#if IS_ENABLED(CONFIG_DVB_LNBP21)
+#if defined(CONFIG_DVB_LNBP21) || (defined(CONFIG_DVB_LNBP21_MODULE) \
+							&& defined(MODULE))
 /* override_set and override_clear control which
  system register bits (above) to always set & clear */
 extern struct dvb_frontend *lnbp21_attach(struct dvb_frontend *fe,

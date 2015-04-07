@@ -61,13 +61,6 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 		}
 
 		spin_lock_bh(&x->lock);
-
-		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
-			err = -EINVAL;
-			goto error;
-		}
-
 		err = xfrm_state_check_expire(x);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEEXPIRED);
@@ -89,7 +82,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 
 		err = x->type->output(x, skb);
 		if (err == -EINPROGRESS)
-			goto out;
+			goto out_exit;
 
 resume:
 		if (err) {
@@ -107,14 +100,15 @@ resume:
 		x = dst->xfrm;
 	} while (x && !(x->outer_mode->flags & XFRM_MODE_FLAG_TUNNEL));
 
-	return 0;
+	err = 0;
 
+out_exit:
+	return err;
 error:
 	spin_unlock_bh(&x->lock);
 error_nolock:
 	kfree_skb(skb);
-out:
-	return err;
+	goto out_exit;
 }
 
 int xfrm_output_resume(struct sk_buff *skb, int err)
@@ -199,7 +193,6 @@ int xfrm_output(struct sk_buff *skb)
 
 	return xfrm_output2(skb);
 }
-EXPORT_SYMBOL_GPL(xfrm_output);
 
 int xfrm_inner_extract_output(struct xfrm_state *x, struct sk_buff *skb)
 {
@@ -214,25 +207,6 @@ int xfrm_inner_extract_output(struct xfrm_state *x, struct sk_buff *skb)
 		return -EAFNOSUPPORT;
 	return inner_mode->afinfo->extract_output(x, skb);
 }
+
+EXPORT_SYMBOL_GPL(xfrm_output);
 EXPORT_SYMBOL_GPL(xfrm_inner_extract_output);
-
-void xfrm_local_error(struct sk_buff *skb, int mtu)
-{
-	unsigned int proto;
-	struct xfrm_state_afinfo *afinfo;
-
-	if (skb->protocol == htons(ETH_P_IP))
-		proto = AF_INET;
-	else if (skb->protocol == htons(ETH_P_IPV6))
-		proto = AF_INET6;
-	else
-		return;
-
-	afinfo = xfrm_state_get_afinfo(proto);
-	if (!afinfo)
-		return;
-
-	afinfo->local_error(skb, mtu);
-	xfrm_state_put_afinfo(afinfo);
-}
-EXPORT_SYMBOL_GPL(xfrm_local_error);

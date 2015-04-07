@@ -27,7 +27,8 @@
 
 struct tps65910_rtc {
 	struct rtc_device	*rtc;
-	int irq;
+	/* To store the list of enabled interrupts */
+	u32 irqstat;
 };
 
 /* Total number of RTC registers needed to set time*/
@@ -258,32 +259,31 @@ static int tps65910_rtc_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	platform_set_drvdata(pdev, tps_rtc);
-
 	irq  = platform_get_irq(pdev, 0);
 	if (irq <= 0) {
 		dev_warn(&pdev->dev, "Wake up is not possible as irq = %d\n",
 			irq);
-		return -ENXIO;
+		return ret;
 	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
-		tps65910_rtc_interrupt, IRQF_TRIGGER_LOW | IRQF_EARLY_RESUME,
+		tps65910_rtc_interrupt, IRQF_TRIGGER_LOW,
 		dev_name(&pdev->dev), &pdev->dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "IRQ is not free.\n");
 		return ret;
 	}
-	tps_rtc->irq = irq;
-	device_set_wakeup_capable(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, 1);
 
-	tps_rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
+	tps_rtc->rtc = rtc_device_register(pdev->name, &pdev->dev,
 		&tps65910_rtc_ops, THIS_MODULE);
 	if (IS_ERR(tps_rtc->rtc)) {
 		ret = PTR_ERR(tps_rtc->rtc);
 		dev_err(&pdev->dev, "RTC device register: err %d\n", ret);
 		return ret;
 	}
+
+	platform_set_drvdata(pdev, tps_rtc);
 
 	return 0;
 }
@@ -294,33 +294,51 @@ static int tps65910_rtc_probe(struct platform_device *pdev)
  */
 static int tps65910_rtc_remove(struct platform_device *pdev)
 {
+	/* leave rtc running, but disable irqs */
+	struct tps65910_rtc *tps_rtc = platform_get_drvdata(pdev);
+
 	tps65910_rtc_alarm_irq_enable(&pdev->dev, 0);
 
+	rtc_device_unregister(tps_rtc->rtc);
 	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
+
 static int tps65910_rtc_suspend(struct device *dev)
 {
-	struct tps65910_rtc *tps_rtc = dev_get_drvdata(dev);
+	struct tps65910 *tps = dev_get_drvdata(dev->parent);
+	u8 alarm = TPS65910_RTC_INTERRUPTS_IT_ALARM;
+	int ret;
 
-	if (device_may_wakeup(dev))
-		enable_irq_wake(tps_rtc->irq);
-	return 0;
+	/* Store current list of enabled interrupts*/
+	ret = regmap_read(tps->regmap, TPS65910_RTC_INTERRUPTS,
+		&tps->rtc->irqstat);
+	if (ret < 0)
+		return ret;
+
+	/* Enable RTC ALARM interrupt only */
+	return regmap_write(tps->regmap, TPS65910_RTC_INTERRUPTS, alarm);
 }
 
 static int tps65910_rtc_resume(struct device *dev)
 {
-	struct tps65910_rtc *tps_rtc = dev_get_drvdata(dev);
+	struct tps65910 *tps = dev_get_drvdata(dev->parent);
 
-	if (device_may_wakeup(dev))
-		disable_irq_wake(tps_rtc->irq);
-	return 0;
+	/* Restore list of enabled interrupts before suspend */
+	return regmap_write(tps->regmap, TPS65910_RTC_INTERRUPTS,
+		tps->rtc->irqstat);
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(tps65910_rtc_pm_ops, tps65910_rtc_suspend,
-			tps65910_rtc_resume);
+static const struct dev_pm_ops tps65910_rtc_pm_ops = {
+	.suspend	= tps65910_rtc_suspend,
+	.resume		= tps65910_rtc_resume,
+};
+
+#define DEV_PM_OPS     (&tps65910_rtc_pm_ops)
+#else
+#define DEV_PM_OPS     NULL
+#endif
 
 static struct platform_driver tps65910_rtc_driver = {
 	.probe		= tps65910_rtc_probe,
@@ -328,7 +346,7 @@ static struct platform_driver tps65910_rtc_driver = {
 	.driver		= {
 		.owner	= THIS_MODULE,
 		.name	= "tps65910-rtc",
-		.pm	= &tps65910_rtc_pm_ops,
+		.pm	= DEV_PM_OPS,
 	},
 };
 

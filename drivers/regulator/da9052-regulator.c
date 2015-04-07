@@ -240,31 +240,6 @@ static int da9052_regulator_set_voltage_sel(struct regulator_dev *rdev,
 	return ret;
 }
 
-static int da9052_regulator_set_voltage_time_sel(struct regulator_dev *rdev,
-						 unsigned int old_sel,
-						 unsigned int new_sel)
-{
-	struct da9052_regulator *regulator = rdev_get_drvdata(rdev);
-	struct da9052_regulator_info *info = regulator->info;
-	int id = rdev_get_id(rdev);
-	int ret = 0;
-
-	/* The DVC controlled LDOs and DCDCs ramp with 6.25mV/µs after enabling
-	 * the activate bit.
-	 */
-	switch (id) {
-	case DA9052_ID_BUCK1:
-	case DA9052_ID_BUCK2:
-	case DA9052_ID_BUCK3:
-	case DA9052_ID_LDO2:
-	case DA9052_ID_LDO3:
-		ret = (new_sel - old_sel) * info->step_uV / 6250;
-		break;
-	}
-
-	return ret;
-}
-
 static struct regulator_ops da9052_dcdc_ops = {
 	.get_current_limit = da9052_dcdc_get_current_limit,
 	.set_current_limit = da9052_dcdc_set_current_limit,
@@ -273,7 +248,6 @@ static struct regulator_ops da9052_dcdc_ops = {
 	.map_voltage = da9052_map_voltage,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 	.set_voltage_sel = da9052_regulator_set_voltage_sel,
-	.set_voltage_time_sel = da9052_regulator_set_voltage_time_sel,
 	.is_enabled = regulator_is_enabled_regmap,
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
@@ -284,7 +258,6 @@ static struct regulator_ops da9052_ldo_ops = {
 	.map_voltage = da9052_map_voltage,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 	.set_voltage_sel = da9052_regulator_set_voltage_sel,
-	.set_voltage_time_sel = da9052_regulator_set_voltage_time_sel,
 	.is_enabled = regulator_is_enabled_regmap,
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
@@ -405,7 +378,7 @@ static int da9052_regulator_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	da9052 = dev_get_drvdata(pdev->dev.parent);
-	pdata = dev_get_platdata(da9052->dev);
+	pdata = da9052->dev->platform_data;
 	regulator->da9052 = da9052;
 
 	regulator->info = find_regulator_info(regulator->da9052->chip_id,
@@ -428,7 +401,7 @@ static int da9052_regulator_probe(struct platform_device *pdev)
 		if (!nproot)
 			return -ENODEV;
 
-		nproot = of_get_child_by_name(nproot, "regulators");
+		nproot = of_find_node_by_name(nproot, "regulators");
 		if (!nproot)
 			return -ENODEV;
 
@@ -441,13 +414,11 @@ static int da9052_regulator_probe(struct platform_device *pdev)
 				break;
 			}
 		}
-		of_node_put(nproot);
 #endif
 	}
 
-	regulator->rdev = devm_regulator_register(&pdev->dev,
-						  &regulator->info->reg_desc,
-						  &config);
+	regulator->rdev = regulator_register(&regulator->info->reg_desc,
+					     &config);
 	if (IS_ERR(regulator->rdev)) {
 		dev_err(&pdev->dev, "failed to register regulator %s\n",
 			regulator->info->reg_desc.name);
@@ -459,8 +430,17 @@ static int da9052_regulator_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int da9052_regulator_remove(struct platform_device *pdev)
+{
+	struct da9052_regulator *regulator = platform_get_drvdata(pdev);
+
+	regulator_unregister(regulator->rdev);
+	return 0;
+}
+
 static struct platform_driver da9052_regulator_driver = {
 	.probe = da9052_regulator_probe,
+	.remove = da9052_regulator_remove,
 	.driver = {
 		.name = "da9052-regulator",
 		.owner = THIS_MODULE,

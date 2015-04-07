@@ -7,6 +7,7 @@
 #include <linux/export.h>
 
 #include <linux/iio/iio.h>
+#include "../ring_sw.h"
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/trigger.h>
 #include <linux/iio/trigger_consumer.h>
@@ -31,7 +32,7 @@ irqreturn_t lis3l02dq_data_rdy_trig_poll(int irq, void *private)
 	struct lis3l02dq_state *st = iio_priv(indio_dev);
 
 	if (st->trigger_on) {
-		iio_trigger_poll(st->trig);
+		iio_trigger_poll(st->trig, iio_get_time_ns());
 		return IRQ_HANDLED;
 	} else
 		return IRQ_WAKE_THREAD;
@@ -111,7 +112,7 @@ static int lis3l02dq_get_buffer_element(struct iio_dev *indio_dev,
 				u8 *buf)
 {
 	int ret, i;
-	u8 *rx_array;
+	u8 *rx_array ;
 	s16 *data = (s16 *)buf;
 	int scan_count = bitmap_weight(indio_dev->active_scan_mask,
 				       indio_dev->masklength);
@@ -140,13 +141,20 @@ static irqreturn_t lis3l02dq_trigger_handler(int irq, void *p)
 	char *data;
 
 	data = kmalloc(indio_dev->scan_bytes, GFP_KERNEL);
-	if (data == NULL)
+	if (data == NULL) {
+		dev_err(indio_dev->dev.parent,
+			"memory alloc failed in buffer bh");
 		goto done;
+	}
 
 	if (!bitmap_empty(indio_dev->active_scan_mask, indio_dev->masklength))
 		len = lis3l02dq_get_buffer_element(indio_dev, data);
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data, pf->timestamp);
+	  /* Guaranteed to be aligned with 8 byte boundary */
+	if (indio_dev->scan_timestamp)
+		*(s64 *)((u8 *)data + ALIGN(len, sizeof(s64)))
+			= pf->timestamp;
+	iio_push_to_buffers(indio_dev, (u8 *)data);
 
 	kfree(data);
 done:
@@ -224,7 +232,7 @@ error_ret:
 static int lis3l02dq_data_rdy_trigger_set_state(struct iio_trigger *trig,
 						bool state)
 {
-	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
+	struct iio_dev *indio_dev = trig->private_data;
 	int ret = 0;
 	u8 t;
 
@@ -248,7 +256,7 @@ static int lis3l02dq_data_rdy_trigger_set_state(struct iio_trigger *trig,
  */
 static int lis3l02dq_trig_try_reen(struct iio_trigger *trig)
 {
-	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
+	struct iio_dev *indio_dev = trig->private_data;
 	struct lis3l02dq_state *st = iio_priv(indio_dev);
 	int i;
 
@@ -260,7 +268,8 @@ static int lis3l02dq_trig_try_reen(struct iio_trigger *trig)
 		else
 			break;
 	if (i == 5)
-		pr_info("Failed to clear the interrupt for lis3l02dq\n");
+		printk(KERN_INFO
+		       "Failed to clear the interrupt for lis3l02dq\n");
 
 	/* irq reenabled so success! */
 	return 0;
@@ -285,7 +294,7 @@ int lis3l02dq_probe_trigger(struct iio_dev *indio_dev)
 
 	st->trig->dev.parent = &st->us->dev;
 	st->trig->ops = &lis3l02dq_trigger_ops;
-	iio_trigger_set_drvdata(st->trig, indio_dev);
+	st->trig->private_data = indio_dev;
 	ret = iio_trigger_register(st->trig);
 	if (ret)
 		goto error_free_trig;
@@ -309,7 +318,7 @@ void lis3l02dq_remove_trigger(struct iio_dev *indio_dev)
 void lis3l02dq_unconfigure_buffer(struct iio_dev *indio_dev)
 {
 	iio_dealloc_pollfunc(indio_dev->pollfunc);
-	iio_kfifo_free(indio_dev->buffer);
+	lis3l02dq_free_buf(indio_dev->buffer);
 }
 
 static int lis3l02dq_buffer_postenable(struct iio_dev *indio_dev)
@@ -382,6 +391,7 @@ error_ret:
 }
 
 static const struct iio_buffer_setup_ops lis3l02dq_buffer_setup_ops = {
+	.preenable = &iio_sw_buffer_preenable,
 	.postenable = &lis3l02dq_buffer_postenable,
 	.predisable = &lis3l02dq_buffer_predisable,
 };
@@ -391,11 +401,11 @@ int lis3l02dq_configure_buffer(struct iio_dev *indio_dev)
 	int ret;
 	struct iio_buffer *buffer;
 
-	buffer = iio_kfifo_allocate(indio_dev);
+	buffer = lis3l02dq_alloc_buf(indio_dev);
 	if (!buffer)
 		return -ENOMEM;
 
-	iio_device_attach_buffer(indio_dev, buffer);
+	indio_dev->buffer = buffer;
 
 	buffer->scan_timestamp = true;
 	indio_dev->setup_ops = &lis3l02dq_buffer_setup_ops;
@@ -417,6 +427,6 @@ int lis3l02dq_configure_buffer(struct iio_dev *indio_dev)
 	return 0;
 
 error_iio_sw_rb_free:
-	iio_kfifo_free(indio_dev->buffer);
+	lis3l02dq_free_buf(indio_dev->buffer);
 	return ret;
 }

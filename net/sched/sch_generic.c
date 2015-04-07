@@ -25,14 +25,8 @@
 #include <linux/rcupdate.h>
 #include <linux/list.h>
 #include <linux/slab.h>
-#include <linux/if_vlan.h>
-#include <net/sch_generic.h>
 #include <net/pkt_sched.h>
 #include <net/dst.h>
-
-/* Qdisc to use by default */
-const struct Qdisc_ops *default_qdisc_ops = &pfifo_fast_ops;
-EXPORT_SYMBOL(default_qdisc_ops);
 
 /* Main transmission queue. */
 
@@ -108,7 +102,7 @@ static inline int handle_dev_cpu_collision(struct sk_buff *skb,
 
 /*
  * Transmit one skb, and handle the return status as required. Holding the
- * __QDISC___STATE_RUNNING bit guarantees that only one CPU can execute this
+ * __QDISC_STATE_RUNNING bit guarantees that only one CPU can execute this
  * function.
  *
  * Returns to the caller:
@@ -156,7 +150,7 @@ int sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
 /*
  * NOTE: Called under qdisc_lock(q) with locally disabled BH.
  *
- * __QDISC___STATE_RUNNING guarantees only one CPU can process
+ * __QDISC_STATE_RUNNING guarantees only one CPU can process
  * this qdisc at a time. qdisc_lock(q) serializes queue accesses for
  * this queue.
  *
@@ -212,19 +206,15 @@ void __qdisc_run(struct Qdisc *q)
 
 unsigned long dev_trans_start(struct net_device *dev)
 {
-	unsigned long val, res;
+	unsigned long val, res = dev->trans_start;
 	unsigned int i;
 
-	if (is_vlan_dev(dev))
-		dev = vlan_dev_real_dev(dev);
-	res = dev->trans_start;
 	for (i = 0; i < dev->num_tx_queues; i++) {
 		val = netdev_get_tx_queue(dev, i)->trans_start;
 		if (val && time_after(val, res))
 			res = val;
 	}
 	dev->trans_start = res;
-
 	return res;
 }
 EXPORT_SYMBOL(dev_trans_start);
@@ -310,7 +300,6 @@ void netif_carrier_on(struct net_device *dev)
 	if (test_and_clear_bit(__LINK_STATE_NOCARRIER, &dev->state)) {
 		if (dev->reg_state == NETREG_UNINITIALIZED)
 			return;
-		atomic_inc(&dev->carrier_changes);
 		linkwatch_fire_event(dev);
 		if (netif_running(dev))
 			__netdev_watchdog_up(dev);
@@ -329,7 +318,6 @@ void netif_carrier_off(struct net_device *dev)
 	if (!test_and_set_bit(__LINK_STATE_NOCARRIER, &dev->state)) {
 		if (dev->reg_state == NETREG_UNINITIALIZED)
 			return;
-		atomic_inc(&dev->carrier_changes);
 		linkwatch_fire_event(dev);
 	}
 }
@@ -340,13 +328,13 @@ EXPORT_SYMBOL(netif_carrier_off);
    cheaper.
  */
 
-static int noop_enqueue(struct sk_buff *skb, struct Qdisc *qdisc)
+static int noop_enqueue(struct sk_buff *skb, struct Qdisc * qdisc)
 {
 	kfree_skb(skb);
 	return NET_XMIT_CN;
 }
 
-static struct sk_buff *noop_dequeue(struct Qdisc *qdisc)
+static struct sk_buff *noop_dequeue(struct Qdisc * qdisc)
 {
 	return NULL;
 }
@@ -536,11 +524,12 @@ struct Qdisc_ops pfifo_fast_ops __read_mostly = {
 	.dump		=	pfifo_fast_dump,
 	.owner		=	THIS_MODULE,
 };
+EXPORT_SYMBOL(pfifo_fast_ops);
 
 static struct lock_class_key qdisc_tx_busylock;
 
 struct Qdisc *qdisc_alloc(struct netdev_queue *dev_queue,
-			  const struct Qdisc_ops *ops)
+			  struct Qdisc_ops *ops)
 {
 	void *p;
 	struct Qdisc *sch;
@@ -584,13 +573,9 @@ errout:
 }
 
 struct Qdisc *qdisc_create_dflt(struct netdev_queue *dev_queue,
-				const struct Qdisc_ops *ops,
-				unsigned int parentid)
+				struct Qdisc_ops *ops, unsigned int parentid)
 {
 	struct Qdisc *sch;
-
-	if (!try_module_get(ops->owner))
-		goto errout;
 
 	sch = qdisc_alloc(dev_queue, ops);
 	if (IS_ERR(sch))
@@ -695,7 +680,7 @@ static void attach_one_default_qdisc(struct net_device *dev,
 
 	if (dev->tx_queue_len) {
 		qdisc = qdisc_create_dflt(dev_queue,
-					  default_qdisc_ops, TC_H_ROOT);
+					  &pfifo_fast_ops, TC_H_ROOT);
 		if (!qdisc) {
 			netdev_info(dev, "activation failed\n");
 			return;
@@ -720,8 +705,8 @@ static void attach_default_qdiscs(struct net_device *dev)
 	} else {
 		qdisc = qdisc_create_dflt(txq, &mq_qdisc_ops, TC_H_ROOT);
 		if (qdisc) {
-			dev->qdisc = qdisc;
 			qdisc->ops->attach(qdisc);
+			dev->qdisc = qdisc;
 		}
 	}
 }
@@ -748,8 +733,9 @@ void dev_activate(struct net_device *dev)
 	int need_watchdog;
 
 	/* No queueing discipline is attached to device;
-	 * create default one for devices, which need queueing
-	 * and noqueue_qdisc for virtual interfaces
+	   create default one i.e. pfifo_fast for devices,
+	   which need queueing and noqueue_qdisc for
+	   virtual interfaces
 	 */
 
 	if (dev->qdisc == &noop_qdisc)
@@ -831,7 +817,7 @@ void dev_deactivate_many(struct list_head *head)
 	struct net_device *dev;
 	bool sync_needed = false;
 
-	list_for_each_entry(dev, head, close_list) {
+	list_for_each_entry(dev, head, unreg_list) {
 		netdev_for_each_tx_queue(dev, dev_deactivate_queue,
 					 &noop_qdisc);
 		if (dev_ingress_queue(dev))
@@ -850,7 +836,7 @@ void dev_deactivate_many(struct list_head *head)
 		synchronize_net();
 
 	/* Wait for outstanding qdisc_run calls. */
-	list_for_each_entry(dev, head, close_list)
+	list_for_each_entry(dev, head, unreg_list)
 		while (some_qdisc_is_busy(dev))
 			yield();
 }
@@ -859,7 +845,7 @@ void dev_deactivate(struct net_device *dev)
 {
 	LIST_HEAD(single);
 
-	list_add(&dev->close_list, &single);
+	list_add(&dev->unreg_list, &single);
 	dev_deactivate_many(&single);
 	list_del(&single);
 }
@@ -910,39 +896,3 @@ void dev_shutdown(struct net_device *dev)
 
 	WARN_ON(timer_pending(&dev->watchdog_timer));
 }
-
-void psched_ratecfg_precompute(struct psched_ratecfg *r,
-			       const struct tc_ratespec *conf,
-			       u64 rate64)
-{
-	memset(r, 0, sizeof(*r));
-	r->overhead = conf->overhead;
-	r->rate_bytes_ps = max_t(u64, conf->rate, rate64);
-	r->linklayer = (conf->linklayer & TC_LINKLAYER_MASK);
-	r->mult = 1;
-	/*
-	 * The deal here is to replace a divide by a reciprocal one
-	 * in fast path (a reciprocal divide is a multiply and a shift)
-	 *
-	 * Normal formula would be :
-	 *  time_in_ns = (NSEC_PER_SEC * len) / rate_bps
-	 *
-	 * We compute mult/shift to use instead :
-	 *  time_in_ns = (len * mult) >> shift;
-	 *
-	 * We try to get the highest possible mult value for accuracy,
-	 * but have to make sure no overflows will ever happen.
-	 */
-	if (r->rate_bytes_ps > 0) {
-		u64 factor = NSEC_PER_SEC;
-
-		for (;;) {
-			r->mult = div64_u64(factor, r->rate_bytes_ps);
-			if (r->mult & (1U << 31) || factor & (1ULL << 63))
-				break;
-			factor <<= 1;
-			r->shift++;
-		}
-	}
-}
-EXPORT_SYMBOL(psched_ratecfg_precompute);

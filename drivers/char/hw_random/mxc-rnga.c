@@ -142,7 +142,7 @@ static void mxc_rnga_cleanup(struct hwrng *rng)
 static int __init mxc_rnga_probe(struct platform_device *pdev)
 {
 	int err = -ENODEV;
-	struct resource *res;
+	struct resource *res, *mem;
 	struct mxc_rng *mxc_rng;
 
 	mxc_rng = devm_kzalloc(&pdev->dev, sizeof(struct mxc_rng),
@@ -164,14 +164,23 @@ static int __init mxc_rnga_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	err = clk_prepare_enable(mxc_rng->clk);
-	if (err)
-		goto out;
+	clk_prepare_enable(mxc_rng->clk);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mxc_rng->mem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mxc_rng->mem)) {
-		err = PTR_ERR(mxc_rng->mem);
+	if (!res) {
+		err = -ENOENT;
+		goto err_region;
+	}
+
+	mem = request_mem_region(res->start, resource_size(res), pdev->name);
+	if (mem == NULL) {
+		err = -EBUSY;
+		goto err_region;
+	}
+
+	mxc_rng->mem = ioremap(res->start, resource_size(res));
+	if (!mxc_rng->mem) {
+		err = -ENOMEM;
 		goto err_ioremap;
 	}
 
@@ -186,6 +195,9 @@ static int __init mxc_rnga_probe(struct platform_device *pdev)
 	return 0;
 
 err_ioremap:
+	release_mem_region(res->start, resource_size(res));
+
+err_region:
 	clk_disable_unprepare(mxc_rng->clk);
 
 out:
@@ -194,9 +206,14 @@ out:
 
 static int __exit mxc_rnga_remove(struct platform_device *pdev)
 {
+	struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	struct mxc_rng *mxc_rng = platform_get_drvdata(pdev);
 
 	hwrng_unregister(&mxc_rng->rng);
+
+	iounmap(mxc_rng->mem);
+
+	release_mem_region(res->start, resource_size(res));
 
 	clk_disable_unprepare(mxc_rng->clk);
 
@@ -211,7 +228,18 @@ static struct platform_driver mxc_rnga_driver = {
 	.remove = __exit_p(mxc_rnga_remove),
 };
 
-module_platform_driver_probe(mxc_rnga_driver, mxc_rnga_probe);
+static int __init mod_init(void)
+{
+	return platform_driver_probe(&mxc_rnga_driver, mxc_rnga_probe);
+}
+
+static void __exit mod_exit(void)
+{
+	platform_driver_unregister(&mxc_rnga_driver);
+}
+
+module_init(mod_init);
+module_exit(mod_exit);
 
 MODULE_AUTHOR("Freescale Semiconductor, Inc.");
 MODULE_DESCRIPTION("H/W RNGA driver for i.MX");

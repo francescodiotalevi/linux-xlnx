@@ -183,7 +183,7 @@ int omfs_sync_inode(struct inode *inode)
  */
 static void omfs_evict_inode(struct inode *inode)
 {
-	truncate_inode_pages_final(&inode->i_data);
+	truncate_inode_pages(&inode->i_data, 0);
 	clear_inode(inode);
 
 	if (inode->i_nlink)
@@ -321,7 +321,7 @@ static int omfs_get_imap(struct super_block *sb)
 		goto out;
 
 	sbi->s_imap_size = array_size;
-	sbi->s_imap = kcalloc(array_size, sizeof(unsigned long *), GFP_KERNEL);
+	sbi->s_imap = kzalloc(array_size * sizeof(unsigned long *), GFP_KERNEL);
 	if (!sbi->s_imap)
 		goto nomem;
 
@@ -572,7 +572,6 @@ static struct file_system_type omfs_fs_type = {
 	.kill_sb = kill_block_super,
 	.fs_flags = FS_REQUIRES_DEV,
 };
-MODULE_ALIAS_FS("omfs");
 
 static int __init init_omfs_fs(void)
 {

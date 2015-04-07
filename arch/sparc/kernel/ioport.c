@@ -186,7 +186,7 @@ static void __iomem *_sparc_alloc_io(unsigned int busno, unsigned long phys,
 
 	if (name == NULL) name = "???";
 
-	if ((xres = xres_alloc()) != NULL) {
+	if ((xres = xres_alloc()) != 0) {
 		tack = xres->xname;
 		res = &xres->xres;
 	} else {
@@ -400,7 +400,7 @@ static void sbus_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 	BUG();
 }
 
-static struct dma_map_ops sbus_dma_ops = {
+struct dma_map_ops sbus_dma_ops = {
 	.alloc			= sbus_alloc_coherent,
 	.free			= sbus_free_coherent,
 	.map_page		= sbus_map_page,
@@ -666,9 +666,10 @@ EXPORT_SYMBOL(dma_ops);
  */
 int dma_supported(struct device *dev, u64 mask)
 {
-	if (dev_is_pci(dev))
+#ifdef CONFIG_PCI
+	if (dev->bus == &pci_bus_type)
 		return 1;
-
+#endif
 	return 0;
 }
 EXPORT_SYMBOL(dma_supported);
@@ -681,7 +682,7 @@ static int sparc_io_proc_show(struct seq_file *m, void *v)
 	const char *nm;
 
 	for (r = root->child; r != NULL; r = r->sibling) {
-		if ((nm = r->name) == NULL) nm = "???";
+		if ((nm = r->name) == 0) nm = "???";
 		seq_printf(m, "%016llx-%016llx: %s\n",
 				(unsigned long long)r->start,
 				(unsigned long long)r->end, nm);
@@ -692,7 +693,7 @@ static int sparc_io_proc_show(struct seq_file *m, void *v)
 
 static int sparc_io_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, sparc_io_proc_show, PDE_DATA(inode));
+	return single_open(file, sparc_io_proc_show, PDE(inode)->data);
 }
 
 static const struct file_operations sparc_io_proc_fops = {

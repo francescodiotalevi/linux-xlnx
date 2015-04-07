@@ -13,10 +13,8 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
+
 #include <linux/atomic.h>
-#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-#include <linux/osq_lock.h>
-#endif
 
 struct rw_semaphore;
 
@@ -25,17 +23,9 @@ struct rw_semaphore;
 #else
 /* All arch specific implementations share the same struct */
 struct rw_semaphore {
-	long count;
-	struct list_head wait_list;
-	raw_spinlock_t wait_lock;
-#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-	struct optimistic_spin_queue osq; /* spinner MCS lock */
-	/*
-	 * Write owner. Used as a speculative check to see
-	 * if the owner is running on the cpu.
-	 */
-	struct task_struct *owner;
-#endif
+	long			count;
+	raw_spinlock_t		wait_lock;
+	struct list_head	wait_list;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
@@ -65,17 +55,10 @@ static inline int rwsem_is_locked(struct rw_semaphore *sem)
 # define __RWSEM_DEP_MAP_INIT(lockname)
 #endif
 
-#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-#define __RWSEM_OPT_INIT(lockname) , .osq = OSQ_LOCK_UNLOCKED, .owner = NULL
-#else
-#define __RWSEM_OPT_INIT(lockname)
-#endif
-
-#define __RWSEM_INITIALIZER(name)				\
-	{ .count = RWSEM_UNLOCKED_VALUE,			\
-	  .wait_list = LIST_HEAD_INIT((name).wait_list),	\
-	  .wait_lock = __RAW_SPIN_LOCK_UNLOCKED(name.wait_lock)	\
-	  __RWSEM_OPT_INIT(name)				\
+#define __RWSEM_INITIALIZER(name)			\
+	{ RWSEM_UNLOCKED_VALUE,				\
+	  __RAW_SPIN_LOCK_UNLOCKED(name.wait_lock),	\
+	  LIST_HEAD_INIT((name).wait_list)		\
 	  __RWSEM_DEP_MAP_INIT(name) }
 
 #define DECLARE_RWSEM(name) \
@@ -90,17 +73,6 @@ do {								\
 								\
 	__init_rwsem((sem), #sem, &__key);			\
 } while (0)
-
-/*
- * This is the same regardless of which rwsem implementation that is being used.
- * It is just a heuristic meant to be called by somebody alreadying holding the
- * rwsem to see if somebody from an incompatible type is wanting access to the
- * lock.
- */
-static inline int rwsem_is_contended(struct rw_semaphore *sem)
-{
-	return !list_empty(&sem->wait_list);
-}
 
 /*
  * lock for reading
@@ -161,20 +133,10 @@ do {								\
 	_down_write_nest_lock(sem, &(nest_lock)->dep_map);	\
 } while (0);
 
-/*
- * Take/release a lock when not the owner will release it.
- *
- * [ This API should be avoided as much as possible - the
- *   proper abstraction for this case is completions. ]
- */
-extern void down_read_non_owner(struct rw_semaphore *sem);
-extern void up_read_non_owner(struct rw_semaphore *sem);
 #else
 # define down_read_nested(sem, subclass)		down_read(sem)
 # define down_write_nest_lock(sem, nest_lock)	down_write(sem)
 # define down_write_nested(sem, subclass)	down_write(sem)
-# define down_read_non_owner(sem)		down_read(sem)
-# define up_read_non_owner(sem)			up_read(sem)
 #endif
 
 #endif /* _LINUX_RWSEM_H */

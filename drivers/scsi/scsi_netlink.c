@@ -50,7 +50,7 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 	u32 rlen;
 	int err, tport;
 
-	while (skb->len >= NLMSG_HDRLEN) {
+	while (skb->len >= NLMSG_SPACE(0)) {
 		err = 0;
 
 		nlh = nlmsg_hdr(skb);
@@ -70,14 +70,14 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 			goto next_msg;
 		}
 
-		hdr = nlmsg_data(nlh);
+		hdr = NLMSG_DATA(nlh);
 		if ((hdr->version != SCSI_NL_VERSION) ||
 		    (hdr->magic != SCSI_NL_MAGIC)) {
 			err = -EPROTOTYPE;
 			goto next_msg;
 		}
 
-		if (!netlink_capable(skb, CAP_SYS_ADMIN)) {
+		if (!capable(CAP_SYS_ADMIN)) {
 			err = -EPERM;
 			goto next_msg;
 		}

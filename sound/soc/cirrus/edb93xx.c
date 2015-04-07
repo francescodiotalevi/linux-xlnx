@@ -27,6 +27,7 @@
 #include <sound/soc.h>
 #include <asm/mach-types.h>
 #include <mach/hardware.h>
+#include "ep93xx-pcm.h"
 
 static int edb93xx_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
@@ -63,7 +64,7 @@ static struct snd_soc_ops edb93xx_ops = {
 static struct snd_soc_dai_link edb93xx_dai = {
 	.name		= "CS4271",
 	.stream_name	= "CS4271 HiFi",
-	.platform_name	= "ep93xx-i2s",
+	.platform_name	= "ep93xx-pcm-audio",
 	.cpu_dai_name	= "ep93xx-i2s",
 	.codec_name	= "spi0.0",
 	.codec_dai_name	= "cs4271-hifi",

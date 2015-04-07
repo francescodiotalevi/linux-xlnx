@@ -2,13 +2,13 @@
  *  linux/arch/arm/kernel/entry-common.S
  *
  *  Copyright (C) 2000 Russell King
+ *  Copyright (C) 2005 Stelian Pop.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
 
-#include <asm/assembler.h>
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
 #include <asm/unwind.h>
@@ -36,13 +36,23 @@ ret_fast_syscall:
 	ldr	r1, [tsk, #TI_FLAGS]
 	tst	r1, #_TIF_WORK_MASK
 	bne	fast_work_pending
+#if defined(CONFIG_IRQSOFF_TRACER)
 	asm_trace_hardirqs_on
+#endif
 
 	/* perform architecture specific actions before user return */
 	arch_ret_to_user r1, lr
-	ct_user_enter
 
 	restore_user_regs fast = 1, offset = S_OFF
+
+#ifdef CONFIG_IPIPE
+__ipipe_ret_to_user:
+	disable_irq				@ disable interrupts
+ENTRY(__ipipe_ret_to_user_irqs_disabled)
+	slow_restore_user_regs
+ENDPROC(__ipipe_ret_to_user_irqs_disabled)
+#endif /* CONFIG_IPIPE */
+
  UNWIND(.fnend		)
 
 /*
@@ -71,13 +81,10 @@ ENTRY(ret_to_user_from_irq)
 	tst	r1, #_TIF_WORK_MASK
 	bne	work_pending
 no_work_pending:
+#if defined(CONFIG_IRQSOFF_TRACER)
 	asm_trace_hardirqs_on
-
-	/* perform architecture specific actions before user return */
-	arch_ret_to_user r1, lr
-	ct_user_enter save = 0
-
-	restore_user_regs fast = 0, offset = 0
+#endif
+	slow_restore_user_regs
 ENDPROC(ret_to_user_from_irq)
 ENDPROC(ret_to_user)
 
@@ -85,11 +92,12 @@ ENDPROC(ret_to_user)
  * This is how we return from a fork.
  */
 ENTRY(ret_from_fork)
+	enable_irq_cond
 	bl	schedule_tail
 	cmp	r5, #0
 	movne	r0, r4
 	adrne	lr, BSYM(1f)
-	retne	r5
+	movne	pc, r5
 1:	get_thread_info tsk
 	b	ret_slow_syscall
 ENDPROC(ret_from_fork)
@@ -276,13 +284,7 @@ ENDPROC(ftrace_graph_caller_old)
  */
 
 .macro mcount_enter
-/*
- * This pad compensates for the push {lr} at the call site.  Note that we are
- * unable to unwind through a function which does not otherwise save its lr.
- */
- UNWIND(.pad	#4)
 	stmdb	sp!, {r0-r3, lr}
- UNWIND(.save	{r0-r3, lr})
 .endm
 
 .macro mcount_get_lr reg
@@ -291,34 +293,28 @@ ENDPROC(ftrace_graph_caller_old)
 
 .macro mcount_exit
 	ldmia	sp!, {r0-r3, ip, lr}
-	ret	ip
+	mov	pc, ip
 .endm
 
 ENTRY(__gnu_mcount_nc)
-UNWIND(.fnstart)
 #ifdef CONFIG_DYNAMIC_FTRACE
 	mov	ip, lr
 	ldmia	sp!, {lr}
-	ret	ip
+	mov	pc, ip
 #else
 	__mcount
 #endif
-UNWIND(.fnend)
 ENDPROC(__gnu_mcount_nc)
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 ENTRY(ftrace_caller)
-UNWIND(.fnstart)
 	__ftrace_caller
-UNWIND(.fnend)
 ENDPROC(ftrace_caller)
 #endif
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 ENTRY(ftrace_graph_caller)
-UNWIND(.fnstart)
 	__ftrace_graph_caller
-UNWIND(.fnend)
 ENDPROC(ftrace_graph_caller)
 #endif
 
@@ -334,12 +330,12 @@ return_to_handler:
 	bl	ftrace_return_to_handler
 	mov	lr, r0			@ r0 has real ret addr
 	ldmia	sp!, {r0-r3}
-	ret	lr
+	mov	pc, lr
 #endif
 
 ENTRY(ftrace_stub)
 .Lftrace_stub:
-	ret	lr
+	mov	pc, lr
 ENDPROC(ftrace_stub)
 
 #endif /* CONFIG_FUNCTION_TRACER */
@@ -351,9 +347,6 @@ ENDPROC(ftrace_stub)
 
 	.align	5
 ENTRY(vector_swi)
-#ifdef CONFIG_CPU_V7M
-	v7m_exception_entry
-#else
 	sub	sp, sp, #S_FRAME_SIZE
 	stmia	sp, {r0 - r12}			@ Calling r0 - r12
  ARM(	add	r8, sp, #S_PC		)
@@ -364,12 +357,17 @@ ENTRY(vector_swi)
 	str	lr, [sp, #S_PC]			@ Save calling PC
 	str	r8, [sp, #S_PSR]		@ Save CPSR
 	str	r0, [sp, #S_OLD_R0]		@ Save OLD_R0
-#endif
 	zero_fp
-	alignment_trap ip, __cr_alignment
-	enable_irq
-	ct_user_exit
-	get_thread_info tsk
+#ifdef CONFIG_IPIPE_TRACE_IRQSOFF
+	mov	r4, lr
+	mov	r0, #1		/* IPIPE_TRACE_BEGIN */
+	mov	r3, #0x90000000
+	sub	r2, lr, #4	/* calling PC */
+	mov	r1, pc
+	bl	ipipe_trace_asm
+	mov	lr, r4
+	ldm	sp, {r0 - r4}
+#endif /* CONFIG_IPIPE_TRACE_IRQSOFF */
 
 	/*
 	 * Get the system call number.
@@ -384,11 +382,13 @@ ENTRY(vector_swi)
 #ifdef CONFIG_ARM_THUMB
 	tst	r8, #PSR_T_BIT
 	movne	r10, #0				@ no thumb OABI emulation
- USER(	ldreq	r10, [lr, #-4]		)	@ get SWI instruction
+	ldreq	r10, [lr, #-4]			@ get SWI instruction
 #else
- USER(	ldr	r10, [lr, #-4]		)	@ get SWI instruction
+	ldr	r10, [lr, #-4]			@ get SWI instruction
 #endif
- ARM_BE8(rev	r10, r10)			@ little endian instruction
+#ifdef CONFIG_CPU_ENDIAN_BE8
+	rev	r10, r10			@ little endian instruction
+#endif
 
 #elif defined(CONFIG_AEABI)
 
@@ -399,13 +399,23 @@ ENTRY(vector_swi)
 	/* Legacy ABI only, possibly thumb mode. */
 	tst	r8, #PSR_T_BIT			@ this is SPSR from save_user_regs
 	addne	scno, r7, #__NR_SYSCALL_BASE	@ put OS number in
- USER(	ldreq	scno, [lr, #-4]		)
+	ldreq	scno, [lr, #-4]
 
 #else
 	/* Legacy ABI only. */
- USER(	ldr	scno, [lr, #-4]		)	@ get SWI instruction
+	ldr	scno, [lr, #-4]			@ get SWI instruction
 #endif
 
+#ifdef CONFIG_ALIGNMENT_TRAP
+	ldr	ip, __cr_alignment
+	ldr	ip, [ip]
+	mcr	p15, 0, ip, c1, c0		@ update control register
+#endif
+	enable_irq
+
+#ifndef	CONFIG_IPIPE
+	get_thread_info tsk
+#endif /* !CONFIG_IPIPE */
 	adr	tbl, sys_call_table		@ load syscall table pointer
 
 #if defined(CONFIG_OABI_COMPAT)
@@ -423,6 +433,17 @@ ENTRY(vector_swi)
 	eor	scno, scno, #__NR_SYSCALL_BASE	@ check OS number
 #endif
 
+#ifdef CONFIG_IPIPE
+	mov	r1, sp
+	mov	r0, scno
+	bl	__ipipe_syscall_root
+	cmp	r0, #0
+	bgt	__ipipe_ret_to_user
+	get_thread_info tsk
+	blt	ret_slow_syscall
+	ldmia	sp, { r0 - r3 }
+#endif /* CONFIG_IPIPE */
+
 local_restart:
 	ldr	r10, [tsk, #TI_FLAGS]		@ check for syscall tracing
 	stmdb	sp!, {r4, r5}			@ push fifth and sixth args
@@ -435,26 +456,11 @@ local_restart:
 	ldrcc	pc, [tbl, scno, lsl #2]		@ call sys_* routine
 
 	add	r1, sp, #S_OFF
-2:	cmp	scno, #(__ARM_NR_BASE - __NR_SYSCALL_BASE)
+2:	mov	why, #0				@ no longer a real syscall
+	cmp	scno, #(__ARM_NR_BASE - __NR_SYSCALL_BASE)
 	eor	r0, scno, #__NR_SYSCALL_BASE	@ put OS number back
 	bcs	arm_syscall
-	mov	why, #0				@ no longer a real syscall
 	b	sys_ni_syscall			@ not private func
-
-#if defined(CONFIG_OABI_COMPAT) || !defined(CONFIG_AEABI)
-	/*
-	 * We failed to handle a fault trying to access the page
-	 * containing the swi instruction, but we're not really in a
-	 * position to return -EFAULT. Instead, return back to the
-	 * instruction and re-enter the user fault handling path trying
-	 * to page it in. This will likely result in sending SEGV to the
-	 * current task.
-	 */
-9001:
-	sub	lr, lr, #4
-	str	lr, [sp, #S_PC]
-	b	ret_fast_syscall
-#endif
 ENDPROC(vector_swi)
 
 	/*
@@ -489,6 +495,9 @@ __sys_trace_return:
 	.type	__cr_alignment, #object
 __cr_alignment:
 	.word	cr_alignment
+#endif
+#ifdef CONFIG_IPIPE
+	.word	__ipipe_syscall_root
 #endif
 	.ltorg
 
@@ -539,6 +548,11 @@ sys_rt_sigreturn_wrapper:
 		b	sys_rt_sigreturn
 ENDPROC(sys_rt_sigreturn_wrapper)
 
+sys_sigaltstack_wrapper:
+		ldr	r2, [sp, #S_OFF + S_SP]
+		b	do_sigaltstack
+ENDPROC(sys_sigaltstack_wrapper)
+
 sys_statfs64_wrapper:
 		teq	r1, #88
 		moveq	r1, #84
@@ -562,7 +576,7 @@ sys_mmap2:
 		streq	r5, [sp, #4]
 		beq	sys_mmap_pgoff
 		mov	r0, #-EINVAL
-		ret	lr
+		mov	pc, lr
 #else
 		str	r5, [sp, #4]
 		b	sys_mmap_pgoff
@@ -619,3 +633,28 @@ ENTRY(sys_oabi_call_table)
 
 #endif
 
+
+#if defined(CONFIG_FRAME_POINTER) && (CONFIG_IPIPE_TRACE)
+
+	.text
+	.align 0
+	.type arm_return_addr %function
+	.global arm_return_addr
+
+arm_return_addr:
+	mov	ip, r0
+	mov	r0, fp
+3:
+	cmp	r0, #0
+	beq	1f		@ frame list hit end, bail
+	cmp	ip, #0
+	beq	2f		@ reached desired frame
+	ldr	r0, [r0, #-12]  @ else continue, get next fp
+	sub	ip, ip, #1
+	b	3b
+2:
+	ldr	r0, [r0, #-4]   @ get target return address
+1:
+	mov	pc, lr
+
+#endif

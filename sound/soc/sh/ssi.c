@@ -379,19 +379,15 @@ static struct snd_soc_dai_driver sh4_ssi_dai[] = {
 #endif
 };
 
-static const struct snd_soc_component_driver sh4_ssi_component = {
-	.name		= "sh4-ssi",
-};
-
 static int sh4_soc_dai_probe(struct platform_device *pdev)
 {
-	return snd_soc_register_component(&pdev->dev, &sh4_ssi_component,
-					  sh4_ssi_dai, ARRAY_SIZE(sh4_ssi_dai));
+	return snd_soc_register_dais(&pdev->dev, sh4_ssi_dai,
+			ARRAY_SIZE(sh4_ssi_dai));
 }
 
 static int sh4_soc_dai_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_component(&pdev->dev);
+	snd_soc_unregister_dais(&pdev->dev, ARRAY_SIZE(sh4_ssi_dai));
 	return 0;
 }
 

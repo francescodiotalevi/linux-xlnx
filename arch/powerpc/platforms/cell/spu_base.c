@@ -611,6 +611,7 @@ static int __init create_spu(void *data)
 	int ret;
 	static int number;
 	unsigned long flags;
+	struct timespec ts;
 
 	ret = -ENOMEM;
 	spu = kzalloc(sizeof (*spu), GFP_KERNEL);
@@ -651,7 +652,8 @@ static int __init create_spu(void *data)
 	mutex_unlock(&spu_full_list_mutex);
 
 	spu->stats.util_state = SPU_UTIL_IDLE_LOADED;
-	spu->stats.tstamp = ktime_get_ns();
+	ktime_get_ts(&ts);
+	spu->stats.tstamp = timespec_to_ns(&ts);
 
 	INIT_LIST_HEAD(&spu->aff_list);
 
@@ -674,6 +676,7 @@ static const char *spu_state_names[] = {
 static unsigned long long spu_acct_time(struct spu *spu,
 		enum spu_utilization_state state)
 {
+	struct timespec ts;
 	unsigned long long time = spu->stats.times[state];
 
 	/*
@@ -681,8 +684,10 @@ static unsigned long long spu_acct_time(struct spu *spu,
 	 * statistics are not updated.  Apply the time delta from the
 	 * last recorded state of the spu.
 	 */
-	if (spu->stats.util_state == state)
-		time += ktime_get_ns() - spu->stats.tstamp;
+	if (spu->stats.util_state == state) {
+		ktime_get_ts(&ts);
+		time += timespec_to_ns(&ts) - spu->stats.tstamp;
+	}
 
 	return time / NSEC_PER_MSEC;
 }
@@ -710,7 +715,7 @@ static ssize_t spu_stat_show(struct device *dev,
 		spu->stats.libassist);
 }
 
-static DEVICE_ATTR(stat, 0444, spu_stat_show, NULL);
+static DEVICE_ATTR(stat, 0644, spu_stat_show, NULL);
 
 #ifdef CONFIG_KEXEC
 

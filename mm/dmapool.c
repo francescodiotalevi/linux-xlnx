@@ -170,16 +170,24 @@ struct dma_pool *dma_pool_create(const char *name, struct device *dev,
 	retval->boundary = boundary;
 	retval->allocation = allocation;
 
-	INIT_LIST_HEAD(&retval->pools);
+	if (dev) {
+		int ret;
 
-	mutex_lock(&pools_lock);
-	if (list_empty(&dev->dma_pools) &&
-	    device_create_file(dev, &dev_attr_pools)) {
-		kfree(retval);
-		retval = NULL;
+		mutex_lock(&pools_lock);
+		if (list_empty(&dev->dma_pools))
+			ret = device_create_file(dev, &dev_attr_pools);
+		else
+			ret = 0;
+		/* note:  not currently insisting "name" be unique */
+		if (!ret)
+			list_add(&retval->pools, &dev->dma_pools);
+		else {
+			kfree(retval);
+			retval = NULL;
+		}
+		mutex_unlock(&pools_lock);
 	} else
-		list_add(&retval->pools, &dev->dma_pools);
-	mutex_unlock(&pools_lock);
+		INIT_LIST_HEAD(&retval->pools);
 
 	return retval;
 }
@@ -333,10 +341,10 @@ void *dma_pool_alloc(struct dma_pool *pool, gfp_t mem_flags,
 				continue;
 			if (pool->dev)
 				dev_err(pool->dev,
-					"dma_pool_alloc %s, %p (corrupted)\n",
+					"dma_pool_alloc %s, %p (corruped)\n",
 					pool->name, retval);
 			else
-				pr_err("dma_pool_alloc %s, %p (corrupted)\n",
+				pr_err("dma_pool_alloc %s, %p (corruped)\n",
 					pool->name, retval);
 
 			/*
@@ -500,6 +508,7 @@ void dmam_pool_destroy(struct dma_pool *pool)
 {
 	struct device *dev = pool->dev;
 
-	WARN_ON(devres_release(dev, dmam_pool_release, dmam_pool_match, pool));
+	WARN_ON(devres_destroy(dev, dmam_pool_release, dmam_pool_match, pool));
+	dma_pool_destroy(pool);
 }
 EXPORT_SYMBOL(dmam_pool_destroy);

@@ -915,13 +915,15 @@ static int pm860x_battery_probe(struct platform_device *pdev)
 	info->irq_cc = platform_get_irq(pdev, 0);
 	if (info->irq_cc <= 0) {
 		dev_err(&pdev->dev, "No IRQ resource!\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	info->irq_batt = platform_get_irq(pdev, 1);
 	if (info->irq_batt <= 0) {
 		dev_err(&pdev->dev, "No IRQ resource!\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	info->chip = chip;
@@ -955,7 +957,7 @@ static int pm860x_battery_probe(struct platform_device *pdev)
 
 	ret = power_supply_register(&pdev->dev, &info->battery);
 	if (ret)
-		return ret;
+		goto out;
 	info->battery.dev->parent = &pdev->dev;
 
 	ret = request_threaded_irq(info->irq_cc, NULL,
@@ -982,6 +984,8 @@ out_coulomb:
 	free_irq(info->irq_cc, info);
 out_reg:
 	power_supply_unregister(&info->battery);
+out:
+	kfree(info);
 	return ret;
 }
 
@@ -989,9 +993,11 @@ static int pm860x_battery_remove(struct platform_device *pdev)
 {
 	struct pm860x_battery_info *info = platform_get_drvdata(pdev);
 
+	power_supply_unregister(&info->battery);
 	free_irq(info->irq_batt, info);
 	free_irq(info->irq_cc, info);
-	power_supply_unregister(&info->battery);
+	kfree(info);
+	platform_set_drvdata(pdev, NULL);
 	return 0;
 }
 

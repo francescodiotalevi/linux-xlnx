@@ -27,6 +27,9 @@
 #include <drm/radeon_drm.h>
 #include "radeon.h"
 
+#define CURSOR_WIDTH 64
+#define CURSOR_HEIGHT 64
+
 static void radeon_lock_cursor(struct drm_crtc *crtc, bool lock)
 {
 	struct radeon_device *rdev = crtc->dev->dev_private;
@@ -164,8 +167,7 @@ int radeon_crtc_cursor_set(struct drm_crtc *crtc,
 		goto unpin;
 	}
 
-	if ((width > radeon_crtc->max_cursor_width) ||
-	    (height > radeon_crtc->max_cursor_height)) {
+	if ((width > CURSOR_WIDTH) || (height > CURSOR_HEIGHT)) {
 		DRM_ERROR("bad cursor width or height %d x %d\n", width, height);
 		return -EINVAL;
 	}
@@ -231,11 +233,11 @@ int radeon_crtc_cursor_move(struct drm_crtc *crtc,
 	DRM_DEBUG("x %d y %d c->x %d c->y %d\n", x, y, crtc->x, crtc->y);
 
 	if (x < 0) {
-		xorigin = min(-x, radeon_crtc->max_cursor_width - 1);
+		xorigin = min(-x, CURSOR_WIDTH - 1);
 		x = 0;
 	}
 	if (y < 0) {
-		yorigin = min(-y, radeon_crtc->max_cursor_height - 1);
+		yorigin = min(-y, CURSOR_HEIGHT - 1);
 		y = 0;
 	}
 
@@ -244,14 +246,8 @@ int radeon_crtc_cursor_move(struct drm_crtc *crtc,
 		int i = 0;
 		struct drm_crtc *crtc_p;
 
-		/*
-		 * avivo cursor image can't end on 128 pixel boundary or
+		/* avivo cursor image can't end on 128 pixel boundary or
 		 * go past the end of the frame if both crtcs are enabled
-		 *
-		 * NOTE: It is safe to access crtc->enabled of other crtcs
-		 * without holding either the mode_config lock or the other
-		 * crtc's lock as long as write access to this flag _always_
-		 * grabs all locks.
 		 */
 		list_for_each_entry(crtc_p, &crtc->dev->mode_config.crtc_list, head) {
 			if (crtc_p->enabled)

@@ -265,6 +265,7 @@ struct c2_pd_table {
 struct c2_qp_table {
 	struct idr idr;
 	spinlock_t lock;
+	int last;
 };
 
 struct c2_element {

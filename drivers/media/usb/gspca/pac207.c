@@ -55,11 +55,6 @@ MODULE_LICENSE("GPL");
 
 #define PAC207_AUTOGAIN_DEADZONE	30
 
-/* global parameters */
-static int led_invert;
-module_param(led_invert, int, 0644);
-MODULE_PARM_DESC(led_invert, "Invert led");
-
 /* specific webcam descriptor */
 struct sd {
 	struct gspca_dev gspca_dev;		/* !! must be the first item */
@@ -192,14 +187,10 @@ static int sd_config(struct gspca_dev *gspca_dev,
 /* this function is called at probe and resume time */
 static int sd_init(struct gspca_dev *gspca_dev)
 {
-	u8 mode;
-
-	/* mode: Image Format (Bit 0), LED (1), Compr. test mode (2) */
-	if (led_invert)
-		mode = 0x02;
-	else
-		mode = 0x00;
-	pac207_write_reg(gspca_dev, 0x41, mode);
+	pac207_write_reg(gspca_dev, 0x41, 0x00);
+				/* Bit_0=Image Format,
+				 * Bit_1=LED,
+				 * Bit_2=Compression test mode enable */
 	pac207_write_reg(gspca_dev, 0x0f, 0x00); /* Power Control */
 
 	return gspca_dev->usb_err;
@@ -299,7 +290,7 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	pac207_write_regs(gspca_dev, 0x0042, pac207_sensor_init[3], 8);
 
 	/* Compression Balance */
-	if (gspca_dev->pixfmt.width == 176)
+	if (gspca_dev->width == 176)
 		pac207_write_reg(gspca_dev, 0x4a, 0xff);
 	else
 		pac207_write_reg(gspca_dev, 0x4a, 0x30);
@@ -312,12 +303,8 @@ static int sd_start(struct gspca_dev *gspca_dev)
 	pac207_write_reg(gspca_dev, 0x02,
 		v4l2_ctrl_g_ctrl(gspca_dev->exposure)); /* PXCK = 12MHz /n */
 
-	/* mode: Image Format (Bit 0), LED (1), Compr. test mode (2) */
-	if (led_invert)
-		mode = 0x00;
-	else
-		mode = 0x02;
-	if (gspca_dev->pixfmt.width == 176) {	/* 176x144 */
+	mode = 0x02; /* Image Format (Bit 0), LED (1), Compr. test mode (2) */
+	if (gspca_dev->width == 176) {	/* 176x144 */
 		mode |= 0x01;
 		PDEBUG(D_STREAM, "pac207_start mode 176x144");
 	} else {				/* 352x288 */
@@ -338,15 +325,8 @@ static int sd_start(struct gspca_dev *gspca_dev)
 
 static void sd_stopN(struct gspca_dev *gspca_dev)
 {
-	u8 mode;
-
-	/* mode: Image Format (Bit 0), LED (1), Compr. test mode (2) */
-	if (led_invert)
-		mode = 0x02;
-	else
-		mode = 0x00;
 	pac207_write_reg(gspca_dev, 0x40, 0x00); /* Stop ISO pipe */
-	pac207_write_reg(gspca_dev, 0x41, mode); /* Turn off LED */
+	pac207_write_reg(gspca_dev, 0x41, 0x00); /* Turn of LED */
 	pac207_write_reg(gspca_dev, 0x0f, 0x00); /* Power Control */
 }
 
@@ -373,7 +353,7 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	struct sd *sd = (struct sd *) gspca_dev;
 	unsigned char *sof;
 
-	sof = pac_find_sof(gspca_dev, &sd->sof_read, data, len);
+	sof = pac_find_sof(&sd->sof_read, data, len);
 	if (sof) {
 		int n;
 
@@ -413,10 +393,10 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 	gspca_frame_add(gspca_dev, INTER_PACKET, data, len);
 }
 
-#if IS_ENABLED(CONFIG_INPUT)
+#if defined(CONFIG_INPUT) || defined(CONFIG_INPUT_MODULE)
 static int sd_int_pkt_scan(struct gspca_dev *gspca_dev,
 			u8 *data,		/* interrupt packet data */
-			int len)		/* interrupt packet length */
+			int len)		/* interrput packet length */
 {
 	int ret = -EINVAL;
 
@@ -442,7 +422,7 @@ static const struct sd_desc sd_desc = {
 	.stopN = sd_stopN,
 	.dq_callback = pac207_do_auto_gain,
 	.pkt_scan = sd_pkt_scan,
-#if IS_ENABLED(CONFIG_INPUT)
+#if defined(CONFIG_INPUT) || defined(CONFIG_INPUT_MODULE)
 	.int_pkt_scan = sd_int_pkt_scan,
 #endif
 };

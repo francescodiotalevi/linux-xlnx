@@ -44,8 +44,7 @@ static void snd_emu10k1_pcm_interrupt(struct snd_emu10k1 *emu,
 	if (epcm->substream == NULL)
 		return;
 #if 0
-	dev_dbg(emu->card->dev,
-		"IRQ: position = 0x%x, period = 0x%x, size = 0x%x\n",
+	printk(KERN_DEBUG "IRQ: position = 0x%x, period = 0x%x, size = 0x%x\n",
 			epcm->substream->runtime->hw->pointer(emu, epcm->substream),
 			snd_pcm_lib_period_bytes(epcm->substream),
 			snd_pcm_lib_buffer_bytes(epcm->substream));
@@ -148,7 +147,7 @@ static int snd_emu10k1_pcm_channel_alloc(struct snd_emu10k1_pcm * epcm, int voic
 					      &epcm->extra);
 		if (err < 0) {
 			/*
-			dev_dbg(emu->card->dev, "pcm_channel_alloc: "
+			printk(KERN_DEBUG "pcm_channel_alloc: "
 			       "failed extra: voices=%d, frame=%d\n",
 			       voices, frame);
 			*/
@@ -762,8 +761,7 @@ static int snd_emu10k1_playback_trigger(struct snd_pcm_substream *substream,
 	int result = 0;
 
 	/*
-	dev_dbg(emu->card->dev,
-		"trigger - emu10k1 = 0x%x, cmd = %i, pointer = %i\n",
+	printk(KERN_DEBUG "trigger - emu10k1 = 0x%x, cmd = %i, pointer = %i\n",
 	       (int)emu, cmd, substream->ops->pointer(substream))
 	*/
 	spin_lock(&emu->reg_lock);
@@ -817,7 +815,7 @@ static int snd_emu10k1_capture_trigger(struct snd_pcm_substream *substream,
 		outl(epcm->capture_ipr, emu->port + IPR);
 		snd_emu10k1_intr_enable(emu, epcm->capture_inte);
 		/*
-		dev_dbg(emu->card->dev, "adccr = 0x%x, adcbs = 0x%x\n",
+		printk(KERN_DEBUG "adccr = 0x%x, adcbs = 0x%x\n",
 		       epcm->adccr, epcm->adcbs);
 		*/
 		switch (epcm->type) {
@@ -828,10 +826,7 @@ static int snd_emu10k1_capture_trigger(struct snd_pcm_substream *substream,
 			if (emu->audigy) {
 				snd_emu10k1_ptr_write(emu, A_FXWC1, 0, epcm->capture_cr_val);
 				snd_emu10k1_ptr_write(emu, A_FXWC2, 0, epcm->capture_cr_val2);
-				dev_dbg(emu->card->dev,
-					"cr_val=0x%x, cr_val2=0x%x\n",
-					epcm->capture_cr_val,
-					epcm->capture_cr_val2);
+				snd_printdd("cr_val=0x%x, cr_val2=0x%x\n", epcm->capture_cr_val, epcm->capture_cr_val2);
 			} else
 				snd_emu10k1_ptr_write(emu, FXWC, 0, epcm->capture_cr_val);
 			break;
@@ -894,7 +889,7 @@ static snd_pcm_uframes_t snd_emu10k1_playback_pointer(struct snd_pcm_substream *
 	}
 #endif
 	/*
-	dev_dbg(emu->card->dev,
+	printk(KERN_DEBUG
 	       "ptr = 0x%lx, buffer_size = 0x%lx, period_size = 0x%lx\n",
 	       (long)ptr, (long)runtime->buffer_size,
 	       (long)runtime->period_size);
@@ -1132,7 +1127,7 @@ static int snd_emu10k1_playback_open(struct snd_pcm_substream *substream)
 	struct snd_emu10k1_pcm *epcm;
 	struct snd_emu10k1_pcm_mixer *mix;
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	int i, err, sample_rate;
+	int i, err;
 
 	epcm = kzalloc(sizeof(*epcm), GFP_KERNEL);
 	if (epcm == NULL)
@@ -1151,11 +1146,7 @@ static int snd_emu10k1_playback_open(struct snd_pcm_substream *substream)
 		kfree(epcm);
 		return err;
 	}
-	if (emu->card_capabilities->emu_model && emu->emu1010.internal_clock == 0)
-		sample_rate = 44100;
-	else
-		sample_rate = 48000;
-	err = snd_pcm_hw_rule_noresample(runtime, sample_rate);
+	err = snd_pcm_hw_rule_noresample(runtime, 48000);
 	if (err < 0) {
 		kfree(epcm);
 		return err;
@@ -1599,8 +1590,7 @@ static void snd_emu10k1_fx8010_playback_tram_poke1(unsigned short *dst_left,
 						   unsigned int tram_shift)
 {
 	/*
-	dev_dbg(emu->card->dev,
-		"tram_poke1: dst_left = 0x%p, dst_right = 0x%p, "
+	printk(KERN_DEBUG "tram_poke1: dst_left = 0x%p, dst_right = 0x%p, "
 	       "src = 0x%p, count = 0x%x\n",
 	       dst_left, dst_right, src, count);
 	*/
@@ -1681,7 +1671,7 @@ static int snd_emu10k1_fx8010_playback_prepare(struct snd_pcm_substream *substre
 	unsigned int i;
 	
 	/*
-	dev_dbg(emu->card->dev, "prepare: etram_pages = 0x%p, dma_area = 0x%x, "
+	printk(KERN_DEBUG "prepare: etram_pages = 0x%p, dma_area = 0x%x, "
 	       "buffer_size = 0x%x (0x%x)\n",
 	       emu->fx8010.etram_pages, runtime->dma_area,
 	       runtime->buffer_size, runtime->buffer_size << 2);

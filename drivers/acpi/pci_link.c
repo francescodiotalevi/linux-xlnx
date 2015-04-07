@@ -39,9 +39,11 @@
 #include <linux/pci.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/acpi.h>
 
-#include "internal.h"
+#include <acpi/acpi_bus.h>
+#include <acpi/acpi_drivers.h>
+
+#define PREFIX "ACPI: "
 
 #define _COMPONENT			ACPI_PCI_COMPONENT
 ACPI_MODULE_NAME("pci_link");
@@ -51,19 +53,23 @@ ACPI_MODULE_NAME("pci_link");
 #define ACPI_PCI_LINK_FILE_STATUS	"state"
 #define ACPI_PCI_LINK_MAX_POSSIBLE	16
 
-static int acpi_pci_link_add(struct acpi_device *device,
-			     const struct acpi_device_id *not_used);
-static void acpi_pci_link_remove(struct acpi_device *device);
+static int acpi_pci_link_add(struct acpi_device *device);
+static int acpi_pci_link_remove(struct acpi_device *device, int type);
 
 static const struct acpi_device_id link_device_ids[] = {
 	{"PNP0C0F", 0},
 	{"", 0},
 };
+MODULE_DEVICE_TABLE(acpi, link_device_ids);
 
-static struct acpi_scan_handler pci_link_handler = {
+static struct acpi_driver acpi_pci_link_driver = {
+	.name = "pci_link",
+	.class = ACPI_PCI_LINK_CLASS,
 	.ids = link_device_ids,
-	.attach = acpi_pci_link_add,
-	.detach = acpi_pci_link_remove,
+	.ops = {
+		.add = acpi_pci_link_add,
+		.remove = acpi_pci_link_remove,
+	},
 };
 
 /*
@@ -352,7 +358,6 @@ static int acpi_pci_link_set(struct acpi_pci_link *link, int irq)
 
 	}
 	resource->end.type = ACPI_RESOURCE_TYPE_END_TAG;
-	resource->end.length = sizeof(struct acpi_resource);
 
 	/* Attempt to set the resource */
 	status = acpi_set_current_resources(link->device->handle, &buffer);
@@ -687,8 +692,7 @@ int acpi_pci_link_free_irq(acpi_handle handle)
                                  Driver Interface
    -------------------------------------------------------------------------- */
 
-static int acpi_pci_link_add(struct acpi_device *device,
-			     const struct acpi_device_id *not_used)
+static int acpi_pci_link_add(struct acpi_device *device)
 {
 	int result;
 	struct acpi_pci_link *link;
@@ -742,7 +746,7 @@ static int acpi_pci_link_add(struct acpi_device *device,
 	if (result)
 		kfree(link);
 
-	return result < 0 ? result : 1;
+	return result;
 }
 
 static int acpi_pci_link_resume(struct acpi_pci_link *link)
@@ -762,7 +766,7 @@ static void irqrouter_resume(void)
 	}
 }
 
-static void acpi_pci_link_remove(struct acpi_device *device)
+static int acpi_pci_link_remove(struct acpi_device *device, int type)
 {
 	struct acpi_pci_link *link;
 
@@ -773,6 +777,7 @@ static void acpi_pci_link_remove(struct acpi_device *device)
 	mutex_unlock(&acpi_link_lock);
 
 	kfree(link);
+	return 0;
 }
 
 /*
@@ -869,10 +874,20 @@ static struct syscore_ops irqrouter_syscore_ops = {
 	.resume = irqrouter_resume,
 };
 
-void __init acpi_pci_link_init(void)
+static int __init irqrouter_init_ops(void)
+{
+	if (!acpi_disabled && !acpi_noirq)
+		register_syscore_ops(&irqrouter_syscore_ops);
+
+	return 0;
+}
+
+device_initcall(irqrouter_init_ops);
+
+static int __init acpi_pci_link_init(void)
 {
 	if (acpi_noirq)
-		return;
+		return 0;
 
 	if (acpi_irq_balance == -1) {
 		/* no command line switch: enable balancing in IOAPIC mode */
@@ -881,6 +896,11 @@ void __init acpi_pci_link_init(void)
 		else
 			acpi_irq_balance = 0;
 	}
-	register_syscore_ops(&irqrouter_syscore_ops);
-	acpi_scan_add_handler(&pci_link_handler);
+
+	if (acpi_bus_register_driver(&acpi_pci_link_driver) < 0)
+		return -ENODEV;
+
+	return 0;
 }
+
+subsys_initcall(acpi_pci_link_init);

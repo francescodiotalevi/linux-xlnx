@@ -50,12 +50,15 @@ static int ad5624r_read_raw(struct iio_dev *indio_dev,
 			   long m)
 {
 	struct ad5624r_state *st = iio_priv(indio_dev);
+	unsigned long scale_uv;
 
 	switch (m) {
 	case IIO_CHAN_INFO_SCALE:
-		*val = st->vref_mv;
-		*val2 = chan->scan_type.realbits;
-		return IIO_VAL_FRACTIONAL_LOG2;
+		scale_uv = (st->vref_mv * 1000) >> chan->scan_type.realbits;
+		*val =  scale_uv / 1000;
+		*val2 = (scale_uv % 1000) * 1000;
+		return IIO_VAL_INT_PLUS_MICRO;
+
 	}
 	return -EINVAL;
 }
@@ -67,6 +70,7 @@ static int ad5624r_write_raw(struct iio_dev *indio_dev,
 			       long mask)
 {
 	struct ad5624r_state *st = iio_priv(indio_dev);
+	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -78,8 +82,10 @@ static int ad5624r_write_raw(struct iio_dev *indio_dev,
 				chan->address, val,
 				chan->scan_type.shift);
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
 	}
+
+	return -EINVAL;
 }
 
 static const char * const ad5624r_powerdown_modes[] = {
@@ -157,10 +163,8 @@ static const struct iio_chan_spec_ext_info ad5624r_ext_info[] = {
 		.name = "powerdown",
 		.read = ad5624r_read_dac_powerdown,
 		.write = ad5624r_write_dac_powerdown,
-		.shared = IIO_SEPARATE,
 	},
-	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
-		 &ad5624r_powerdown_mode_enum),
+	IIO_ENUM("powerdown_mode", true, &ad5624r_powerdown_mode_enum),
 	IIO_ENUM_AVAILABLE("powerdown_mode", &ad5624r_powerdown_mode_enum),
 	{ },
 };
@@ -170,15 +174,10 @@ static const struct iio_chan_spec_ext_info ad5624r_ext_info[] = {
 	.indexed = 1, \
 	.output = 1, \
 	.channel = (_chan), \
-	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW), \
-	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE), \
+	.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT | \
+		     IIO_CHAN_INFO_SCALE_SHARED_BIT, \
 	.address = (_chan), \
-	.scan_type = { \
-		.sign = 'u', \
-		.realbits = (_bits), \
-		.storagebits = 16, \
-		.shift = 16 - (_bits), \
-	}, \
+	.scan_type = IIO_ST('u', (_bits), 16, 16 - (_bits)), \
 	.ext_info = ad5624r_ext_info, \
 }
 
@@ -227,15 +226,17 @@ static int ad5624r_probe(struct spi_device *spi)
 	struct iio_dev *indio_dev;
 	int ret, voltage_uv = 0;
 
-	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
-	if (!indio_dev)
-		return -ENOMEM;
+	indio_dev = iio_device_alloc(sizeof(*st));
+	if (indio_dev == NULL) {
+		ret = -ENOMEM;
+		goto error_ret;
+	}
 	st = iio_priv(indio_dev);
-	st->reg = devm_regulator_get(&spi->dev, "vcc");
+	st->reg = regulator_get(&spi->dev, "vcc");
 	if (!IS_ERR(st->reg)) {
 		ret = regulator_enable(st->reg);
 		if (ret)
-			return ret;
+			goto error_put_reg;
 
 		ret = regulator_get_voltage(st->reg);
 		if (ret < 0)
@@ -276,6 +277,11 @@ static int ad5624r_probe(struct spi_device *spi)
 error_disable_reg:
 	if (!IS_ERR(st->reg))
 		regulator_disable(st->reg);
+error_put_reg:
+	if (!IS_ERR(st->reg))
+		regulator_put(st->reg);
+	iio_device_free(indio_dev);
+error_ret:
 
 	return ret;
 }
@@ -286,8 +292,11 @@ static int ad5624r_remove(struct spi_device *spi)
 	struct ad5624r_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
-	if (!IS_ERR(st->reg))
+	if (!IS_ERR(st->reg)) {
 		regulator_disable(st->reg);
+		regulator_put(st->reg);
+	}
+	iio_device_free(indio_dev);
 
 	return 0;
 }

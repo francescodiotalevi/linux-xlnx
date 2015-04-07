@@ -65,7 +65,6 @@
 			  (1 << BOOKE_IRQPRIO_CRITICAL))
 
 extern unsigned long kvmppc_booke_handlers;
-extern unsigned long kvmppc_booke_handler_addr[];
 
 void kvmppc_set_msr(struct kvm_vcpu *vcpu, u32 new_msr);
 void kvmppc_mmu_msr_notify(struct kvm_vcpu *vcpu, u32 old_msr);
@@ -99,23 +98,6 @@ enum int_class {
 
 void kvmppc_set_pending_interrupt(struct kvm_vcpu *vcpu, enum int_class type);
 
-extern void kvmppc_mmu_destroy_e500(struct kvm_vcpu *vcpu);
-extern int kvmppc_core_emulate_op_e500(struct kvm_run *run,
-				       struct kvm_vcpu *vcpu,
-				       unsigned int inst, int *advance);
-extern int kvmppc_core_emulate_mtspr_e500(struct kvm_vcpu *vcpu, int sprn,
-					  ulong spr_val);
-extern int kvmppc_core_emulate_mfspr_e500(struct kvm_vcpu *vcpu, int sprn,
-					  ulong *spr_val);
-extern void kvmppc_mmu_destroy_e500(struct kvm_vcpu *vcpu);
-extern int kvmppc_core_emulate_op_e500(struct kvm_run *run,
-				       struct kvm_vcpu *vcpu,
-				       unsigned int inst, int *advance);
-extern int kvmppc_core_emulate_mtspr_e500(struct kvm_vcpu *vcpu, int sprn,
-					  ulong spr_val);
-extern int kvmppc_core_emulate_mfspr_e500(struct kvm_vcpu *vcpu, int sprn,
-					  ulong *spr_val);
-
 /*
  * Load up guest vcpu FP state if it's needed.
  * It also set the MSR_FP in thread so that host know
@@ -129,9 +111,7 @@ static inline void kvmppc_load_guest_fp(struct kvm_vcpu *vcpu)
 {
 #ifdef CONFIG_PPC_FPU
 	if (vcpu->fpu_active && !(current->thread.regs->msr & MSR_FP)) {
-		enable_kernel_fp();
-		load_fp_state(&vcpu->arch.fp);
-		current->thread.fp_save_area = &vcpu->arch.fp;
+		load_up_fpu();
 		current->thread.regs->msr |= MSR_FP;
 	}
 #endif
@@ -146,12 +126,6 @@ static inline void kvmppc_save_guest_fp(struct kvm_vcpu *vcpu)
 #ifdef CONFIG_PPC_FPU
 	if (vcpu->fpu_active && (current->thread.regs->msr & MSR_FP))
 		giveup_fpu(current);
-	current->thread.fp_save_area = NULL;
 #endif
-}
-
-static inline void kvmppc_clear_dbsr(void)
-{
-	mtspr(SPRN_DBSR, mfspr(SPRN_DBSR));
 }
 #endif /* __KVM_BOOKE_H__ */

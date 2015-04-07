@@ -11,21 +11,18 @@
 
 #include <linux/smp.h>
 
-#define SPINLOCK_LOCKVAL (S390_lowcore.spinlock_lockval)
-
 extern int spin_retry;
 
 static inline int
-_raw_compare_and_swap(unsigned int *lock, unsigned int old, unsigned int new)
+_raw_compare_and_swap(volatile unsigned int *lock,
+		      unsigned int old, unsigned int new)
 {
-	unsigned int old_expected = old;
-
 	asm volatile(
 		"	cs	%0,%3,%1"
 		: "=d" (old), "=Q" (*lock)
 		: "0" (old), "d" (new), "Q" (*lock)
 		: "cc", "memory" );
-	return old == old_expected;
+	return old;
 }
 
 /*
@@ -37,69 +34,52 @@ _raw_compare_and_swap(unsigned int *lock, unsigned int old, unsigned int new)
  * (the type definitions are in asm/spinlock_types.h)
  */
 
-void arch_spin_lock_wait(arch_spinlock_t *);
-int arch_spin_trylock_retry(arch_spinlock_t *);
-void arch_spin_relax(arch_spinlock_t *);
-void arch_spin_lock_wait_flags(arch_spinlock_t *, unsigned long flags);
+#define arch_spin_is_locked(x) ((x)->owner_cpu != 0)
+#define arch_spin_unlock_wait(lock) \
+	do { while (arch_spin_is_locked(lock)) \
+		 arch_spin_relax(lock); } while (0)
 
-static inline u32 arch_spin_lockval(int cpu)
-{
-	return ~cpu;
-}
-
-static inline int arch_spin_value_unlocked(arch_spinlock_t lock)
-{
-	return lock.lock == 0;
-}
-
-static inline int arch_spin_is_locked(arch_spinlock_t *lp)
-{
-	return ACCESS_ONCE(lp->lock) != 0;
-}
-
-static inline int arch_spin_trylock_once(arch_spinlock_t *lp)
-{
-	barrier();
-	return likely(arch_spin_value_unlocked(*lp) &&
-		      _raw_compare_and_swap(&lp->lock, 0, SPINLOCK_LOCKVAL));
-}
-
-static inline int arch_spin_tryrelease_once(arch_spinlock_t *lp)
-{
-	return _raw_compare_and_swap(&lp->lock, SPINLOCK_LOCKVAL, 0);
-}
+extern void arch_spin_lock_wait(arch_spinlock_t *);
+extern void arch_spin_lock_wait_flags(arch_spinlock_t *, unsigned long flags);
+extern int arch_spin_trylock_retry(arch_spinlock_t *);
+extern void arch_spin_relax(arch_spinlock_t *lock);
 
 static inline void arch_spin_lock(arch_spinlock_t *lp)
 {
-	if (!arch_spin_trylock_once(lp))
-		arch_spin_lock_wait(lp);
+	int old;
+
+	old = _raw_compare_and_swap(&lp->owner_cpu, 0, ~smp_processor_id());
+	if (likely(old == 0))
+		return;
+	arch_spin_lock_wait(lp);
 }
 
 static inline void arch_spin_lock_flags(arch_spinlock_t *lp,
-					unsigned long flags)
+					 unsigned long flags)
 {
-	if (!arch_spin_trylock_once(lp))
-		arch_spin_lock_wait_flags(lp, flags);
+	int old;
+
+	old = _raw_compare_and_swap(&lp->owner_cpu, 0, ~smp_processor_id());
+	if (likely(old == 0))
+		return;
+	arch_spin_lock_wait_flags(lp, flags);
 }
 
 static inline int arch_spin_trylock(arch_spinlock_t *lp)
 {
-	if (!arch_spin_trylock_once(lp))
-		return arch_spin_trylock_retry(lp);
-	return 1;
+	int old;
+
+	old = _raw_compare_and_swap(&lp->owner_cpu, 0, ~smp_processor_id());
+	if (likely(old == 0))
+		return 1;
+	return arch_spin_trylock_retry(lp);
 }
 
 static inline void arch_spin_unlock(arch_spinlock_t *lp)
 {
-	arch_spin_tryrelease_once(lp);
+	_raw_compare_and_swap(&lp->owner_cpu, lp->owner_cpu, 0);
 }
-
-static inline void arch_spin_unlock_wait(arch_spinlock_t *lock)
-{
-	while (arch_spin_is_locked(lock))
-		arch_spin_relax(lock);
-}
-
+		
 /*
  * Read-write spinlocks, allowing multiple readers
  * but only one writer.
@@ -130,50 +110,42 @@ extern void _raw_write_lock_wait(arch_rwlock_t *lp);
 extern void _raw_write_lock_wait_flags(arch_rwlock_t *lp, unsigned long flags);
 extern int _raw_write_trylock_retry(arch_rwlock_t *lp);
 
-static inline int arch_read_trylock_once(arch_rwlock_t *rw)
-{
-	unsigned int old = ACCESS_ONCE(rw->lock);
-	return likely((int) old >= 0 &&
-		      _raw_compare_and_swap(&rw->lock, old, old + 1));
-}
-
-static inline int arch_write_trylock_once(arch_rwlock_t *rw)
-{
-	unsigned int old = ACCESS_ONCE(rw->lock);
-	return likely(old == 0 &&
-		      _raw_compare_and_swap(&rw->lock, 0, 0x80000000));
-}
-
 static inline void arch_read_lock(arch_rwlock_t *rw)
 {
-	if (!arch_read_trylock_once(rw))
+	unsigned int old;
+	old = rw->lock & 0x7fffffffU;
+	if (_raw_compare_and_swap(&rw->lock, old, old + 1) != old)
 		_raw_read_lock_wait(rw);
 }
 
 static inline void arch_read_lock_flags(arch_rwlock_t *rw, unsigned long flags)
 {
-	if (!arch_read_trylock_once(rw))
+	unsigned int old;
+	old = rw->lock & 0x7fffffffU;
+	if (_raw_compare_and_swap(&rw->lock, old, old + 1) != old)
 		_raw_read_lock_wait_flags(rw, flags);
 }
 
 static inline void arch_read_unlock(arch_rwlock_t *rw)
 {
-	unsigned int old;
+	unsigned int old, cmp;
 
+	old = rw->lock;
 	do {
-		old = ACCESS_ONCE(rw->lock);
-	} while (!_raw_compare_and_swap(&rw->lock, old, old - 1));
+		cmp = old;
+		old = _raw_compare_and_swap(&rw->lock, old, old - 1);
+	} while (cmp != old);
 }
 
 static inline void arch_write_lock(arch_rwlock_t *rw)
 {
-	if (!arch_write_trylock_once(rw))
+	if (unlikely(_raw_compare_and_swap(&rw->lock, 0, 0x80000000) != 0))
 		_raw_write_lock_wait(rw);
 }
 
 static inline void arch_write_lock_flags(arch_rwlock_t *rw, unsigned long flags)
 {
-	if (!arch_write_trylock_once(rw))
+	if (unlikely(_raw_compare_and_swap(&rw->lock, 0, 0x80000000) != 0))
 		_raw_write_lock_wait_flags(rw, flags);
 }
 
@@ -184,16 +156,18 @@ static inline void arch_write_unlock(arch_rwlock_t *rw)
 
 static inline int arch_read_trylock(arch_rwlock_t *rw)
 {
-	if (!arch_read_trylock_once(rw))
-		return _raw_read_trylock_retry(rw);
-	return 1;
+	unsigned int old;
+	old = rw->lock & 0x7fffffffU;
+	if (likely(_raw_compare_and_swap(&rw->lock, old, old + 1) == old))
+		return 1;
+	return _raw_read_trylock_retry(rw);
 }
 
 static inline int arch_write_trylock(arch_rwlock_t *rw)
 {
-	if (!arch_write_trylock_once(rw))
-		return _raw_write_trylock_retry(rw);
-	return 1;
+	if (likely(_raw_compare_and_swap(&rw->lock, 0, 0x80000000) == 0))
+		return 1;
+	return _raw_write_trylock_retry(rw);
 }
 
 #define arch_read_relax(lock)	cpu_relax()

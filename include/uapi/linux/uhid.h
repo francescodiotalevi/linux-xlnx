@@ -21,7 +21,6 @@
 
 #include <linux/input.h>
 #include <linux/types.h>
-#include <linux/hid.h>
 
 enum uhid_event_type {
 	UHID_CREATE,
@@ -31,12 +30,10 @@ enum uhid_event_type {
 	UHID_OPEN,
 	UHID_CLOSE,
 	UHID_OUTPUT,
-	UHID_OUTPUT_EV,			/* obsolete! */
+	UHID_OUTPUT_EV,
 	UHID_INPUT,
 	UHID_FEATURE,
 	UHID_FEATURE_ANSWER,
-	UHID_CREATE2,
-	UHID_INPUT2,
 };
 
 struct uhid_create_req {
@@ -53,19 +50,6 @@ struct uhid_create_req {
 	__u32 country;
 } __attribute__((__packed__));
 
-struct uhid_create2_req {
-	__u8 name[128];
-	__u8 phys[64];
-	__u8 uniq[64];
-	__u16 rd_size;
-	__u16 bus;
-	__u32 vendor;
-	__u32 product;
-	__u32 version;
-	__u32 country;
-	__u8 rd_data[HID_MAX_DESCRIPTOR_SIZE];
-} __attribute__((__packed__));
-
 #define UHID_DATA_MAX 4096
 
 enum uhid_report_type {
@@ -79,19 +63,12 @@ struct uhid_input_req {
 	__u16 size;
 } __attribute__((__packed__));
 
-struct uhid_input2_req {
-	__u16 size;
-	__u8 data[UHID_DATA_MAX];
-} __attribute__((__packed__));
-
 struct uhid_output_req {
 	__u8 data[UHID_DATA_MAX];
 	__u16 size;
 	__u8 rtype;
 } __attribute__((__packed__));
 
-/* Obsolete! Newer kernels will no longer send these events but instead convert
- * it into raw output reports via UHID_OUTPUT. */
 struct uhid_output_ev_req {
 	__u16 type;
 	__u16 code;
@@ -109,7 +86,7 @@ struct uhid_feature_answer_req {
 	__u16 err;
 	__u16 size;
 	__u8 data[UHID_DATA_MAX];
-} __attribute__((__packed__));
+};
 
 struct uhid_event {
 	__u32 type;
@@ -121,8 +98,6 @@ struct uhid_event {
 		struct uhid_output_ev_req output_ev;
 		struct uhid_feature_req feature;
 		struct uhid_feature_answer_req feature_answer;
-		struct uhid_create2_req create2;
-		struct uhid_input2_req input2;
 	} u;
 } __attribute__((__packed__));
 

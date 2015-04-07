@@ -2,7 +2,7 @@
  * Driver for RNDIS based wireless USB devices.
  *
  * Copyright (C) 2007 by Bjorge Dijkstra <bjd@jooz.net>
- * Copyright (C) 2008-2009 by Jussi Kivilinna <jussi.kivilinna@iki.fi>
+ * Copyright (C) 2008-2009 by Jussi Kivilinna <jussi.kivilinna@mbnet.fi>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +15,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  *  Portions of this file are based on NDISwrapper project,
  *  Copyright (C) 2003-2005 Pontus Fuchs, Giridhar Pemmasani
@@ -26,6 +27,7 @@
 // #define	VERBOSE			// more; success messages
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
@@ -517,7 +519,7 @@ static int rndis_set_default_key(struct wiphy *wiphy, struct net_device *netdev,
 				 u8 key_index, bool unicast, bool multicast);
 
 static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
-			     const u8 *mac, struct station_info *sinfo);
+					u8 *mac, struct station_info *sinfo);
 
 static int rndis_dump_station(struct wiphy *wiphy, struct net_device *dev,
 			       int idx, u8 *mac, struct station_info *sinfo);
@@ -1290,8 +1292,7 @@ static int set_channel(struct usbnet *usbdev, int channel)
 	if (is_associated(usbdev))
 		return 0;
 
-	dsconfig = 1000 *
-		ieee80211_channel_to_frequency(channel, IEEE80211_BAND_2GHZ);
+	dsconfig = ieee80211_dsss_chan_to_freq(channel) * 1000;
 
 	len = sizeof(config);
 	ret = rndis_query_oid(usbdev,
@@ -1620,8 +1621,11 @@ static void set_multicast_list(struct usbnet *usbdev)
 	} else if (mc_count) {
 		int i = 0;
 
-		mc_addrs = kmalloc_array(mc_count, ETH_ALEN, GFP_ATOMIC);
+		mc_addrs = kmalloc(mc_count * ETH_ALEN, GFP_ATOMIC);
 		if (!mc_addrs) {
+			netdev_warn(usbdev->net,
+				    "couldn't alloc %d bytes of memory\n",
+				    mc_count * ETH_ALEN);
 			netif_addr_unlock_bh(usbdev->net);
 			return;
 		}
@@ -2025,7 +2029,7 @@ static bool rndis_bss_info_update(struct usbnet *usbdev,
 	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid->mac,
 		timestamp, capability, beacon_interval, ie, ie_len, signal,
 		GFP_KERNEL);
-	cfg80211_put_bss(priv->wdev.wiphy, bss);
+	cfg80211_put_bss(bss);
 
 	return (bss != NULL);
 }
@@ -2490,7 +2494,7 @@ static void rndis_fill_station_info(struct usbnet *usbdev,
 }
 
 static int rndis_get_station(struct wiphy *wiphy, struct net_device *dev,
-			     const u8 *mac, struct station_info *sinfo)
+					u8 *mac, struct station_info *sinfo)
 {
 	struct rndis_wlan_private *priv = wiphy_priv(wiphy);
 	struct usbnet *usbdev = priv->usbdev;
@@ -2714,7 +2718,7 @@ static void rndis_wlan_craft_connected_bss(struct usbnet *usbdev, u8 *bssid,
 	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid,
 		timestamp, capability, beacon_period, ie_buf, ie_len,
 		signal, GFP_KERNEL);
-	cfg80211_put_bss(priv->wdev.wiphy, bss);
+	cfg80211_put_bss(bss);
 }
 
 /*
@@ -2836,11 +2840,10 @@ static void rndis_wlan_do_link_up_work(struct usbnet *usbdev)
 					bssid, req_ie, req_ie_len,
 					resp_ie, resp_ie_len, GFP_KERNEL);
 	} else if (priv->infra_mode == NDIS_80211_INFRA_ADHOC)
-		cfg80211_ibss_joined(usbdev->net, bssid,
-				     get_current_channel(usbdev, NULL),
-				     GFP_KERNEL);
+		cfg80211_ibss_joined(usbdev->net, bssid, GFP_KERNEL);
 
-	kfree(info);
+	if (info != NULL)
+		kfree(info);
 
 	priv->connected = true;
 	memcpy(priv->bssid, bssid, ETH_ALEN);

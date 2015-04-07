@@ -19,7 +19,6 @@
  * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/err.h>
 #include <linux/platform_device.h>
 
 static int ehci_sead3_setup(struct usb_hcd *hcd)
@@ -55,7 +54,7 @@ const struct hc_driver ehci_sead3_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq			= ehci_irq,
-	.flags			= HCD_MEMORY | HCD_USB2 | HCD_BH,
+	.flags			= HCD_MEMORY | HCD_USB2,
 
 	/*
 	 * basic lifecycle operations
@@ -113,9 +112,10 @@ static int ehci_hcd_sead3_drv_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(hcd->regs)) {
-		ret = PTR_ERR(hcd->regs);
+	hcd->regs = devm_request_and_ioremap(&pdev->dev, res);
+	if (!hcd->regs) {
+		pr_debug("ioremap failed");
+		ret = -ENOMEM;
 		goto err1;
 	}
 
@@ -126,7 +126,6 @@ static int ehci_hcd_sead3_drv_probe(struct platform_device *pdev)
 			  IRQF_SHARED);
 	if (ret == 0) {
 		platform_set_drvdata(pdev, hcd);
-		device_wakeup_enable(hcd->self.controller);
 		return ret;
 	}
 
@@ -141,6 +140,7 @@ static int ehci_hcd_sead3_drv_remove(struct platform_device *pdev)
 
 	usb_remove_hcd(hcd);
 	usb_put_hcd(hcd);
+	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }

@@ -26,9 +26,9 @@
 #include <linux/pci.h>
 #include "stmmac.h"
 
-static struct plat_stmmacenet_data plat_dat;
-static struct stmmac_mdio_bus_data mdio_data;
-static struct stmmac_dma_cfg dma_cfg;
+struct plat_stmmacenet_data plat_dat;
+struct stmmac_mdio_bus_data mdio_data;
+struct stmmac_dma_cfg dma_cfg;
 
 static void stmmac_default_data(void)
 {
@@ -88,7 +88,7 @@ static int stmmac_pci_probe(struct pci_dev *pdev,
 			continue;
 		addr = pci_iomap(pdev, i, 0);
 		if (addr == NULL) {
-			pr_err("%s: ERROR: cannot map register memory aborting",
+			pr_err("%s: ERROR: cannot map register memory, aborting",
 			       __func__);
 			ret = -EIO;
 			goto err_out_map_failed;
@@ -100,9 +100,8 @@ static int stmmac_pci_probe(struct pci_dev *pdev,
 	stmmac_default_data();
 
 	priv = stmmac_dvr_probe(&(pdev->dev), &plat_dat, addr);
-	if (IS_ERR(priv)) {
+	if (!priv) {
 		pr_err("%s: main driver probe failed", __func__);
-		ret = PTR_ERR(priv);
 		goto err_out;
 	}
 	priv->dev->irq = pdev->irq;
@@ -138,6 +137,7 @@ static void stmmac_pci_remove(struct pci_dev *pdev)
 
 	stmmac_dvr_remove(ndev);
 
+	pci_set_drvdata(pdev, NULL);
 	pci_iounmap(pdev, priv->ioaddr);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -170,7 +170,7 @@ static int stmmac_pci_resume(struct pci_dev *pdev)
 #define STMMAC_VENDOR_ID 0x700
 #define STMMAC_DEVICE_ID 0x1108
 
-static const struct pci_device_id stmmac_id_table[] = {
+static DEFINE_PCI_DEVICE_TABLE(stmmac_id_table) = {
 	{PCI_DEVICE(STMMAC_VENDOR_ID, STMMAC_DEVICE_ID)},
 	{PCI_DEVICE(PCI_VENDOR_ID_STMICRO, PCI_DEVICE_ID_STMICRO_MAC)},
 	{}

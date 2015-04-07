@@ -52,7 +52,6 @@
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 
@@ -387,15 +386,18 @@ static int gen_rtc_release(struct inode *inode, struct file *file)
  *	Info exported via "/proc/driver/rtc".
  */
 
-static int gen_rtc_proc_show(struct seq_file *m, void *v)
+static int gen_rtc_proc_output(char *buf)
 {
+	char *p;
 	struct rtc_time tm;
 	unsigned int flags;
 	struct rtc_pll_info pll;
 
+	p = buf;
+
 	flags = get_rtc_time(&tm);
 
-	seq_printf(m,
+	p += sprintf(p,
 		     "rtc_time\t: %02d:%02d:%02d\n"
 		     "rtc_date\t: %04d-%02d-%02d\n"
 		     "rtc_epoch\t: %04u\n",
@@ -404,23 +406,23 @@ static int gen_rtc_proc_show(struct seq_file *m, void *v)
 
 	tm.tm_hour = tm.tm_min = tm.tm_sec = 0;
 
-	seq_puts(m, "alarm\t\t: ");
+	p += sprintf(p, "alarm\t\t: ");
 	if (tm.tm_hour <= 24)
-		seq_printf(m, "%02d:", tm.tm_hour);
+		p += sprintf(p, "%02d:", tm.tm_hour);
 	else
-		seq_puts(m, "**:");
+		p += sprintf(p, "**:");
 
 	if (tm.tm_min <= 59)
-		seq_printf(m, "%02d:", tm.tm_min);
+		p += sprintf(p, "%02d:", tm.tm_min);
 	else
-		seq_puts(m, "**:");
+		p += sprintf(p, "**:");
 
 	if (tm.tm_sec <= 59)
-		seq_printf(m, "%02d\n", tm.tm_sec);
+		p += sprintf(p, "%02d\n", tm.tm_sec);
 	else
-		seq_puts(m, "**\n");
+		p += sprintf(p, "**\n");
 
-	seq_printf(m,
+	p += sprintf(p,
 		     "DST_enable\t: %s\n"
 		     "BCD\t\t: %s\n"
 		     "24hr\t\t: %s\n"
@@ -440,7 +442,7 @@ static int gen_rtc_proc_show(struct seq_file *m, void *v)
 		     0L /* freq */,
 		     (flags & RTC_BATT_BAD) ? "bad" : "okay");
 	if (!get_rtc_pll(&pll))
-	    seq_printf(m,
+	    p += sprintf(p,
 			 "PLL adjustment\t: %d\n"
 			 "PLL max +ve adjustment\t: %d\n"
 			 "PLL max -ve adjustment\t: %d\n"
@@ -453,26 +455,26 @@ static int gen_rtc_proc_show(struct seq_file *m, void *v)
 			 pll.pll_posmult,
 			 pll.pll_negmult,
 			 pll.pll_clock);
-	return 0;
+	return p - buf;
 }
 
-static int gen_rtc_proc_open(struct inode *inode, struct file *file)
+static int gen_rtc_read_proc(char *page, char **start, off_t off,
+			     int count, int *eof, void *data)
 {
-	return single_open(file, gen_rtc_proc_show, NULL);
+	int len = gen_rtc_proc_output (page);
+        if (len <= off+count) *eof = 1;
+	*start = page + off;
+	len -= off;
+        if (len>count) len = count;
+        if (len<0) len = 0;
+	return len;
 }
-
-static const struct file_operations gen_rtc_proc_fops = {
-	.open		= gen_rtc_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 static int __init gen_rtc_proc_init(void)
 {
 	struct proc_dir_entry *r;
 
-	r = proc_create("driver/rtc", 0, NULL, &gen_rtc_proc_fops);
+	r = create_proc_read_entry("driver/rtc", 0, NULL, gen_rtc_read_proc, NULL);
 	if (!r)
 		return -ENOMEM;
 	return 0;

@@ -33,12 +33,6 @@ struct ar5416IniArray {
 	u32 ia_columns;
 };
 
-#define STATIC_INI_ARRAY(array) {			\
-		.ia_array = (u32 *)(array),		\
-		.ia_rows = ARRAY_SIZE(array),		\
-		.ia_columns = ARRAY_SIZE(array[0]),	\
-	}
-
 #define INIT_INI_ARRAY(iniarray, array) do {	\
 		(iniarray)->ia_array = (u32 *)(array);		\
 		(iniarray)->ia_rows = ARRAY_SIZE(array);	\
@@ -116,8 +110,7 @@ void ath9k_init_nfcal_hist_buffer(struct ath_hw *ah,
 void ath9k_hw_bstuck_nfcal(struct ath_hw *ah);
 void ath9k_hw_reset_calibration(struct ath_hw *ah,
 				struct ath9k_cal_list *currCal);
-s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan,
-			   s16 nf);
+s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan);
 
 
 #endif /* CALIB_H */

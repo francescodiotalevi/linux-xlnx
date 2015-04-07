@@ -36,7 +36,7 @@ static const struct hc_driver ehci_sh_hc_driver = {
 	 * generic hardware linkage
 	 */
 	.irq				= ehci_irq,
-	.flags				= HCD_USB2 | HCD_MEMORY | HCD_BH,
+	.flags				= HCD_USB2 | HCD_MEMORY,
 
 	/*
 	 * basic lifecycle operations
@@ -77,6 +77,7 @@ static const struct hc_driver ehci_sh_hc_driver = {
 
 static int ehci_hcd_sh_probe(struct platform_device *pdev)
 {
+	const struct hc_driver *driver = &ehci_sh_hc_driver;
 	struct resource *res;
 	struct ehci_sh_priv *priv;
 	struct ehci_sh_platdata *pdata;
@@ -104,7 +105,7 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 		goto fail_create_hcd;
 	}
 
-	pdata = dev_get_platdata(&pdev->dev);
+	pdata = pdev->dev.platform_data;
 
 	/* initialize hcd */
 	hcd = usb_create_hcd(&ehci_sh_hc_driver, &pdev->dev,
@@ -117,9 +118,10 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(hcd->regs)) {
-		ret = PTR_ERR(hcd->regs);
+	hcd->regs = devm_request_and_ioremap(&pdev->dev, res);
+	if (hcd->regs == NULL) {
+		dev_dbg(&pdev->dev, "error mapping memory\n");
+		ret = -ENXIO;
 		goto fail_request_resource;
 	}
 
@@ -151,7 +153,6 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to add hcd");
 		goto fail_add_hcd;
 	}
-	device_wakeup_enable(hcd->self.controller);
 
 	priv->hcd = hcd;
 	platform_set_drvdata(pdev, priv);
@@ -170,13 +171,14 @@ fail_create_hcd:
 	return ret;
 }
 
-static int ehci_hcd_sh_remove(struct platform_device *pdev)
+static int __exit ehci_hcd_sh_remove(struct platform_device *pdev)
 {
 	struct ehci_sh_priv *priv = platform_get_drvdata(pdev);
 	struct usb_hcd *hcd = priv->hcd;
 
 	usb_remove_hcd(hcd);
 	usb_put_hcd(hcd);
+	platform_set_drvdata(pdev, NULL);
 
 	clk_disable(priv->fclk);
 	clk_disable(priv->iclk);
@@ -195,7 +197,7 @@ static void ehci_hcd_sh_shutdown(struct platform_device *pdev)
 
 static struct platform_driver ehci_hcd_sh_driver = {
 	.probe		= ehci_hcd_sh_probe,
-	.remove		= ehci_hcd_sh_remove,
+	.remove		= __exit_p(ehci_hcd_sh_remove),
 	.shutdown	= ehci_hcd_sh_shutdown,
 	.driver		= {
 		.name	= "sh_ehci",

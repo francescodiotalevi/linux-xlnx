@@ -12,7 +12,6 @@
  */
 
 #include <linux/power/smartreflex.h>
-#include "soc.h"
 #include "voltage.h"
 
 static int sr_class3_enable(struct omap_sr *sr)
@@ -26,14 +25,14 @@ static int sr_class3_enable(struct omap_sr *sr)
 	}
 
 	omap_vp_enable(sr->voltdm);
-	return sr_enable(sr, volt);
+	return sr_enable(sr->voltdm, volt);
 }
 
 static int sr_class3_disable(struct omap_sr *sr, int is_volt_reset)
 {
-	sr_disable_errgen(sr);
+	sr_disable_errgen(sr->voltdm);
 	omap_vp_disable(sr->voltdm);
-	sr_disable(sr);
+	sr_disable(sr->voltdm);
 	if (is_volt_reset)
 		voltdm_reset(sr->voltdm);
 
@@ -42,7 +41,7 @@ static int sr_class3_disable(struct omap_sr *sr, int is_volt_reset)
 
 static int sr_class3_configure(struct omap_sr *sr)
 {
-	return sr_configure_errgen(sr);
+	return sr_configure_errgen(sr->voltdm);
 }
 
 /* SR class3 structure */
@@ -59,4 +58,4 @@ static int __init sr_class3_init(void)
 	pr_info("SmartReflex Class3 initialized\n");
 	return sr_register_class(&class3_data);
 }
-omap_late_initcall(sr_class3_init);
+late_initcall(sr_class3_init);

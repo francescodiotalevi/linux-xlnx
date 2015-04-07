@@ -45,24 +45,25 @@
 #include "cxd2820r.h"
 
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+static DEFINE_MUTEX(anysee_usb_mutex);
 
-static int anysee_ctrl_msg(struct dvb_usb_device *d,
-		u8 *sbuf, u8 slen, u8 *rbuf, u8 rlen)
+static int anysee_ctrl_msg(struct dvb_usb_device *d, u8 *sbuf, u8 slen,
+	u8 *rbuf, u8 rlen)
 {
 	struct anysee_state *state = d_to_priv(d);
 	int act_len, ret, i;
+	u8 buf[64];
 
-	mutex_lock(&d->usb_mutex);
+	memcpy(&buf[0], sbuf, slen);
+	buf[60] = state->seq++;
 
-	memcpy(&state->buf[0], sbuf, slen);
-	state->buf[60] = state->seq++;
+	mutex_lock(&anysee_usb_mutex);
 
-	dev_dbg(&d->udev->dev, "%s: >>> %*ph\n", __func__, slen, state->buf);
+	dev_dbg(&d->udev->dev, "%s: >>> %*ph\n", __func__, slen, buf);
 
 	/* We need receive one message more after dvb_usb_generic_rw due
 	   to weird transaction flow, which is 1 x send + 2 x receive. */
-	ret = dvb_usbv2_generic_rw_locked(d, state->buf, sizeof(state->buf),
-			state->buf, sizeof(state->buf));
+	ret = dvb_usbv2_generic_rw(d, buf, sizeof(buf), buf, sizeof(buf));
 	if (ret)
 		goto error_unlock;
 
@@ -81,19 +82,20 @@ static int anysee_ctrl_msg(struct dvb_usb_device *d,
 	for (i = 0; i < 3; i++) {
 		/* receive 2nd answer */
 		ret = usb_bulk_msg(d->udev, usb_rcvbulkpipe(d->udev,
-				d->props->generic_bulk_ctrl_endpoint),
-				state->buf, sizeof(state->buf), &act_len, 2000);
+			d->props->generic_bulk_ctrl_endpoint), buf, sizeof(buf),
+			&act_len, 2000);
+
 		if (ret) {
-			dev_dbg(&d->udev->dev,
-					"%s: recv bulk message failed=%d\n",
-					__func__, ret);
+			dev_dbg(&d->udev->dev, "%s: recv bulk message " \
+					"failed=%d\n", __func__, ret);
 		} else {
 			dev_dbg(&d->udev->dev, "%s: <<< %*ph\n", __func__,
-					rlen, state->buf);
+					rlen, buf);
 
-			if (state->buf[63] != 0x4f)
-				dev_dbg(&d->udev->dev,
-						"%s: cmd failed\n", __func__);
+			if (buf[63] != 0x4f)
+				dev_dbg(&d->udev->dev, "%s: cmd failed\n",
+						__func__);
+
 			break;
 		}
 	}
@@ -107,10 +109,11 @@ static int anysee_ctrl_msg(struct dvb_usb_device *d,
 
 	/* read request, copy returned data to return buf */
 	if (rbuf && rlen)
-		memcpy(rbuf, state->buf, rlen);
+		memcpy(rbuf, buf, rlen);
 
 error_unlock:
-	mutex_unlock(&d->usb_mutex);
+	mutex_unlock(&anysee_usb_mutex);
+
 	return ret;
 }
 
@@ -442,7 +445,6 @@ static struct cxd2820r_config anysee_cxd2820r_config = {
  * IOD[0] ZL10353 1=enabled
  * IOE[0] tuner 0=enabled
  * tuner is behind ZL10353 I2C-gate
- * tuner is behind TDA10023 I2C-gate
  *
  * E7 TC VID=1c73 PID=861f HW=18 FW=0.7 AMTCI=0.5 "anysee-E7TC(LP)"
  * PCB: 508TC (rev0.6)
@@ -636,7 +638,7 @@ static int anysee_frontend_attach(struct dvb_usb_adapter *adap)
 {
 	struct anysee_state *state = adap_to_priv(adap);
 	struct dvb_usb_device *d = adap_to_d(adap);
-	int ret = 0;
+	int ret;
 	u8 tmp;
 	struct i2c_msg msg[2] = {
 		{
@@ -882,8 +884,9 @@ static int anysee_frontend_attach(struct dvb_usb_adapter *adap)
 	if (!adap->fe[0]) {
 		/* we have no frontend :-( */
 		ret = -ENODEV;
-		dev_err(&d->udev->dev,
-				"%s: Unsupported Anysee version. Please report to <linux-media@vger.kernel.org>.\n",
+		dev_err(&d->udev->dev, "%s: Unsupported Anysee version. " \
+				"Please report the " \
+				"<linux-media@vger.kernel.org>.\n",
 				KBUILD_MODNAME);
 	}
 error:
@@ -957,7 +960,7 @@ static int anysee_tuner_attach(struct dvb_usb_adapter *adap)
 
 		if (fe && adap->fe[1]) {
 			/* attach tuner for 2nd FE */
-			fe = dvb_attach(dvb_pll_attach, adap->fe[1],
+			fe = dvb_attach(dvb_pll_attach, adap->fe[0],
 					(0xc0 >> 1), &d->i2c_adap,
 					DVB_PLL_SAMSUNG_DTOS403IH102A);
 		}
@@ -1016,7 +1019,6 @@ static int anysee_tuner_attach(struct dvb_usb_adapter *adap)
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_RC_CORE)
 static int anysee_rc_query(struct dvb_usb_device *d)
 {
 	u8 buf[] = {CMD_GET_IR_CODE};
@@ -1038,8 +1040,7 @@ static int anysee_rc_query(struct dvb_usb_device *d)
 	if (ircode[0]) {
 		dev_dbg(&d->udev->dev, "%s: key pressed %02x\n", __func__,
 				ircode[1]);
-		rc_keydown(d->rc_dev, RC_TYPE_NEC,
-			   RC_SCANCODE_NEC(0x08, ircode[1]), 0);
+		rc_keydown(d->rc_dev, 0x08 << 8 | ircode[1], 0);
 	}
 
 	return 0;
@@ -1053,9 +1054,6 @@ static int anysee_get_rc_config(struct dvb_usb_device *d, struct dvb_usb_rc *rc)
 
 	return 0;
 }
-#else
-	#define anysee_get_rc_config NULL
-#endif
 
 static int anysee_ci_read_attribute_mem(struct dvb_ca_en50221 *ci, int slot,
 	int addr)

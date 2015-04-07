@@ -109,16 +109,16 @@ static void hstcp_init(struct sock *sk)
 	tp->snd_cwnd_clamp = min_t(u32, tp->snd_cwnd_clamp, 0xffffffff/128);
 }
 
-static void hstcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+static void hstcp_cong_avoid(struct sock *sk, u32 adk, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct hstcp *ca = inet_csk_ca(sk);
 
-	if (!tcp_is_cwnd_limited(sk))
+	if (!tcp_is_cwnd_limited(sk, in_flight))
 		return;
 
 	if (tp->snd_cwnd <= tp->snd_ssthresh)
-		tcp_slow_start(tp, acked);
+		tcp_slow_start(tp);
 	else {
 		/* Update AIMD parameters.
 		 *
@@ -162,6 +162,7 @@ static struct tcp_congestion_ops tcp_highspeed __read_mostly = {
 	.init		= hstcp_init,
 	.ssthresh	= hstcp_ssthresh,
 	.cong_avoid	= hstcp_cong_avoid,
+	.min_cwnd	= tcp_reno_min_cwnd,
 
 	.owner		= THIS_MODULE,
 	.name		= "highspeed"

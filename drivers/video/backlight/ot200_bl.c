@@ -14,7 +14,6 @@
 #include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/gpio.h>
-#include <linux/platform_device.h>
 #include <linux/cs5535.h>
 
 static struct cs5535_mfgpt_timer *pwm_timer;
@@ -118,9 +117,8 @@ static int ot200_backlight_probe(struct platform_device *pdev)
 	props.brightness = 100;
 	props.type = BACKLIGHT_RAW;
 
-	bl = devm_backlight_device_register(&pdev->dev, dev_name(&pdev->dev),
-					&pdev->dev, data, &ot200_backlight_ops,
-					&props);
+	bl = backlight_device_register(dev_name(&pdev->dev), &pdev->dev, data,
+					&ot200_backlight_ops, &props);
 	if (IS_ERR(bl)) {
 		dev_err(&pdev->dev, "failed to register backlight\n");
 		retval = PTR_ERR(bl);
@@ -138,6 +136,10 @@ error_devm_kzalloc:
 
 static int ot200_backlight_remove(struct platform_device *pdev)
 {
+	struct backlight_device *bl = platform_get_drvdata(pdev);
+
+	backlight_device_unregister(bl);
+
 	/* on module unload set brightness to 100% */
 	cs5535_mfgpt_write(pwm_timer, MFGPT_REG_COUNTER, 0);
 	cs5535_mfgpt_write(pwm_timer, MFGPT_REG_SETUP, MFGPT_SETUP_CNTEN);

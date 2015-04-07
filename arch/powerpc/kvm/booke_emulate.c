@@ -165,16 +165,16 @@ int kvmppc_booke_emulate_mtspr(struct kvm_vcpu *vcpu, int sprn, ulong spr_val)
 	 * guest (PR-mode only).
 	 */
 	case SPRN_SPRG4:
-		kvmppc_set_sprg4(vcpu, spr_val);
+		vcpu->arch.shared->sprg4 = spr_val;
 		break;
 	case SPRN_SPRG5:
-		kvmppc_set_sprg5(vcpu, spr_val);
+		vcpu->arch.shared->sprg5 = spr_val;
 		break;
 	case SPRN_SPRG6:
-		kvmppc_set_sprg6(vcpu, spr_val);
+		vcpu->arch.shared->sprg6 = spr_val;
 		break;
 	case SPRN_SPRG7:
-		kvmppc_set_sprg7(vcpu, spr_val);
+		vcpu->arch.shared->sprg7 = spr_val;
 		break;
 
 	case SPRN_IVPR:
@@ -268,9 +268,6 @@ int kvmppc_booke_emulate_mfspr(struct kvm_vcpu *vcpu, int sprn, ulong *spr_val)
 		break;
 	case SPRN_ESR:
 		*spr_val = vcpu->arch.shared->esr;
-		break;
-	case SPRN_EPR:
-		*spr_val = vcpu->arch.epr;
 		break;
 	case SPRN_CSRR0:
 		*spr_val = vcpu->arch.csrr0;

@@ -357,11 +357,10 @@ static const struct iio_chan_spec adis16136_channels[] = {
 		.type = IIO_ANGL_VEL,
 		.modified = 1,
 		.channel2 = IIO_MOD_X,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
-			BIT(IIO_CHAN_INFO_CALIBBIAS) |
-			BIT(IIO_CHAN_INFO_LOW_PASS_FILTER_3DB_FREQUENCY),
-		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
-
+		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
+			IIO_CHAN_INFO_CALIBBIAS_SEPARATE_BIT |
+			IIO_CHAN_INFO_SCALE_SHARED_BIT |
+			IIO_CHAN_INFO_LOW_PASS_FILTER_3DB_FREQUENCY_SEPARATE_BIT,
 		.address = ADIS16136_REG_GYRO_OUT2,
 		.scan_index = ADIS16136_SCAN_GYRO,
 		.scan_type = {
@@ -374,8 +373,8 @@ static const struct iio_chan_spec adis16136_channels[] = {
 		.type = IIO_TEMP,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
-			BIT(IIO_CHAN_INFO_SCALE),
+		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
+			IIO_CHAN_INFO_SCALE_SEPARATE_BIT,
 		.address = ADIS16136_REG_TEMP_OUT,
 		.scan_index = ADIS16136_SCAN_TEMP,
 		.scan_type = {
@@ -497,7 +496,7 @@ static int adis16136_probe(struct spi_device *spi)
 	struct iio_dev *indio_dev;
 	int ret;
 
-	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*adis16136));
+	indio_dev = iio_device_alloc(sizeof(*adis16136));
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
@@ -515,11 +514,11 @@ static int adis16136_probe(struct spi_device *spi)
 
 	ret = adis_init(&adis16136->adis, indio_dev, spi, &adis16136_data);
 	if (ret)
-		return ret;
+		goto error_free_dev;
 
 	ret = adis_setup_buffer_and_trigger(&adis16136->adis, indio_dev, NULL);
 	if (ret)
-		return ret;
+		goto error_free_dev;
 
 	ret = adis16136_initial_setup(indio_dev);
 	if (ret)
@@ -537,6 +536,8 @@ error_stop_device:
 	adis16136_stop_device(indio_dev);
 error_cleanup_buffer:
 	adis_cleanup_buffer_and_trigger(&adis16136->adis, indio_dev);
+error_free_dev:
+	iio_device_free(indio_dev);
 	return ret;
 }
 
@@ -549,6 +550,8 @@ static int adis16136_remove(struct spi_device *spi)
 	adis16136_stop_device(indio_dev);
 
 	adis_cleanup_buffer_and_trigger(&adis16136->adis, indio_dev);
+
+	iio_device_free(indio_dev);
 
 	return 0;
 }

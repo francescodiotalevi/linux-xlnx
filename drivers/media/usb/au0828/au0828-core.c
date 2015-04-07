@@ -32,12 +32,10 @@
  * 2 = USB handling
  * 4 = I2C related
  * 8 = Bridge related
- * 16 = IR related
  */
 int au0828_debug;
 module_param_named(debug, au0828_debug, int, 0644);
-MODULE_PARM_DESC(debug,
-		 "set debug bitmask: 1=general, 2=USB, 4=I2C, 8=bridge, 16=IR");
+MODULE_PARM_DESC(debug, "enable debug messages");
 
 static unsigned int disable_usb_speed_check;
 module_param(disable_usb_speed_check, int, 0444);
@@ -127,59 +125,37 @@ static int recv_control_msg(struct au0828_dev *dev, u16 request, u32 value,
 	return status;
 }
 
-static void au0828_usb_release(struct au0828_dev *dev)
-{
-	/* I2C */
-	au0828_i2c_unregister(dev);
-
-	kfree(dev);
-}
-
-#ifdef CONFIG_VIDEO_AU0828_V4L2
-static void au0828_usb_v4l2_release(struct v4l2_device *v4l2_dev)
-{
-	struct au0828_dev *dev =
-		container_of(v4l2_dev, struct au0828_dev, v4l2_dev);
-
-	v4l2_ctrl_handler_free(&dev->v4l2_ctrl_hdl);
-	v4l2_device_unregister(&dev->v4l2_dev);
-	au0828_usb_release(dev);
-}
-#endif
-
 static void au0828_usb_disconnect(struct usb_interface *interface)
 {
 	struct au0828_dev *dev = usb_get_intfdata(interface);
 
 	dprintk(1, "%s()\n", __func__);
 
-#ifdef CONFIG_VIDEO_AU0828_RC
-	au0828_rc_unregister(dev);
-#endif
 	/* Digital TV */
 	au0828_dvb_unregister(dev);
 
+	if (AUVI_INPUT(0).type != AU0828_VMUX_UNDEFINED)
+		au0828_analog_unregister(dev);
+
+	/* I2C */
+	au0828_i2c_unregister(dev);
+
+	v4l2_device_unregister(&dev->v4l2_dev);
+
 	usb_set_intfdata(interface, NULL);
+
 	mutex_lock(&dev->mutex);
 	dev->usbdev = NULL;
 	mutex_unlock(&dev->mutex);
-#ifdef CONFIG_VIDEO_AU0828_V4L2
-	if (AUVI_INPUT(0).type != AU0828_VMUX_UNDEFINED) {
-		au0828_analog_unregister(dev);
-		v4l2_device_disconnect(&dev->v4l2_dev);
-		v4l2_device_put(&dev->v4l2_dev);
-		return;
-	}
-#endif
-	au0828_usb_release(dev);
+
+	kfree(dev);
+
 }
 
 static int au0828_usb_probe(struct usb_interface *interface,
 	const struct usb_device_id *id)
 {
-	int ifnum;
-	int retval = 0;
-
+	int ifnum, retval;
 	struct au0828_dev *dev;
 	struct usb_device *usbdev = interface_to_usbdev(interface);
 
@@ -218,29 +194,15 @@ static int au0828_usb_probe(struct usb_interface *interface,
 	dev->usbdev = usbdev;
 	dev->boardnr = id->driver_info;
 
-#ifdef CONFIG_VIDEO_AU0828_V4L2
-	dev->v4l2_dev.release = au0828_usb_v4l2_release;
-
 	/* Create the v4l2_device */
 	retval = v4l2_device_register(&interface->dev, &dev->v4l2_dev);
 	if (retval) {
-		pr_err("%s() v4l2_device_register failed\n",
+		printk(KERN_ERR "%s() v4l2_device_register failed\n",
 		       __func__);
 		mutex_unlock(&dev->lock);
 		kfree(dev);
-		return retval;
+		return -EIO;
 	}
-	/* This control handler will inherit the controls from au8522 */
-	retval = v4l2_ctrl_handler_init(&dev->v4l2_ctrl_hdl, 4);
-	if (retval) {
-		pr_err("%s() v4l2_ctrl_handler_init failed\n",
-		       __func__);
-		mutex_unlock(&dev->lock);
-		kfree(dev);
-		return retval;
-	}
-	dev->v4l2_dev.ctrl_handler = &dev->v4l2_ctrl_hdl;
-#endif
 
 	/* Power Up the bridge */
 	au0828_write(dev, REG_600, 1 << 4);
@@ -254,27 +216,15 @@ static int au0828_usb_probe(struct usb_interface *interface,
 	/* Setup */
 	au0828_card_setup(dev);
 
-#ifdef CONFIG_VIDEO_AU0828_V4L2
 	/* Analog TV */
 	if (AUVI_INPUT(0).type != AU0828_VMUX_UNDEFINED)
 		au0828_analog_register(dev, interface);
-#endif
 
 	/* Digital TV */
-	retval = au0828_dvb_register(dev);
-	if (retval)
-		pr_err("%s() au0282_dev_register failed\n",
-		       __func__);
+	au0828_dvb_register(dev);
 
-#ifdef CONFIG_VIDEO_AU0828_RC
-	/* Remote controller */
-	au0828_rc_register(dev);
-#endif
-
-	/*
-	 * Store the pointer to the au0828_dev so it can be accessed in
-	 * au0828_usb_disconnect
-	 */
+	/* Store the pointer to the au0828_dev so it can be accessed in
+	   au0828_usb_disconnect */
 	usb_set_intfdata(interface, dev);
 
 	printk(KERN_INFO "Registered device AU0828 [%s]\n",
@@ -282,7 +232,7 @@ static int au0828_usb_probe(struct usb_interface *interface,
 
 	mutex_unlock(&dev->lock);
 
-	return retval;
+	return 0;
 }
 
 static struct usb_driver au0828_usb_driver = {
@@ -290,8 +240,6 @@ static struct usb_driver au0828_usb_driver = {
 	.probe		= au0828_usb_probe,
 	.disconnect	= au0828_usb_disconnect,
 	.id_table	= au0828_usb_id_table,
-
-	/* FIXME: Add suspend and resume functions */
 };
 
 static int __init au0828_init(void)
@@ -309,10 +257,6 @@ static int __init au0828_init(void)
 
 	if (au0828_debug & 8)
 		printk(KERN_INFO "%s() Bridge Debugging is enabled\n",
-		       __func__);
-
-	if (au0828_debug & 16)
-		printk(KERN_INFO "%s() IR Debugging is enabled\n",
 		       __func__);
 
 	printk(KERN_INFO "au0828 driver loaded\n");
@@ -335,4 +279,4 @@ module_exit(au0828_exit);
 MODULE_DESCRIPTION("Driver for Auvitek AU0828 based products");
 MODULE_AUTHOR("Steven Toth <stoth@linuxtv.org>");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.0.3");
+MODULE_VERSION("0.0.2");

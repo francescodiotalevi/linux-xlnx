@@ -179,13 +179,13 @@ static __be16 dvb_net_eth_type_trans(struct sk_buff *skb,
 	eth = eth_hdr(skb);
 
 	if (*eth->h_dest & 1) {
-		if(ether_addr_equal(eth->h_dest,dev->broadcast))
+		if(memcmp(eth->h_dest,dev->broadcast, ETH_ALEN)==0)
 			skb->pkt_type=PACKET_BROADCAST;
 		else
 			skb->pkt_type=PACKET_MULTICAST;
 	}
 
-	if (ntohs(eth->h_proto) >= ETH_P_802_3_MIN)
+	if (ntohs(eth->h_proto) >= 1536)
 		return eth->h_proto;
 
 	rawp = skb->data;
@@ -228,9 +228,9 @@ static int ule_test_sndu( struct dvb_net_priv *p )
 static int ule_bridged_sndu( struct dvb_net_priv *p )
 {
 	struct ethhdr *hdr = (struct ethhdr*) p->ule_next_hdr;
-	if(ntohs(hdr->h_proto) < ETH_P_802_3_MIN) {
+	if(ntohs(hdr->h_proto) < 1536) {
 		int framelen = p->ule_sndu_len - ((p->ule_next_hdr+sizeof(struct ethhdr)) - p->ule_skb->data);
-		/* A frame Type < ETH_P_802_3_MIN for a bridged frame, introduces a LLC Length field. */
+		/* A frame Type < 1536 for a bridged frame, introduces a LLC Length field. */
 		if(framelen != ntohs(hdr->h_proto)) {
 			return -1;
 		}
@@ -320,7 +320,7 @@ static int handle_ule_extensions( struct dvb_net_priv *p )
 			(int) p->ule_sndu_type, l, total_ext_len);
 #endif
 
-	} while (p->ule_sndu_type < ETH_P_802_3_MIN);
+	} while (p->ule_sndu_type < 1536);
 
 	return total_ext_len;
 }
@@ -674,13 +674,11 @@ static void dvb_net_ule( struct net_device *dev, const u8 *buf, size_t buf_len )
 					if (priv->rx_mode != RX_MODE_PROMISC) {
 						if (priv->ule_skb->data[0] & 0x01) {
 							/* multicast or broadcast */
-							if (!ether_addr_equal(priv->ule_skb->data, bc_addr)) {
+							if (memcmp(priv->ule_skb->data, bc_addr, ETH_ALEN)) {
 								/* multicast */
 								if (priv->rx_mode == RX_MODE_MULTI) {
 									int i;
-									for(i = 0; i < priv->multi_num &&
-									    !ether_addr_equal(priv->ule_skb->data,
-											      priv->multi_macs[i]); i++)
+									for(i = 0; i < priv->multi_num && memcmp(priv->ule_skb->data, priv->multi_macs[i], ETH_ALEN); i++)
 										;
 									if (i == priv->multi_num)
 										drop = 1;
@@ -690,7 +688,7 @@ static void dvb_net_ule( struct net_device *dev, const u8 *buf, size_t buf_len )
 							}
 							/* else: broadcast */
 						}
-						else if (!ether_addr_equal(priv->ule_skb->data, dev->dev_addr))
+						else if (memcmp(priv->ule_skb->data, dev->dev_addr, ETH_ALEN))
 							drop = 1;
 						/* else: destination address matches the MAC address of our receiver device */
 					}
@@ -714,7 +712,7 @@ static void dvb_net_ule( struct net_device *dev, const u8 *buf, size_t buf_len )
 				}
 
 				/* Handle ULE Extension Headers. */
-				if (priv->ule_sndu_type < ETH_P_802_3_MIN) {
+				if (priv->ule_sndu_type < 1536) {
 					/* There is an extension header.  Handle it accordingly. */
 					int l = handle_ule_extensions(priv);
 					if (l < 0) {
@@ -1046,7 +1044,7 @@ static int dvb_net_feed_start(struct net_device *dev)
 		ret = priv->tsfeed->set(priv->tsfeed,
 					priv->pid, /* pid */
 					TS_PACKET, /* type */
-					DMX_PES_OTHER, /* pes type */
+					DMX_TS_PES_OTHER, /* pes type */
 					32768,     /* circular buffer size */
 					timeout    /* timeout */
 					);
@@ -1276,8 +1274,7 @@ static int dvb_net_add_if(struct dvb_net *dvbnet, u16 pid, u8 feedtype)
 	if ((if_num = get_if(dvbnet)) < 0)
 		return -EINVAL;
 
-	net = alloc_netdev(sizeof(struct dvb_net_priv), "dvb",
-			   NET_NAME_UNKNOWN, dvb_net_setup);
+	net = alloc_netdev(sizeof(struct dvb_net_priv), "dvb", dvb_net_setup);
 	if (!net)
 		return -ENOMEM;
 
@@ -1348,13 +1345,9 @@ static int dvb_net_do_ioctl(struct file *file,
 {
 	struct dvb_device *dvbdev = file->private_data;
 	struct dvb_net *dvbnet = dvbdev->priv;
-	int ret = 0;
 
 	if (((file->f_flags&O_ACCMODE)==O_RDONLY))
 		return -EPERM;
-
-	if (mutex_lock_interruptible(&dvbnet->ioctl_mutex))
-		return -ERESTARTSYS;
 
 	switch (cmd) {
 	case NET_ADD_IF:
@@ -1362,21 +1355,16 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct dvb_net_if *dvbnetif = parg;
 		int result;
 
-		if (!capable(CAP_SYS_ADMIN)) {
-			ret = -EPERM;
-			goto ioctl_error;
-		}
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
 
-		if (!try_module_get(dvbdev->adapter->module)) {
-			ret = -EPERM;
-			goto ioctl_error;
-		}
+		if (!try_module_get(dvbdev->adapter->module))
+			return -EPERM;
 
 		result=dvb_net_add_if(dvbnet, dvbnetif->pid, dvbnetif->feedtype);
 		if (result<0) {
 			module_put(dvbdev->adapter->module);
-			ret = result;
-			goto ioctl_error;
+			return result;
 		}
 		dvbnetif->if_num=result;
 		break;
@@ -1388,10 +1376,8 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct dvb_net_if *dvbnetif = parg;
 
 		if (dvbnetif->if_num >= DVB_NET_DEVICES_MAX ||
-		    !dvbnet->state[dvbnetif->if_num]) {
-			ret = -EINVAL;
-			goto ioctl_error;
-		}
+		    !dvbnet->state[dvbnetif->if_num])
+			return -EINVAL;
 
 		netdev = dvbnet->device[dvbnetif->if_num];
 
@@ -1402,18 +1388,16 @@ static int dvb_net_do_ioctl(struct file *file,
 	}
 	case NET_REMOVE_IF:
 	{
-		if (!capable(CAP_SYS_ADMIN)) {
-			ret = -EPERM;
-			goto ioctl_error;
-		}
-		if ((unsigned long) parg >= DVB_NET_DEVICES_MAX) {
-			ret = -EINVAL;
-			goto ioctl_error;
-		}
+		int ret;
+
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+		if ((unsigned long) parg >= DVB_NET_DEVICES_MAX)
+			return -EINVAL;
 		ret = dvb_net_remove_if(dvbnet, (unsigned long) parg);
 		if (!ret)
 			module_put(dvbdev->adapter->module);
-		break;
+		return ret;
 	}
 
 	/* binary compatibility cruft */
@@ -1422,21 +1406,16 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct __dvb_net_if_old *dvbnetif = parg;
 		int result;
 
-		if (!capable(CAP_SYS_ADMIN)) {
-			ret = -EPERM;
-			goto ioctl_error;
-		}
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
 
-		if (!try_module_get(dvbdev->adapter->module)) {
-			ret = -EPERM;
-			goto ioctl_error;
-		}
+		if (!try_module_get(dvbdev->adapter->module))
+			return -EPERM;
 
 		result=dvb_net_add_if(dvbnet, dvbnetif->pid, DVB_NET_FEEDTYPE_MPE);
 		if (result<0) {
 			module_put(dvbdev->adapter->module);
-			ret = result;
-			goto ioctl_error;
+			return result;
 		}
 		dvbnetif->if_num=result;
 		break;
@@ -1448,10 +1427,8 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct __dvb_net_if_old *dvbnetif = parg;
 
 		if (dvbnetif->if_num >= DVB_NET_DEVICES_MAX ||
-		    !dvbnet->state[dvbnetif->if_num]) {
-			ret = -EINVAL;
-			goto ioctl_error;
-		}
+		    !dvbnet->state[dvbnetif->if_num])
+			return -EINVAL;
 
 		netdev = dvbnet->device[dvbnetif->if_num];
 
@@ -1460,13 +1437,9 @@ static int dvb_net_do_ioctl(struct file *file,
 		break;
 	}
 	default:
-		ret = -ENOTTY;
-		break;
+		return -ENOTTY;
 	}
-
-ioctl_error:
-	mutex_unlock(&dvbnet->ioctl_mutex);
-	return ret;
+	return 0;
 }
 
 static long dvb_net_ioctl(struct file *file,
@@ -1482,8 +1455,11 @@ static int dvb_net_close(struct inode *inode, struct file *file)
 
 	dvb_generic_release(inode, file);
 
-	if(dvbdev->users == 1 && dvbnet->exit == 1)
+	if(dvbdev->users == 1 && dvbnet->exit == 1) {
+		fops_put(file->f_op);
+		file->f_op = NULL;
 		wake_up(&dvbdev->wait_queue);
+	}
 	return 0;
 }
 
@@ -1529,7 +1505,6 @@ int dvb_net_init (struct dvb_adapter *adap, struct dvb_net *dvbnet,
 {
 	int i;
 
-	mutex_init(&dvbnet->ioctl_mutex);
 	dvbnet->demux = dmx;
 
 	for (i=0; i<DVB_NET_DEVICES_MAX; i++)

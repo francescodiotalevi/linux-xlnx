@@ -15,8 +15,6 @@
 #include <linux/stddef.h>
 #include <linux/list.h>
 #include <linux/sched.h>
-#include <linux/cpu.h>
-
 #include <asm/irq.h>
 #include <asm/mach/irq.h>
 #include <asm/system_misc.h>
@@ -67,8 +65,8 @@ static struct irq_chip gemini_irq_chip = {
 
 static struct resource irq_resource = {
 	.name	= "irq_handler",
-	.start	= GEMINI_INTERRUPT_BASE,
-	.end	= FIQ_STATUS(GEMINI_INTERRUPT_BASE) + 4,
+	.start	= IO_ADDRESS(GEMINI_INTERRUPT_BASE),
+	.end	= IO_ADDRESS(FIQ_STATUS(GEMINI_INTERRUPT_BASE)) + 4,
 };
 
 void __init gemini_init_irq(void)
@@ -79,7 +77,7 @@ void __init gemini_init_irq(void)
 	 * Disable the idle handler by default since it is buggy
 	 * For more info see arch/arm/mach-gemini/idle.c
 	 */
-	cpu_idle_poll_ctrl(true);
+	disable_hlt();
 
 	request_resource(&iomem_resource, &irq_resource);
 

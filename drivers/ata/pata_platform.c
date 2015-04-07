@@ -13,6 +13,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <scsi/scsi_host.h>
 #include <linux/ata.h>
@@ -179,7 +180,7 @@ static int pata_platform_probe(struct platform_device *pdev)
 	struct resource *io_res;
 	struct resource *ctl_res;
 	struct resource *irq_res;
-	struct pata_platform_info *pp_info = dev_get_platdata(&pdev->dev);
+	struct pata_platform_info *pp_info = pdev->dev.platform_data;
 
 	/*
 	 * Simple resource validation ..

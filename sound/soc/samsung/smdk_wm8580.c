@@ -37,11 +37,13 @@ static int smdk_hw_params(struct snd_pcm_substream *substream,
 	unsigned int pll_out;
 	int bfs, rfs, ret;
 
-	switch (params_width(params)) {
-	case 8:
+	switch (params_format(params)) {
+	case SNDRV_PCM_FORMAT_U8:
+	case SNDRV_PCM_FORMAT_S8:
 		bfs = 16;
 		break;
-	case 16:
+	case SNDRV_PCM_FORMAT_U16_LE:
+	case SNDRV_PCM_FORMAT_S16_LE:
 		bfs = 32;
 		break;
 	default:
@@ -191,9 +193,9 @@ static struct snd_soc_dai_link smdk_dai[] = {
 	[SEC_PLAYBACK] = { /* Sec_Fifo Playback i/f */
 		.name = "Sec_FIFO TX",
 		.stream_name = "Playback",
-		.cpu_dai_name = "samsung-i2s-sec",
+		.cpu_dai_name = "samsung-i2s.x",
 		.codec_dai_name = "wm8580-hifi-playback",
-		.platform_name = "samsung-i2s-sec",
+		.platform_name = "samsung-i2s.x",
 		.codec_name = "wm8580.0-001b",
 		.ops = &smdk_ops,
 	},
@@ -221,6 +223,9 @@ static int __init smdk_audio_init(void)
 	if (machine_is_smdkc100()
 			|| machine_is_smdkv210() || machine_is_smdkc110()) {
 		smdk.num_links = 3;
+		/* Secondary is at offset SAMSUNG_I2S_SECOFF from Primary */
+		str = (char *)smdk_dai[SEC_PLAYBACK].cpu_dai_name;
+		str[strlen(str) - 1] = '0' + SAMSUNG_I2S_SECOFF;
 	} else if (machine_is_smdk6410()) {
 		str = (char *)smdk_dai[PRI_PLAYBACK].cpu_dai_name;
 		str[strlen(str) - 1] = '2';

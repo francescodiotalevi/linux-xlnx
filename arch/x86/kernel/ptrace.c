@@ -22,7 +22,7 @@
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/rcupdate.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/context_tracking.h>
 
 #include <asm/uaccess.h>
@@ -184,14 +184,14 @@ unsigned long kernel_stack_pointer(struct pt_regs *regs)
 {
 	unsigned long context = (unsigned long)regs & ~(THREAD_SIZE - 1);
 	unsigned long sp = (unsigned long)&regs->sp;
-	u32 *prev_esp;
+	struct thread_info *tinfo;
 
 	if (context == (sp & ~(THREAD_SIZE - 1)))
 		return sp;
 
-	prev_esp = (u32 *)(context);
-	if (prev_esp)
-		return (unsigned long)prev_esp;
+	tinfo = (struct thread_info *)context;
+	if (tinfo->previous_esp)
+		return tinfo->previous_esp;
 
 	return (unsigned long)regs;
 }
@@ -601,48 +601,30 @@ static unsigned long ptrace_get_dr7(struct perf_event *bp[])
 	return dr7;
 }
 
-static int ptrace_fill_bp_fields(struct perf_event_attr *attr,
-					int len, int type, bool disabled)
+static int
+ptrace_modify_breakpoint(struct perf_event *bp, int len, int type,
+			 struct task_struct *tsk, int disabled)
 {
-	int err, bp_len, bp_type;
-
-	err = arch_bp_generic_fields(len, type, &bp_len, &bp_type);
-	if (!err) {
-		attr->bp_len = bp_len;
-		attr->bp_type = bp_type;
-		attr->disabled = disabled;
-	}
-
-	return err;
-}
-
-static struct perf_event *
-ptrace_register_breakpoint(struct task_struct *tsk, int len, int type,
-				unsigned long addr, bool disabled)
-{
+	int err;
+	int gen_len, gen_type;
 	struct perf_event_attr attr;
-	int err;
 
-	ptrace_breakpoint_init(&attr);
-	attr.bp_addr = addr;
+	/*
+	 * We should have at least an inactive breakpoint at this
+	 * slot. It means the user is writing dr7 without having
+	 * written the address register first
+	 */
+	if (!bp)
+		return -EINVAL;
 
-	err = ptrace_fill_bp_fields(&attr, len, type, disabled);
-	if (err)
-		return ERR_PTR(err);
-
-	return register_user_hw_breakpoint(&attr, ptrace_triggered,
-						 NULL, tsk);
-}
-
-static int ptrace_modify_breakpoint(struct perf_event *bp, int len, int type,
-					int disabled)
-{
-	struct perf_event_attr attr = bp->attr;
-	int err;
-
-	err = ptrace_fill_bp_fields(&attr, len, type, disabled);
+	err = arch_bp_generic_fields(len, type, &gen_len, &gen_type);
 	if (err)
 		return err;
+
+	attr = bp->attr;
+	attr.bp_len = gen_len;
+	attr.bp_type = gen_type;
+	attr.disabled = disabled;
 
 	return modify_user_hw_breakpoint(bp, &attr);
 }
@@ -652,50 +634,67 @@ static int ptrace_modify_breakpoint(struct perf_event *bp, int len, int type,
  */
 static int ptrace_write_dr7(struct task_struct *tsk, unsigned long data)
 {
-	struct thread_struct *thread = &tsk->thread;
+	struct thread_struct *thread = &(tsk->thread);
 	unsigned long old_dr7;
-	bool second_pass = false;
-	int i, rc, ret = 0;
+	int i, orig_ret = 0, rc = 0;
+	int enabled, second_pass = 0;
+	unsigned len, type;
+	struct perf_event *bp;
+
+	if (ptrace_get_breakpoints(tsk) < 0)
+		return -ESRCH;
 
 	data &= ~DR_CONTROL_RESERVED;
 	old_dr7 = ptrace_get_dr7(thread->ptrace_bps);
-
 restore:
-	rc = 0;
+	/*
+	 * Loop through all the hardware breakpoints, making the
+	 * appropriate changes to each.
+	 */
 	for (i = 0; i < HBP_NUM; i++) {
-		unsigned len, type;
-		bool disabled = !decode_dr7(data, i, &len, &type);
-		struct perf_event *bp = thread->ptrace_bps[i];
+		enabled = decode_dr7(data, i, &len, &type);
+		bp = thread->ptrace_bps[i];
 
-		if (!bp) {
-			if (disabled)
-				continue;
+		if (!enabled) {
+			if (bp) {
+				/*
+				 * Don't unregister the breakpoints right-away,
+				 * unless all register_user_hw_breakpoint()
+				 * requests have succeeded. This prevents
+				 * any window of opportunity for debug
+				 * register grabbing by other users.
+				 */
+				if (!second_pass)
+					continue;
 
-			bp = ptrace_register_breakpoint(tsk,
-					len, type, 0, disabled);
-			if (IS_ERR(bp)) {
-				rc = PTR_ERR(bp);
-				break;
+				rc = ptrace_modify_breakpoint(bp, len, type,
+							      tsk, 1);
+				if (rc)
+					break;
 			}
-
-			thread->ptrace_bps[i] = bp;
 			continue;
 		}
 
-		rc = ptrace_modify_breakpoint(bp, len, type, disabled);
+		rc = ptrace_modify_breakpoint(bp, len, type, tsk, 0);
 		if (rc)
 			break;
 	}
-
-	/* Restore if the first pass failed, second_pass shouldn't fail. */
-	if (rc && !WARN_ON(second_pass)) {
-		ret = rc;
-		data = old_dr7;
-		second_pass = true;
+	/*
+	 * Make a second pass to free the remaining unused breakpoints
+	 * or to restore the original breakpoints if an error occurred.
+	 */
+	if (!second_pass) {
+		second_pass = 1;
+		if (rc < 0) {
+			orig_ret = rc;
+			data = old_dr7;
+		}
 		goto restore;
 	}
 
-	return ret;
+	ptrace_put_breakpoints(tsk);
+
+	return ((orig_ret < 0) ? orig_ret : rc);
 }
 
 /*
@@ -703,17 +702,25 @@ restore:
  */
 static unsigned long ptrace_get_debugreg(struct task_struct *tsk, int n)
 {
-	struct thread_struct *thread = &tsk->thread;
+	struct thread_struct *thread = &(tsk->thread);
 	unsigned long val = 0;
 
 	if (n < HBP_NUM) {
-		struct perf_event *bp = thread->ptrace_bps[n];
+		struct perf_event *bp;
 
-		if (bp)
+		if (ptrace_get_breakpoints(tsk) < 0)
+			return -ESRCH;
+
+		bp = thread->ptrace_bps[n];
+		if (!bp)
+			val = 0;
+		else
 			val = bp->hw.info.address;
+
+		ptrace_put_breakpoints(tsk);
 	} else if (n == 6) {
 		val = thread->debugreg6;
-	} else if (n == 7) {
+	 } else if (n == 7) {
 		val = thread->ptrace_dr7;
 	}
 	return val;
@@ -722,14 +729,29 @@ static unsigned long ptrace_get_debugreg(struct task_struct *tsk, int n)
 static int ptrace_set_breakpoint_addr(struct task_struct *tsk, int nr,
 				      unsigned long addr)
 {
+	struct perf_event *bp;
 	struct thread_struct *t = &tsk->thread;
-	struct perf_event *bp = t->ptrace_bps[nr];
+	struct perf_event_attr attr;
 	int err = 0;
 
-	if (!bp) {
+	if (ptrace_get_breakpoints(tsk) < 0)
+		return -ESRCH;
+
+	if (!t->ptrace_bps[nr]) {
+		ptrace_breakpoint_init(&attr);
 		/*
-		 * Put stub len and type to create an inactive but correct bp.
-		 *
+		 * Put stub len and type to register (reserve) an inactive but
+		 * correct bp
+		 */
+		attr.bp_addr = addr;
+		attr.bp_len = HW_BREAKPOINT_LEN_1;
+		attr.bp_type = HW_BREAKPOINT_W;
+		attr.disabled = 1;
+
+		bp = register_user_hw_breakpoint(&attr, ptrace_triggered,
+						 NULL, tsk);
+
+		/*
 		 * CHECKME: the previous code returned -EIO if the addr wasn't
 		 * a valid task virtual addr. The new one will return -EINVAL in
 		 *  this case.
@@ -738,20 +760,22 @@ static int ptrace_set_breakpoint_addr(struct task_struct *tsk, int nr,
 		 * writing for the user. And anyway this is the previous
 		 * behaviour.
 		 */
-		bp = ptrace_register_breakpoint(tsk,
-				X86_BREAKPOINT_LEN_1, X86_BREAKPOINT_WRITE,
-				addr, true);
-		if (IS_ERR(bp))
+		if (IS_ERR(bp)) {
 			err = PTR_ERR(bp);
-		else
-			t->ptrace_bps[nr] = bp;
-	} else {
-		struct perf_event_attr attr = bp->attr;
+			goto put;
+		}
 
+		t->ptrace_bps[nr] = bp;
+	} else {
+		bp = t->ptrace_bps[nr];
+
+		attr = bp->attr;
 		attr.bp_addr = addr;
 		err = modify_user_hw_breakpoint(bp, &attr);
 	}
 
+put:
+	ptrace_put_breakpoints(tsk);
 	return err;
 }
 
@@ -761,20 +785,30 @@ static int ptrace_set_breakpoint_addr(struct task_struct *tsk, int nr,
 static int ptrace_set_debugreg(struct task_struct *tsk, int n,
 			       unsigned long val)
 {
-	struct thread_struct *thread = &tsk->thread;
-	/* There are no DR4 or DR5 registers */
-	int rc = -EIO;
+	struct thread_struct *thread = &(tsk->thread);
+	int rc = 0;
 
+	/* There are no DR4 or DR5 registers */
+	if (n == 4 || n == 5)
+		return -EIO;
+
+	if (n == 6) {
+		thread->debugreg6 = val;
+		goto ret_path;
+	}
 	if (n < HBP_NUM) {
 		rc = ptrace_set_breakpoint_addr(tsk, n, val);
-	} else if (n == 6) {
-		thread->debugreg6 = val;
-		rc = 0;
-	} else if (n == 7) {
+		if (rc)
+			return rc;
+	}
+	/* All that's left is DR7 */
+	if (n == 7) {
 		rc = ptrace_write_dr7(tsk, val);
 		if (!rc)
 			thread->ptrace_dr7 = val;
 	}
+
+ret_path:
 	return rc;
 }
 

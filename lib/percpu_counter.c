@@ -60,15 +60,14 @@ static inline void debug_percpu_counter_deactivate(struct percpu_counter *fbc)
 void percpu_counter_set(struct percpu_counter *fbc, s64 amount)
 {
 	int cpu;
-	unsigned long flags;
 
-	raw_spin_lock_irqsave(&fbc->lock, flags);
+	raw_spin_lock(&fbc->lock);
 	for_each_possible_cpu(cpu) {
 		s32 *pcount = per_cpu_ptr(fbc->counters, cpu);
 		*pcount = 0;
 	}
 	fbc->count = amount;
-	raw_spin_unlock_irqrestore(&fbc->lock, flags);
+	raw_spin_unlock(&fbc->lock);
 }
 EXPORT_SYMBOL(percpu_counter_set);
 
@@ -79,13 +78,12 @@ void __percpu_counter_add(struct percpu_counter *fbc, s64 amount, s32 batch)
 	preempt_disable();
 	count = __this_cpu_read(*fbc->counters) + amount;
 	if (count >= batch || count <= -batch) {
-		unsigned long flags;
-		raw_spin_lock_irqsave(&fbc->lock, flags);
+		raw_spin_lock(&fbc->lock);
 		fbc->count += count;
-		__this_cpu_sub(*fbc->counters, count - amount);
-		raw_spin_unlock_irqrestore(&fbc->lock, flags);
+		__this_cpu_write(*fbc->counters, 0);
+		raw_spin_unlock(&fbc->lock);
 	} else {
-		this_cpu_add(*fbc->counters, amount);
+		__this_cpu_write(*fbc->counters, count);
 	}
 	preempt_enable();
 }
@@ -99,15 +97,14 @@ s64 __percpu_counter_sum(struct percpu_counter *fbc)
 {
 	s64 ret;
 	int cpu;
-	unsigned long flags;
 
-	raw_spin_lock_irqsave(&fbc->lock, flags);
+	raw_spin_lock(&fbc->lock);
 	ret = fbc->count;
 	for_each_online_cpu(cpu) {
 		s32 *pcount = per_cpu_ptr(fbc->counters, cpu);
 		ret += *pcount;
 	}
-	raw_spin_unlock_irqrestore(&fbc->lock, flags);
+	raw_spin_unlock(&fbc->lock);
 	return ret;
 }
 EXPORT_SYMBOL(__percpu_counter_sum);
@@ -161,7 +158,7 @@ static void compute_batch_value(void)
 	percpu_counter_batch = max(32, nr*2);
 }
 
-static int percpu_counter_hotcpu_callback(struct notifier_block *nb,
+static int __cpuinit percpu_counter_hotcpu_callback(struct notifier_block *nb,
 					unsigned long action, void *hcpu)
 {
 #ifdef CONFIG_HOTPLUG_CPU
@@ -169,7 +166,7 @@ static int percpu_counter_hotcpu_callback(struct notifier_block *nb,
 	struct percpu_counter *fbc;
 
 	compute_batch_value();
-	if (action != CPU_DEAD && action != CPU_DEAD_FROZEN)
+	if (action != CPU_DEAD)
 		return NOTIFY_OK;
 
 	cpu = (unsigned long)hcpu;

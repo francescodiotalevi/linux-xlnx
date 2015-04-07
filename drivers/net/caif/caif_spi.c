@@ -1,6 +1,7 @@
 /*
  * Copyright (C) ST-Ericsson AB 2010
- * Author:  Daniel Martensson
+ * Contact: Sjur Brendeland / sjur.brandeland@stericsson.com
+ * Author:  Daniel Martensson / Daniel.Martensson@stericsson.com
  * License terms: GNU General Public License (GPL) version 2.
  */
 
@@ -28,7 +29,7 @@
 #endif /* CONFIG_CAIF_SPI_SYNC */
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Daniel Martensson");
+MODULE_AUTHOR("Daniel Martensson<daniel.martensson@stericsson.com>");
 MODULE_DESCRIPTION("CAIF SPI driver");
 
 /* Returns the number of padding bytes for alignment. */
@@ -554,6 +555,7 @@ int cfspi_rxfrm(struct cfspi *cfspi, u8 *buf, size_t len)
 
 		skb->protocol = htons(ETH_P_CAIF);
 		skb_reset_mac_header(skb);
+		skb->dev = cfspi->ndev;
 
 		/*
 		 * Push received packet up the stack.
@@ -730,8 +732,8 @@ int cfspi_spi_probe(struct platform_device *pdev)
 	int res;
 	dev = (struct cfspi_dev *)pdev->dev.platform_data;
 
-	ndev = alloc_netdev(sizeof(struct cfspi), "cfspi%d",
-			    NET_NAME_UNKNOWN, cfspi_setup);
+	ndev = alloc_netdev(sizeof(struct cfspi),
+			"cfspi%d", cfspi_setup);
 	if (!dev)
 		return -ENODEV;
 
@@ -862,7 +864,6 @@ static int __init cfspi_init_module(void)
 	driver_remove_file(&cfspi_spi_driver.driver,
 			   &driver_attr_up_head_align);
  err_create_up_head_align:
-	platform_driver_unregister(&cfspi_spi_driver);
  err_dev_register:
 	return result;
 }

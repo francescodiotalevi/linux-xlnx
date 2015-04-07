@@ -19,10 +19,6 @@
 #include "chip.h"
 #include "comm.h"
 
-enum {
-	MIDI_BUFSIZE = 64
-};
-
 static void usb6fire_midi_out_handler(struct urb *urb)
 {
 	struct midi_runtime *rt = urb->context;
@@ -41,9 +37,8 @@ static void usb6fire_midi_out_handler(struct urb *urb)
 
 			ret = usb_submit_urb(urb, GFP_ATOMIC);
 			if (ret < 0)
-				dev_err(&urb->dev->dev,
-					"midi out urb submit failed: %d\n",
-					ret);
+				snd_printk(KERN_ERR PREFIX "midi out urb "
+						"submit failed: %d\n", ret);
 		} else /* no more data to transmit */
 			rt->out = NULL;
 	}
@@ -95,9 +90,8 @@ static void usb6fire_midi_out_trigger(
 
 			ret = usb_submit_urb(urb, GFP_ATOMIC);
 			if (ret < 0)
-				dev_err(&urb->dev->dev,
-					"midi out urb submit failed: %d\n",
-					ret);
+				snd_printk(KERN_ERR PREFIX "midi out urb "
+						"submit failed: %d\n", ret);
 			else
 				rt->out = alsa_sub;
 		}
@@ -162,12 +156,6 @@ int usb6fire_midi_init(struct sfire_chip *chip)
 	if (!rt)
 		return -ENOMEM;
 
-	rt->out_buffer = kzalloc(MIDI_BUFSIZE, GFP_KERNEL);
-	if (!rt->out_buffer) {
-		kfree(rt);
-		return -ENOMEM;
-	}
-
 	rt->chip = chip;
 	rt->in_received = usb6fire_midi_in_received;
 	rt->out_buffer[0] = 0x80; /* 'send midi' command */
@@ -181,9 +169,8 @@ int usb6fire_midi_init(struct sfire_chip *chip)
 
 	ret = snd_rawmidi_new(chip->card, "6FireUSB", 0, 1, 1, &rt->instance);
 	if (ret < 0) {
-		kfree(rt->out_buffer);
 		kfree(rt);
-		dev_err(&chip->dev->dev, "unable to create midi.\n");
+		snd_printk(KERN_ERR PREFIX "unable to create midi.\n");
 		return ret;
 	}
 	rt->instance->private_data = rt;
@@ -210,9 +197,6 @@ void usb6fire_midi_abort(struct sfire_chip *chip)
 
 void usb6fire_midi_destroy(struct sfire_chip *chip)
 {
-	struct midi_runtime *rt = chip->midi;
-
-	kfree(rt->out_buffer);
-	kfree(rt);
+	kfree(chip->midi);
 	chip->midi = NULL;
 }

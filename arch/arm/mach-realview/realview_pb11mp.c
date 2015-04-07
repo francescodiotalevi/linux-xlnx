@@ -27,14 +27,13 @@
 #include <linux/amba/mmci.h>
 #include <linux/amba/pl022.h>
 #include <linux/io.h>
-#include <linux/irqchip/arm-gic.h>
 #include <linux/platform_data/clk-realview.h>
-#include <linux/reboot.h>
 
 #include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 #include <asm/pgtable.h>
+#include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/smp_twd.h>
 
@@ -311,13 +310,18 @@ static void __init realview_pb11mp_timer_init(void)
 	timer1_va_base = __io_address(REALVIEW_PB11MP_TIMER0_1_BASE) + 0x20;
 	timer2_va_base = __io_address(REALVIEW_PB11MP_TIMER2_3_BASE);
 	timer3_va_base = __io_address(REALVIEW_PB11MP_TIMER2_3_BASE) + 0x20;
+	timer3_pa_base = REALVIEW_PB11MP_TIMER2_3_BASE + 0x20;
 
 	realview_clk_init(__io_address(REALVIEW_SYS_BASE), false);
 	realview_timer_init(IRQ_TC11MP_TIMER0_1);
 	realview_pb11mp_twd_init();
 }
 
-static void realview_pb11mp_restart(enum reboot_mode mode, const char *cmd)
+static struct sys_timer realview_pb11mp_timer = {
+	.init		= realview_pb11mp_timer_init,
+};
+
+static void realview_pb11mp_restart(char mode, const char *cmd)
 {
 	void __iomem *reset_ctrl = __io_address(REALVIEW_SYS_RESETCTL);
 	void __iomem *lock_ctrl = __io_address(REALVIEW_SYS_LOCK);
@@ -337,13 +341,8 @@ static void __init realview_pb11mp_init(void)
 	int i;
 
 #ifdef CONFIG_CACHE_L2X0
-	/*
-	 * The PL220 needs to be manually configured as the hardware
-	 * doesn't report the correct sizes.
-	 * 1MB (128KB/way), 8-way associativity, event monitor and
-	 * parity enabled, ignore share bit, no force write allocate
-	 * Bits:  .... ...0 0111 1001 0000 .... .... ....
-	 */
+	/* 1MB (128KB/way), 8-way associativity, evmon/parity/share enabled
+	 * Bits:  .... ...0 0111 1001 0000 .... .... .... */
 	l2x0_init(__io_address(REALVIEW_TC11MP_L220_BASE), 0x00790000, 0xfe000fff);
 #endif
 
@@ -352,7 +351,6 @@ static void __init realview_pb11mp_init(void)
 	realview_eth_register(NULL, realview_pb11mp_smsc911x_resources);
 	platform_device_register(&realview_i2c_device);
 	platform_device_register(&realview_cf_device);
-	platform_device_register(&realview_leds_device);
 	realview_usb_register(realview_pb11mp_isp1761_resources);
 	platform_device_register(&pmu_device);
 
@@ -370,7 +368,8 @@ MACHINE_START(REALVIEW_PB11MP, "ARM-RealView PB11MPCore")
 	.map_io		= realview_pb11mp_map_io,
 	.init_early	= realview_init_early,
 	.init_irq	= gic_init_irq,
-	.init_time	= realview_pb11mp_timer_init,
+	.timer		= &realview_pb11mp_timer,
+	.handle_irq	= gic_handle_irq,
 	.init_machine	= realview_pb11mp_init,
 #ifdef CONFIG_ZONE_DMA
 	.dma_zone_size	= SZ_256M,

@@ -24,6 +24,7 @@
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
@@ -85,7 +86,7 @@ MODULE_LICENSE("GPL");
 
 #define GEM_MODULE_NAME	"gem"
 
-static const struct pci_device_id gem_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(gem_pci_tbl) = {
 	{ PCI_VENDOR_ID_SUN, PCI_DEVICE_ID_SUN_GEM,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0UL },
 
@@ -688,7 +689,7 @@ static __inline__ void gem_tx(struct net_device *dev, struct gem *gp, u32 gem_st
 		}
 
 		dev->stats.tx_packets++;
-		dev_consume_skb_any(skb);
+		dev_kfree_skb(skb);
 	}
 	gp->tx_old = entry;
 
@@ -2778,7 +2779,7 @@ static int gem_get_device_address(struct gem *gp)
 		return -1;
 #endif
 	}
-	memcpy(dev->dev_addr, addr, ETH_ALEN);
+	memcpy(dev->dev_addr, addr, 6);
 #else
 	get_gem_mac_nonobp(gp->pdev, gp->dev->dev_addr);
 #endif
@@ -2805,6 +2806,8 @@ static void gem_remove_one(struct pci_dev *pdev)
 		iounmap(gp->regs);
 		pci_release_regions(pdev);
 		free_netdev(dev);
+
+		pci_set_drvdata(pdev, NULL);
 	}
 }
 
@@ -3025,4 +3028,15 @@ static struct pci_driver gem_driver = {
 #endif /* CONFIG_PM */
 };
 
-module_pci_driver(gem_driver);
+static int __init gem_init(void)
+{
+	return pci_register_driver(&gem_driver);
+}
+
+static void __exit gem_cleanup(void)
+{
+	pci_unregister_driver(&gem_driver);
+}
+
+module_init(gem_init);
+module_exit(gem_cleanup);

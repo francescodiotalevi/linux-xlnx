@@ -67,12 +67,9 @@ static int
 nfnl_cthelper_parse_tuple(struct nf_conntrack_tuple *tuple,
 			  const struct nlattr *attr)
 {
-	int err;
 	struct nlattr *tb[NFCTH_TUPLE_MAX+1];
 
-	err = nla_parse_nested(tb, NFCTH_TUPLE_MAX, attr, nfnl_cthelper_tuple_pol);
-	if (err < 0)
-		return err;
+	nla_parse_nested(tb, NFCTH_TUPLE_MAX, attr, nfnl_cthelper_tuple_pol);
 
 	if (!tb[NFCTH_TUPLE_L3PROTONUM] || !tb[NFCTH_TUPLE_L4PROTONUM])
 		return -EINVAL;
@@ -124,12 +121,9 @@ static int
 nfnl_cthelper_expect_policy(struct nf_conntrack_expect_policy *expect_policy,
 			    const struct nlattr *attr)
 {
-	int err;
 	struct nlattr *tb[NFCTH_POLICY_MAX+1];
 
-	err = nla_parse_nested(tb, NFCTH_POLICY_MAX, attr, nfnl_cthelper_expect_pol);
-	if (err < 0)
-		return err;
+	nla_parse_nested(tb, NFCTH_POLICY_MAX, attr, nfnl_cthelper_expect_pol);
 
 	if (!tb[NFCTH_POLICY_NAME] ||
 	    !tb[NFCTH_POLICY_EXPECT_MAX] ||
@@ -159,10 +153,8 @@ nfnl_cthelper_parse_expect_policy(struct nf_conntrack_helper *helper,
 	struct nf_conntrack_expect_policy *expect_policy;
 	struct nlattr *tb[NFCTH_POLICY_SET_MAX+1];
 
-	ret = nla_parse_nested(tb, NFCTH_POLICY_SET_MAX, attr,
-			       nfnl_cthelper_expect_policy_set);
-	if (ret < 0)
-		return ret;
+	nla_parse_nested(tb, NFCTH_POLICY_SET_MAX, attr,
+					nfnl_cthelper_expect_policy_set);
 
 	if (!tb[NFCTH_POLICY_SET_NUM])
 		return -EINVAL;
@@ -290,6 +282,7 @@ nfnl_cthelper_new(struct sock *nfnl, struct sk_buff *skb,
 	const char *helper_name;
 	struct nf_conntrack_helper *cur, *helper = NULL;
 	struct nf_conntrack_tuple tuple;
+	struct hlist_node *n;
 	int ret = 0, i;
 
 	if (!tb[NFCTH_NAME] || !tb[NFCTH_TUPLE])
@@ -303,7 +296,7 @@ nfnl_cthelper_new(struct sock *nfnl, struct sk_buff *skb,
 
 	rcu_read_lock();
 	for (i = 0; i < nf_ct_helper_hsize && !helper; i++) {
-		hlist_for_each_entry_rcu(cur, &nf_ct_helper_hash[i], hnode) {
+		hlist_for_each_entry_rcu(cur, n, &nf_ct_helper_hash[i], hnode) {
 
 			/* skip non-userspace conntrack helpers. */
 			if (!(cur->flags & NF_CT_HELPER_F_USERSPACE))
@@ -459,12 +452,13 @@ static int
 nfnl_cthelper_dump_table(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	struct nf_conntrack_helper *cur, *last;
+	struct hlist_node *n;
 
 	rcu_read_lock();
 	last = (struct nf_conntrack_helper *)cb->args[1];
 	for (; cb->args[0] < nf_ct_helper_hsize; cb->args[0]++) {
 restart:
-		hlist_for_each_entry_rcu(cur,
+		hlist_for_each_entry_rcu(cur, n,
 				&nf_ct_helper_hash[cb->args[0]], hnode) {
 
 			/* skip non-userspace conntrack helpers. */
@@ -501,6 +495,7 @@ nfnl_cthelper_get(struct sock *nfnl, struct sk_buff *skb,
 {
 	int ret = -ENOENT, i;
 	struct nf_conntrack_helper *cur;
+	struct hlist_node *n;
 	struct sk_buff *skb2;
 	char *helper_name = NULL;
 	struct nf_conntrack_tuple tuple;
@@ -525,7 +520,7 @@ nfnl_cthelper_get(struct sock *nfnl, struct sk_buff *skb,
 	}
 
 	for (i = 0; i < nf_ct_helper_hsize; i++) {
-		hlist_for_each_entry_rcu(cur, &nf_ct_helper_hash[i], hnode) {
+		hlist_for_each_entry_rcu(cur, n, &nf_ct_helper_hash[i], hnode) {
 
 			/* skip non-userspace conntrack helpers. */
 			if (!(cur->flags & NF_CT_HELPER_F_USERSPACE))
@@ -573,7 +568,7 @@ nfnl_cthelper_del(struct sock *nfnl, struct sk_buff *skb,
 {
 	char *helper_name = NULL;
 	struct nf_conntrack_helper *cur;
-	struct hlist_node *tmp;
+	struct hlist_node *n, *tmp;
 	struct nf_conntrack_tuple tuple;
 	bool tuple_set = false, found = false;
 	int i, j = 0, ret;
@@ -590,7 +585,7 @@ nfnl_cthelper_del(struct sock *nfnl, struct sk_buff *skb,
 	}
 
 	for (i = 0; i < nf_ct_helper_hsize; i++) {
-		hlist_for_each_entry_safe(cur, tmp, &nf_ct_helper_hash[i],
+		hlist_for_each_entry_safe(cur, n, tmp, &nf_ct_helper_hash[i],
 								hnode) {
 			/* skip non-userspace conntrack helpers. */
 			if (!(cur->flags & NF_CT_HELPER_F_USERSPACE))
@@ -659,13 +654,13 @@ err_out:
 static void __exit nfnl_cthelper_exit(void)
 {
 	struct nf_conntrack_helper *cur;
-	struct hlist_node *tmp;
+	struct hlist_node *n, *tmp;
 	int i;
 
 	nfnetlink_subsys_unregister(&nfnl_cthelper_subsys);
 
 	for (i=0; i<nf_ct_helper_hsize; i++) {
-		hlist_for_each_entry_safe(cur, tmp, &nf_ct_helper_hash[i],
+		hlist_for_each_entry_safe(cur, n, tmp, &nf_ct_helper_hash[i],
 									hnode) {
 			/* skip non-userspace conntrack helpers. */
 			if (!(cur->flags & NF_CT_HELPER_F_USERSPACE))

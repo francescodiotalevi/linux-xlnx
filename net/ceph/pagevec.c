@@ -12,7 +12,7 @@
 /*
  * build a vector of user pages
  */
-struct page **ceph_get_direct_page_vector(const void __user *data,
+struct page **ceph_get_direct_page_vector(const char __user *data,
 					  int num_pages, bool write_page)
 {
 	struct page **pages;
@@ -53,10 +53,7 @@ void ceph_put_page_vector(struct page **pages, int num_pages, bool dirty)
 			set_page_dirty_lock(pages[i]);
 		put_page(pages[i]);
 	}
-	if (is_vmalloc_addr(pages))
-		vfree(pages);
-	else
-		kfree(pages);
+	kfree(pages);
 }
 EXPORT_SYMBOL(ceph_put_page_vector);
 
@@ -96,7 +93,7 @@ EXPORT_SYMBOL(ceph_alloc_page_vector);
  * copy user data into a page vector
  */
 int ceph_copy_user_to_page_vector(struct page **pages,
-					 const void __user *data,
+					 const char __user *data,
 					 loff_t off, size_t len)
 {
 	int i = 0;
@@ -121,17 +118,17 @@ int ceph_copy_user_to_page_vector(struct page **pages,
 }
 EXPORT_SYMBOL(ceph_copy_user_to_page_vector);
 
-void ceph_copy_to_page_vector(struct page **pages,
-				    const void *data,
+int ceph_copy_to_page_vector(struct page **pages,
+				    const char *data,
 				    loff_t off, size_t len)
 {
 	int i = 0;
 	size_t po = off & ~PAGE_CACHE_MASK;
 	size_t left = len;
+	size_t l;
 
 	while (left > 0) {
-		size_t l = min_t(size_t, PAGE_CACHE_SIZE-po, left);
-
+		l = min_t(size_t, PAGE_CACHE_SIZE-po, left);
 		memcpy(page_address(pages[i]) + po, data, l);
 		data += l;
 		left -= l;
@@ -141,20 +138,21 @@ void ceph_copy_to_page_vector(struct page **pages,
 			i++;
 		}
 	}
+	return len;
 }
 EXPORT_SYMBOL(ceph_copy_to_page_vector);
 
-void ceph_copy_from_page_vector(struct page **pages,
-				    void *data,
+int ceph_copy_from_page_vector(struct page **pages,
+				    char *data,
 				    loff_t off, size_t len)
 {
 	int i = 0;
 	size_t po = off & ~PAGE_CACHE_MASK;
 	size_t left = len;
+	size_t l;
 
 	while (left > 0) {
-		size_t l = min_t(size_t, PAGE_CACHE_SIZE-po, left);
-
+		l = min_t(size_t, PAGE_CACHE_SIZE-po, left);
 		memcpy(data, page_address(pages[i]) + po, l);
 		data += l;
 		left -= l;
@@ -164,8 +162,39 @@ void ceph_copy_from_page_vector(struct page **pages,
 			i++;
 		}
 	}
+	return len;
 }
 EXPORT_SYMBOL(ceph_copy_from_page_vector);
+
+/*
+ * copy user data from a page vector into a user pointer
+ */
+int ceph_copy_page_vector_to_user(struct page **pages,
+					 char __user *data,
+					 loff_t off, size_t len)
+{
+	int i = 0;
+	int po = off & ~PAGE_CACHE_MASK;
+	int left = len;
+	int l, bad;
+
+	while (left > 0) {
+		l = min_t(int, left, PAGE_CACHE_SIZE-po);
+		bad = copy_to_user(data, page_address(pages[i]) + po, l);
+		if (bad == l)
+			return -EFAULT;
+		data += l - bad;
+		left -= l - bad;
+		if (po) {
+			po += l - bad;
+			if (po == PAGE_CACHE_SIZE)
+				po = 0;
+		}
+		i++;
+	}
+	return len;
+}
+EXPORT_SYMBOL(ceph_copy_page_vector_to_user);
 
 /*
  * Zero an extent within a page vector.  Offset is relative to the

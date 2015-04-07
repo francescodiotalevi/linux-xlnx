@@ -29,7 +29,6 @@
  */
 #include <linux/pid_namespace.h>
 #include <linux/clocksource.h>
-#include <linux/serial_core.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/console.h>
@@ -49,7 +48,6 @@
 #include <linux/pid.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <linux/vmacache.h>
 #include <linux/rcupdate.h>
 
 #include <asm/cacheflush.h>
@@ -115,8 +113,8 @@ static struct kgdb_bkpt		kgdb_break[KGDB_MAX_BREAKPOINTS] = {
  */
 atomic_t			kgdb_active = ATOMIC_INIT(-1);
 EXPORT_SYMBOL_GPL(kgdb_active);
-static DEFINE_RAW_SPINLOCK(dbg_master_lock);
-static DEFINE_RAW_SPINLOCK(dbg_slave_lock);
+static IPIPE_DEFINE_RAW_SPINLOCK(dbg_master_lock);
+static IPIPE_DEFINE_RAW_SPINLOCK(dbg_slave_lock);
 
 /*
  * We use NR_CPUs not PERCPU, in case kgdb is used to debug early
@@ -166,19 +164,21 @@ int __weak kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt)
 {
 	int err;
 
-	err = probe_kernel_read(bpt->saved_instr, (char *)bpt->bpt_addr,
-				BREAK_INSTR_SIZE);
+	err = ipipe_probe_kernel_read(bpt->saved_instr, (char *)bpt->bpt_addr,
+				      BREAK_INSTR_SIZE);
 	if (err)
 		return err;
-	err = probe_kernel_write((char *)bpt->bpt_addr,
-				 arch_kgdb_ops.gdb_bpt_instr, BREAK_INSTR_SIZE);
+	err = ipipe_probe_kernel_write((char *)bpt->bpt_addr,
+				       arch_kgdb_ops.gdb_bpt_instr,
+				       BREAK_INSTR_SIZE);
 	return err;
 }
 
 int __weak kgdb_arch_remove_breakpoint(struct kgdb_bkpt *bpt)
 {
-	return probe_kernel_write((char *)bpt->bpt_addr,
-				  (char *)bpt->saved_instr, BREAK_INSTR_SIZE);
+	return ipipe_probe_kernel_write((char *)bpt->bpt_addr,
+					(char *)bpt->saved_instr,
+					BREAK_INSTR_SIZE);
 }
 
 int __weak kgdb_validate_break_address(unsigned long addr)
@@ -225,17 +225,10 @@ static void kgdb_flush_swbreak_addr(unsigned long addr)
 	if (!CACHE_FLUSH_IS_SAFE)
 		return;
 
-	if (current->mm) {
-		int i;
-
-		for (i = 0; i < VMACACHE_SIZE; i++) {
-			if (!current->vmacache[i])
-				continue;
-			flush_cache_range(current->vmacache[i],
-					  addr, addr + BREAK_INSTR_SIZE);
-		}
+	if (current->mm && current->mm->mmap_cache) {
+		flush_cache_range(current->mm->mmap_cache,
+				  addr, addr + BREAK_INSTR_SIZE);
 	}
-
 	/* Force flush instruction cache if it was outside the mm */
 	flush_icache_range(addr, addr + BREAK_INSTR_SIZE);
 }
@@ -458,7 +451,9 @@ static int kgdb_reenter_check(struct kgdb_state *ks)
 static void dbg_touch_watchdogs(void)
 {
 	touch_softlockup_watchdog_sync();
+#ifndef CONFIG_IPIPE
 	clocksource_touch_watchdog();
+#endif
 	rcu_cpu_stall_reset();
 }
 
@@ -488,7 +483,7 @@ acquirelock:
 	 * Interrupts will be restored by the 'trap return' code, except when
 	 * single stepping.
 	 */
-	local_irq_save(flags);
+	flags = hard_local_irq_save();
 
 	cpu = ks->cpu;
 	kgdb_info[cpu].debuggerinfo = regs;
@@ -534,10 +529,10 @@ return_normal:
 			kgdb_info[cpu].exception_state &=
 				~(DCPU_WANT_MASTER | DCPU_IS_SLAVE);
 			kgdb_info[cpu].enter_kgdb--;
-			smp_mb__before_atomic();
+			smp_mb__before_atomic_dec();
 			atomic_dec(&slaves_in_kgdb);
 			dbg_touch_watchdogs();
-			local_irq_restore(flags);
+			hard_local_irq_restore(flags);
 			return 0;
 		}
 		cpu_relax();
@@ -555,7 +550,7 @@ return_normal:
 		atomic_set(&kgdb_active, -1);
 		raw_spin_unlock(&dbg_master_lock);
 		dbg_touch_watchdogs();
-		local_irq_restore(flags);
+		hard_local_irq_restore(flags);
 
 		goto acquirelock;
 	}
@@ -583,12 +578,8 @@ return_normal:
 		raw_spin_lock(&dbg_slave_lock);
 
 #ifdef CONFIG_SMP
-	/* If send_ready set, slaves are already waiting */
-	if (ks->send_ready)
-		atomic_set(ks->send_ready, 1);
-
 	/* Signal the other CPUs to enter kgdb_wait() */
-	else if ((!kgdb_single_step) && kgdb_do_roundup)
+	if ((!kgdb_single_step) && kgdb_do_roundup)
 		kgdb_roundup_cpus(flags);
 #endif
 
@@ -662,13 +653,13 @@ kgdb_restore:
 	kgdb_info[cpu].exception_state &=
 		~(DCPU_WANT_MASTER | DCPU_IS_SLAVE);
 	kgdb_info[cpu].enter_kgdb--;
-	smp_mb__before_atomic();
+	smp_mb__before_atomic_dec();
 	atomic_dec(&masters_in_kgdb);
 	/* Free kgdb_active */
 	atomic_set(&kgdb_active, -1);
 	raw_spin_unlock(&dbg_master_lock);
 	dbg_touch_watchdogs();
-	local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 
 	return kgdb_info[cpu].ret_state;
 }
@@ -690,11 +681,11 @@ kgdb_handle_exception(int evector, int signo, int ecode, struct pt_regs *regs)
 	if (arch_kgdb_ops.enable_nmi)
 		arch_kgdb_ops.enable_nmi(0);
 
-	memset(ks, 0, sizeof(struct kgdb_state));
 	ks->cpu			= raw_smp_processor_id();
 	ks->ex_vector		= evector;
 	ks->signo		= signo;
 	ks->err_code		= ecode;
+	ks->kgdb_usethreadid	= 0;
 	ks->linux_regs		= regs;
 
 	if (kgdb_reenter_check(ks))
@@ -744,31 +735,6 @@ int kgdb_nmicallback(int cpu, void *regs)
 	return 1;
 }
 
-int kgdb_nmicallin(int cpu, int trapnr, void *regs, int err_code,
-							atomic_t *send_ready)
-{
-#ifdef CONFIG_SMP
-	if (!kgdb_io_ready(0) || !send_ready)
-		return 1;
-
-	if (kgdb_info[cpu].enter_kgdb == 0) {
-		struct kgdb_state kgdb_var;
-		struct kgdb_state *ks = &kgdb_var;
-
-		memset(ks, 0, sizeof(struct kgdb_state));
-		ks->cpu			= cpu;
-		ks->ex_vector		= trapnr;
-		ks->signo		= SIGTRAP;
-		ks->err_code		= err_code;
-		ks->linux_regs		= regs;
-		ks->send_ready		= send_ready;
-		kgdb_cpu_enter(ks, regs, DCPU_WANT_MASTER);
-		return 0;
-	}
-#endif
-	return 1;
-}
-
 static void kgdb_console_write(struct console *co, const char *s,
    unsigned count)
 {
@@ -779,9 +745,9 @@ static void kgdb_console_write(struct console *co, const char *s,
 	if (!kgdb_connected || atomic_read(&kgdb_active) != -1 || dbg_kdb_mode)
 		return;
 
-	local_irq_save(flags);
+	flags = hard_local_irq_save();
 	gdbstub_msg_write(s, count);
-	local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 }
 
 static struct console kgdbcons = {
@@ -812,7 +778,7 @@ static void sysrq_handle_dbg(int key)
 
 static struct sysrq_key_op sysrq_dbg_op = {
 	.handler	= sysrq_handle_dbg,
-	.help_msg	= "debug(g)",
+	.help_msg	= "debug(G)",
 	.action_msg	= "DEBUG",
 };
 #endif
@@ -1043,7 +1009,7 @@ int dbg_io_get_char(void)
  * otherwise as a quick means to stop program execution and "break" into
  * the debugger.
  */
-noinline void kgdb_breakpoint(void)
+void kgdb_breakpoint(void)
 {
 	atomic_inc(&kgdb_setting_breakpoint);
 	wmb(); /* Sync point before breakpoint */

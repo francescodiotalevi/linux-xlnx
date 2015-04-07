@@ -12,24 +12,32 @@
 
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
-#include <linux/clk/at91_pmc.h>
 
 #include <asm/irq.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/system_misc.h>
 #include <mach/at91sam9g45.h>
+#include <mach/at91_pmc.h>
 #include <mach/cpu.h>
-#include <mach/hardware.h>
 
 #include "at91_aic.h"
 #include "soc.h"
 #include "generic.h"
-#include "sam9_smc.h"
-#include "pm.h"
-
-#if defined(CONFIG_OLD_CLK_AT91)
 #include "clock.h"
+#include "sam9_smc.h"
+
+#ifdef CONFIG_IPIPE
+static struct map_desc at91sam9g45_io_desc[] __initdata = {
+	{
+		.virtual	= AT91_VA_BASE_TCB0,
+		.pfn		= __phys_to_pfn(AT91_BASE_TCB0),
+		.length		= SZ_16K,
+		.type		= MT_DEVICE,
+	},
+};
+#endif /* CONFIG_IPIPE */
+
 /* --------------------------------------------------------------------
  *  Clocks
  * -------------------------------------------------------------------- */
@@ -183,7 +191,7 @@ static struct clk vdec_clk = {
 static struct clk adc_op_clk = {
 	.name		= "adc_op_clk",
 	.type		= CLK_TYPE_PERIPHERAL,
-	.rate_hz	= 300000,
+	.rate_hz	= 13200000,
 };
 
 /* AES/TDES/SHA clock - Only for sam9m11/sam9g56 */
@@ -231,8 +239,6 @@ static struct clk_lookup periph_clocks_lookups[] = {
 	CLKDEV_CON_ID("hclk", &macb_clk),
 	/* One additional fake clock for ohci */
 	CLKDEV_CON_ID("ohci_clk", &uhphs_clk),
-	CLKDEV_CON_DEV_ID("hclk", "at91sam9g45-lcdfb.0", &lcdc_clk),
-	CLKDEV_CON_DEV_ID("hclk", "at91sam9g45es-lcdfb.0", &lcdc_clk),
 	CLKDEV_CON_DEV_ID("ehci_clk", "atmel-ehci", &uhphs_clk),
 	CLKDEV_CON_DEV_ID("hclk", "atmel_usba_udc", &utmi_clk),
 	CLKDEV_CON_DEV_ID("pclk", "atmel_usba_udc", &udphs_clk),
@@ -252,7 +258,6 @@ static struct clk_lookup periph_clocks_lookups[] = {
 	CLKDEV_CON_DEV_ID(NULL, "atmel_sha", &aestdessha_clk),
 	CLKDEV_CON_DEV_ID(NULL, "atmel_tdes", &aestdessha_clk),
 	CLKDEV_CON_DEV_ID(NULL, "atmel_aes", &aestdessha_clk),
-	CLKDEV_CON_DEV_ID(NULL, "at91sam9rl-pwm", &pwm_clk),
 	/* more usart lookup table for DT entries */
 	CLKDEV_CON_DEV_ID("usart", "ffffee00.serial", &mck),
 	CLKDEV_CON_DEV_ID("usart", "fff8c000.serial", &usart0_clk),
@@ -268,10 +273,6 @@ static struct clk_lookup periph_clocks_lookups[] = {
 	CLKDEV_CON_DEV_ID("mci_clk", "fffd0000.mmc", &mmc1_clk),
 	CLKDEV_CON_DEV_ID(NULL, "fff84000.i2c", &twi0_clk),
 	CLKDEV_CON_DEV_ID(NULL, "fff88000.i2c", &twi1_clk),
-	CLKDEV_CON_DEV_ID("spi_clk", "fffa4000.spi", &spi0_clk),
-	CLKDEV_CON_DEV_ID("spi_clk", "fffa8000.spi", &spi1_clk),
-	CLKDEV_CON_DEV_ID("hclk", "600000.gadget", &utmi_clk),
-	CLKDEV_CON_DEV_ID("pclk", "600000.gadget", &udphs_clk),
 	/* fake hclk clock */
 	CLKDEV_CON_DEV_ID("hclk", "at91_ohci", &uhphs_clk),
 	CLKDEV_CON_DEV_ID(NULL, "fffff200.gpio", &pioA_clk),
@@ -287,7 +288,6 @@ static struct clk_lookup periph_clocks_lookups[] = {
 	CLKDEV_CON_ID("pioE", &pioDE_clk),
 	/* Fake adc clock */
 	CLKDEV_CON_ID("adc_clk", &tsc_clk),
-	CLKDEV_CON_DEV_ID(NULL, "fffb8000.pwm", &pwm_clk),
 };
 
 static struct clk_lookup usart_clocks_lookups[] = {
@@ -333,9 +333,6 @@ static void __init at91sam9g45_register_clocks(void)
 	clk_register(&pck0);
 	clk_register(&pck1);
 }
-#else
-#define at91sam9g45_register_clocks NULL
-#endif
 
 /* --------------------------------------------------------------------
  *  GPIO
@@ -367,6 +364,9 @@ static struct at91_gpio_bank at91sam9g45_gpio[] __initdata = {
 static void __init at91sam9g45_map_io(void)
 {
 	at91_init_sram(0, AT91SAM9G45_SRAM_BASE, AT91SAM9G45_SRAM_SIZE);
+#ifdef CONFIG_IPIPE
+	iotable_init(at91sam9g45_io_desc, ARRAY_SIZE(at91sam9g45_io_desc));
+#endif /* CONFIG_IPIPE */
 }
 
 static void __init at91sam9g45_ioremap_registers(void)
@@ -378,16 +378,13 @@ static void __init at91sam9g45_ioremap_registers(void)
 	at91sam926x_ioremap_pit(AT91SAM9G45_BASE_PIT);
 	at91sam9_ioremap_smc(0, AT91SAM9G45_BASE_SMC);
 	at91_ioremap_matrix(AT91SAM9G45_BASE_MATRIX);
-	at91_pm_set_standby(at91_ddr_standby);
 }
 
 static void __init at91sam9g45_initialize(void)
 {
 	arm_pm_idle = at91sam9_idle;
 	arm_pm_restart = at91sam9g45_restart;
-
-	at91_sysirq_mask_rtc(AT91SAM9G45_BASE_RTC);
-	at91_sysirq_mask_rtt(AT91SAM9G45_BASE_RTT);
+	at91_extern_irq = (1 << AT91SAM9G45_ID_IRQ0);
 
 	/* Register GPIO subsystem */
 	at91_gpio_init(at91sam9g45_gpio, 5);
@@ -400,6 +397,7 @@ static void __init at91sam9g45_initialize(void)
 /*
  * The default interrupt priority levels (0 = lowest, 7 = highest).
  */
+#ifndef CONFIG_IPIPE
 static unsigned int at91sam9g45_default_irq_priority[NR_AIC_IRQS] __initdata = {
 	7,	/* Advanced Interrupt Controller (FIQ) */
 	7,	/* System Peripherals */
@@ -434,11 +432,48 @@ static unsigned int at91sam9g45_default_irq_priority[NR_AIC_IRQS] __initdata = {
 	0,
 	0,	/* Advanced Interrupt Controller (IRQ0) */
 };
+#else
+static unsigned int at91sam9g45_default_irq_priority[NR_AIC_IRQS] __initdata = {
+/* Give the highest priority to TC, since they are used as timer interrupt by
+   I-pipe. */
+	7,	/* Advanced Interrupt Controller (FIQ) */
+	6,	/* System Peripherals */
+	0,	/* Parallel IO Controller A */
+	0,	/* Parallel IO Controller B */
+	0,	/* Parallel IO Controller C */
+	0,	/* Parallel IO Controller D and E */
+	0,
+	5,	/* USART 0 */
+	5,	/* USART 1 */
+	5,	/* USART 2 */
+	5,	/* USART 3 */
+	0,	/* Multimedia Card Interface 0 */
+	6,	/* Two-Wire Interface 0 */
+	6,	/* Two-Wire Interface 1 */
+	5,	/* Serial Peripheral Interface 0 */
+	5,	/* Serial Peripheral Interface 1 */
+	4,	/* Serial Synchronous Controller 0 */
+	4,	/* Serial Synchronous Controller 1 */
+	7,	/* Timer Counter 0, 1, 2, 3, 4 and 5 */
+	0,	/* Pulse Width Modulation Controller */
+	0,	/* Touch Screen Controller */
+	0,	/* DMA Controller */
+	2,	/* USB Host High Speed port */
+	3,	/* LDC Controller */
+	5,	/* AC97 Controller */
+	2,	/* Ethernet */
+	0,	/* Image Sensor Interface */
+	2,	/* USB Device High speed port */
+	0,
+	0,	/* Multimedia Card Interface 1 */
+	0,
+	0,	/* Advanced Interrupt Controller (IRQ0) */
+};
+#endif
 
-AT91_SOC_START(at91sam9g45)
+AT91_SOC_START(sam9g45)
 	.map_io = at91sam9g45_map_io,
 	.default_irq_priority = at91sam9g45_default_irq_priority,
-	.extern_irq = (1 << AT91SAM9G45_ID_IRQ0),
 	.ioremap_registers = at91sam9g45_ioremap_registers,
 	.register_clocks = at91sam9g45_register_clocks,
 	.init = at91sam9g45_initialize,

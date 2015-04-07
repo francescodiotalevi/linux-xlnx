@@ -254,7 +254,7 @@ static void sysrq_etm_dump(int key)
 
 static struct sysrq_key_op sysrq_etm_op = {
 	.handler = sysrq_etm_dump,
-	.help_msg = "etm-buffer-dump(v)",
+	.help_msg = "ETM buffer dump",
 	.action_msg = "etm",
 };
 
@@ -385,6 +385,7 @@ out:
 	return ret;
 
 out_unmap:
+	amba_set_drvdata(dev, NULL);
 	iounmap(t->etb_regs);
 
 out_release:
@@ -396,6 +397,8 @@ out_release:
 static int etb_remove(struct amba_device *dev)
 {
 	struct tracectx *t = amba_get_drvdata(dev);
+
+	amba_set_drvdata(dev, NULL);
 
 	iounmap(t->etb_regs);
 	t->etb_regs = NULL;
@@ -585,6 +588,7 @@ out:
 	return ret;
 
 out_unmap:
+	amba_set_drvdata(dev, NULL);
 	iounmap(t->etm_regs);
 
 out_release:
@@ -596,6 +600,8 @@ out_release:
 static int etm_remove(struct amba_device *dev)
 {
 	struct tracectx *t = amba_get_drvdata(dev);
+
+	amba_set_drvdata(dev, NULL);
 
 	iounmap(t->etm_regs);
 	t->etm_regs = NULL;

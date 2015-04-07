@@ -125,6 +125,7 @@ static void reset_buf(struct denali_nand_info *denali)
 
 static void write_byte_to_buf(struct denali_nand_info *denali, uint8_t byte)
 {
+	BUG_ON(denali->buf.tail >= sizeof(denali->buf.buf));
 	denali->buf.buf[denali->buf.tail++] = byte;
 }
 
@@ -473,7 +474,7 @@ static void detect_partition_feature(struct denali_nand_info *denali)
 static uint16_t denali_nand_timing_set(struct denali_nand_info *denali)
 {
 	uint16_t status = PASS;
-	uint32_t id_bytes[8], addr;
+	uint32_t id_bytes[5], addr;
 	uint8_t i, maf_id, device_id;
 
 	dev_dbg(denali->dev,
@@ -488,7 +489,7 @@ static uint16_t denali_nand_timing_set(struct denali_nand_info *denali)
 	addr = (uint32_t)MODE_11 | BANK(denali->flash_bank);
 	index_addr(denali, (uint32_t)addr | 0, 0x90);
 	index_addr(denali, (uint32_t)addr | 1, 0);
-	for (i = 0; i < 8; i++)
+	for (i = 0; i < 5; i++)
 		index_addr_read_data(denali, addr | 2, &id_bytes[i]);
 	maf_id = id_bytes[0];
 	device_id = id_bytes[1];
@@ -896,7 +897,7 @@ static void read_oob_data(struct mtd_info *mtd, uint8_t *buf, int page)
 /* this function examines buffers to see if they contain data that
  * indicate that the buffer is part of an erased region of flash.
  */
-static bool is_erased(uint8_t *buf, int len)
+bool is_erased(uint8_t *buf, int len)
 {
 	int i = 0;
 	for (i = 0; i < len; i++)
@@ -1233,7 +1234,7 @@ static int denali_waitfunc(struct mtd_info *mtd, struct nand_chip *chip)
 	return status;
 }
 
-static int denali_erase(struct mtd_info *mtd, int page)
+static void denali_erase(struct mtd_info *mtd, int page)
 {
 	struct denali_nand_info *denali = mtd_to_denali(mtd);
 
@@ -1250,7 +1251,8 @@ static int denali_erase(struct mtd_info *mtd, int page)
 	irq_status = wait_for_irq(denali, INTR_STATUS__ERASE_COMP |
 					INTR_STATUS__ERASE_FAIL);
 
-	return (irq_status & INTR_STATUS__ERASE_FAIL) ? NAND_STATUS_FAIL : PASS;
+	denali->status = (irq_status & INTR_STATUS__ERASE_FAIL) ?
+						NAND_STATUS_FAIL : PASS;
 }
 
 static void denali_cmdfunc(struct mtd_info *mtd, unsigned int cmd, int col,
@@ -1276,7 +1278,7 @@ static void denali_cmdfunc(struct mtd_info *mtd, unsigned int cmd, int col,
 		addr = (uint32_t)MODE_11 | BANK(denali->flash_bank);
 		index_addr(denali, (uint32_t)addr | 0, 0x90);
 		index_addr(denali, (uint32_t)addr | 1, 0);
-		for (i = 0; i < 8; i++) {
+		for (i = 0; i < 5; i++) {
 			index_addr_read_data(denali,
 						(uint32_t)addr | 2,
 						&id);
@@ -1392,7 +1394,7 @@ static struct nand_bbt_descr bbt_mirror_descr = {
 };
 
 /* initialize driver data structures */
-static void denali_drv_init(struct denali_nand_info *denali)
+void denali_drv_init(struct denali_nand_info *denali)
 {
 	denali->idx = 0;
 
@@ -1427,12 +1429,20 @@ int denali_init(struct denali_nand_info *denali)
 		}
 	}
 
-	/* allocate a temporary buffer for nand_scan_ident() */
-	denali->buf.buf = devm_kzalloc(denali->dev, PAGE_SIZE,
-					GFP_DMA | GFP_KERNEL);
-	if (!denali->buf.buf)
-		return -ENOMEM;
+	/* Is 32-bit DMA supported? */
+	ret = dma_set_mask(denali->dev, DMA_BIT_MASK(32));
+	if (ret) {
+		pr_err("Spectra: no usable DMA configuration\n");
+		return ret;
+	}
+	denali->buf.dma_buf = dma_map_single(denali->dev, denali->buf.buf,
+					     DENALI_BUF_SIZE,
+					     DMA_BIDIRECTIONAL);
 
+	if (dma_mapping_error(denali->dev, denali->buf.dma_buf)) {
+		dev_err(denali->dev, "Spectra: failed to map DMA buffer\n");
+		return -EIO;
+	}
 	denali->mtd.dev.parent = denali->dev;
 	denali_hw_init(denali);
 	denali_drv_init(denali);
@@ -1465,29 +1475,12 @@ int denali_init(struct denali_nand_info *denali)
 		goto failed_req_irq;
 	}
 
-	/* allocate the right size buffer now */
-	devm_kfree(denali->dev, denali->buf.buf);
-	denali->buf.buf = devm_kzalloc(denali->dev,
-			     denali->mtd.writesize + denali->mtd.oobsize,
-			     GFP_KERNEL);
-	if (!denali->buf.buf) {
-		ret = -ENOMEM;
-		goto failed_req_irq;
-	}
-
-	/* Is 32-bit DMA supported? */
-	ret = dma_set_mask(denali->dev, DMA_BIT_MASK(32));
-	if (ret) {
-		pr_err("Spectra: no usable DMA configuration\n");
-		goto failed_req_irq;
-	}
-
-	denali->buf.dma_buf = dma_map_single(denali->dev, denali->buf.buf,
-			     denali->mtd.writesize + denali->mtd.oobsize,
-			     DMA_BIDIRECTIONAL);
-	if (dma_mapping_error(denali->dev, denali->buf.dma_buf)) {
-		dev_err(denali->dev, "Spectra: failed to map DMA buffer\n");
-		ret = -EIO;
+	/* MTD supported page sizes vary by kernel. We validate our
+	 * kernel supports the device here.
+	 */
+	if (denali->mtd.writesize > NAND_MAX_PAGESIZE + NAND_MAX_OOBSIZE) {
+		ret = -ENODEV;
+		pr_err("Spectra: device size not supported by this version of MTD.");
 		goto failed_req_irq;
 	}
 
@@ -1527,7 +1520,7 @@ int denali_init(struct denali_nand_info *denali)
 	 * so just let controller do 15bit ECC for MLC and 8bit ECC for
 	 * SLC if possible.
 	 * */
-	if (!nand_is_slc(&denali->nand) &&
+	if (denali->nand.cellinfo & 0xc &&
 			(denali->mtd.oobsize > (denali->bbtskipbytes +
 			ECC_15BITS * (denali->mtd.writesize /
 			ECC_SECTOR_SIZE)))) {
@@ -1583,7 +1576,7 @@ int denali_init(struct denali_nand_info *denali)
 	denali->nand.ecc.write_page_raw = denali_write_page_raw;
 	denali->nand.ecc.read_oob = denali_read_oob;
 	denali->nand.ecc.write_oob = denali_write_oob;
-	denali->nand.erase = denali_erase;
+	denali->nand.erase_cmd = denali_erase;
 
 	if (nand_scan_tail(&denali->mtd)) {
 		ret = -ENXIO;
@@ -1609,8 +1602,7 @@ EXPORT_SYMBOL(denali_init);
 void denali_remove(struct denali_nand_info *denali)
 {
 	denali_irq_cleanup(denali->irq, denali);
-	dma_unmap_single(denali->dev, denali->buf.dma_buf,
-			denali->mtd.writesize + denali->mtd.oobsize,
+	dma_unmap_single(denali->dev, denali->buf.dma_buf, DENALI_BUF_SIZE,
 			DMA_BIDIRECTIONAL);
 }
 EXPORT_SYMBOL(denali_remove);

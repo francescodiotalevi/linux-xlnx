@@ -25,14 +25,12 @@
 #include <linux/interrupt.h>
 #include <linux/amba/bus.h>
 #include <linux/amba/clcd.h>
-#include <linux/platform_data/video-clcd-versatile.h>
 #include <linux/io.h>
 #include <linux/smsc911x.h>
 #include <linux/ata_platform.h>
 #include <linux/amba/mmci.h>
 #include <linux/gfp.h>
 #include <linux/mtd/physmap.h>
-#include <linux/memblock.h>
 
 #include <mach/hardware.h>
 #include <asm/irq.h>
@@ -44,11 +42,13 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/map.h>
 
+#include <asm/hardware/gic.h>
 
 #include <mach/platform.h>
 #include <mach/irqs.h>
 #include <asm/hardware/timer-sp.h>
 
+#include <plat/clcd.h>
 #include <plat/sched_clock.h>
 
 #include "core.h"
@@ -147,21 +147,6 @@ struct platform_device realview_cf_device = {
 	.dev			= {
 		.platform_data	= &pata_platform_data,
 	},
-};
-
-static struct resource realview_leds_resources[] = {
-	{
-		.start	= REALVIEW_SYS_BASE + REALVIEW_SYS_LED_OFFSET,
-		.end	= REALVIEW_SYS_BASE + REALVIEW_SYS_LED_OFFSET + 4,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-struct platform_device realview_leds_device = {
-	.name		= "versatile-leds",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(realview_leds_resources),
-	.resource	= realview_leds_resources,
 };
 
 static struct resource realview_i2c_resource = {
@@ -351,6 +336,7 @@ void __iomem *timer0_va_base;
 void __iomem *timer1_va_base;
 void __iomem *timer2_va_base;
 void __iomem *timer3_va_base;
+void __iomem *timer3_pa_base;
 
 /*
  * Set up the clock source and clock events devices
@@ -359,14 +345,14 @@ void __init realview_timer_init(unsigned int timer_irq)
 {
 	u32 val;
 
-	/* 
-	 * set clock frequency: 
+	/*
+	 * set clock frequency:
 	 *	REALVIEW_REFCLK is 32KHz
 	 *	REALVIEW_TIMCLK is 1MHz
 	 */
 	val = readl(__io_address(REALVIEW_SCTL_BASE));
 	writel((REALVIEW_TIMCLK << REALVIEW_TIMER1_EnSel) |
-	       (REALVIEW_TIMCLK << REALVIEW_TIMER2_EnSel) | 
+	       (REALVIEW_TIMCLK << REALVIEW_TIMER2_EnSel) |
 	       (REALVIEW_TIMCLK << REALVIEW_TIMER3_EnSel) |
 	       (REALVIEW_TIMCLK << REALVIEW_TIMER4_EnSel) | val,
 	       __io_address(REALVIEW_SCTL_BASE));
@@ -379,22 +365,26 @@ void __init realview_timer_init(unsigned int timer_irq)
 	writel(0, timer2_va_base + TIMER_CTRL);
 	writel(0, timer3_va_base + TIMER_CTRL);
 
-	sp804_clocksource_init(timer3_va_base, "timer3");
+	sp804_clocksource_init(timer3_va_base, timer3_pa_base, "timer3");
 	sp804_clockevents_init(timer0_va_base, timer_irq, "timer0");
 }
 
 /*
  * Setup the memory banks.
  */
-void realview_fixup(struct tag *tags, char **from)
+void realview_fixup(struct tag *tags, char **from, struct meminfo *meminfo)
 {
 	/*
 	 * Most RealView platforms have 512MB contiguous RAM at 0x70000000.
 	 * Half of this is mirrored at 0.
 	 */
 #ifdef CONFIG_REALVIEW_HIGH_PHYS_OFFSET
-	memblock_add(0x70000000, SZ_512M);
+	meminfo->bank[0].start = 0x70000000;
+	meminfo->bank[0].size = SZ_512M;
+	meminfo->nr_banks = 1;
 #else
-	memblock_add(0, SZ_256M);
+	meminfo->bank[0].start = 0;
+	meminfo->bank[0].size = SZ_256M;
+	meminfo->nr_banks = 1;
 #endif
 }

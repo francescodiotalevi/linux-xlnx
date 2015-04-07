@@ -99,7 +99,8 @@ extern unsigned long slice_get_unmapped_area(unsigned long addr,
 					     unsigned long len,
 					     unsigned long flags,
 					     unsigned int psize,
-					     int topdown);
+					     int topdown,
+					     int use_cache);
 
 extern unsigned int get_slice_psize(struct mm_struct *mm,
 				    unsigned long addr);

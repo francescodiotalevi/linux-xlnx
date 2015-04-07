@@ -10,7 +10,6 @@
  */
 
 #include <drm/drmP.h>
-#include <drm/drm_vma_manager.h>
 
 #include <linux/shmem_fs.h>
 #include <drm/exynos_drm.h>
@@ -18,7 +17,6 @@
 #include "exynos_drm_drv.h"
 #include "exynos_drm_gem.h"
 #include "exynos_drm_buf.h"
-#include "exynos_drm_iommu.h"
 
 static unsigned int convert_to_vm_err_msg(int msg)
 {
@@ -134,10 +132,12 @@ void exynos_drm_gem_destroy(struct exynos_drm_gem_obj *exynos_gem_obj)
 	struct drm_gem_object *obj;
 	struct exynos_drm_gem_buf *buf;
 
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
 	obj = &exynos_gem_obj->base;
 	buf = exynos_gem_obj->buffer;
 
-	DRM_DEBUG_KMS("handle count = %d\n", obj->handle_count);
+	DRM_DEBUG_KMS("handle count = %d\n", atomic_read(&obj->handle_count));
 
 	/*
 	 * do not release memory region from exporter.
@@ -154,7 +154,8 @@ out:
 	exynos_drm_fini_buf(obj->dev, buf);
 	exynos_gem_obj->buffer = NULL;
 
-	drm_gem_free_mmap_offset(obj);
+	if (obj->map_list.map)
+		drm_gem_free_mmap_offset(obj);
 
 	/* release file pointer to gem object. */
 	drm_gem_object_release(obj);
@@ -162,27 +163,6 @@ out:
 	kfree(exynos_gem_obj);
 	exynos_gem_obj = NULL;
 }
-
-unsigned long exynos_drm_gem_get_size(struct drm_device *dev,
-						unsigned int gem_handle,
-						struct drm_file *file_priv)
-{
-	struct exynos_drm_gem_obj *exynos_gem_obj;
-	struct drm_gem_object *obj;
-
-	obj = drm_gem_object_lookup(dev, file_priv, gem_handle);
-	if (!obj) {
-		DRM_ERROR("failed to lookup gem object.\n");
-		return 0;
-	}
-
-	exynos_gem_obj = to_exynos_gem_obj(obj);
-
-	drm_gem_object_unreference_unlocked(obj);
-
-	return exynos_gem_obj->buffer->size;
-}
-
 
 struct exynos_drm_gem_obj *exynos_drm_gem_init(struct drm_device *dev,
 						      unsigned long size)
@@ -192,8 +172,10 @@ struct exynos_drm_gem_obj *exynos_drm_gem_init(struct drm_device *dev,
 	int ret;
 
 	exynos_gem_obj = kzalloc(sizeof(*exynos_gem_obj), GFP_KERNEL);
-	if (!exynos_gem_obj)
+	if (!exynos_gem_obj) {
+		DRM_ERROR("failed to allocate exynos gem object\n");
 		return NULL;
+	}
 
 	exynos_gem_obj->size = size;
 	obj = &exynos_gem_obj->base;
@@ -224,6 +206,7 @@ struct exynos_drm_gem_obj *exynos_drm_gem_create(struct drm_device *dev,
 	}
 
 	size = roundup_gem_size(size, flags);
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	ret = check_gem_flags(flags);
 	if (ret)
@@ -245,14 +228,13 @@ struct exynos_drm_gem_obj *exynos_drm_gem_create(struct drm_device *dev,
 	exynos_gem_obj->flags = flags;
 
 	ret = exynos_drm_alloc_buf(dev, buf, flags);
-	if (ret < 0)
-		goto err_gem_fini;
+	if (ret < 0) {
+		drm_gem_object_release(&exynos_gem_obj->base);
+		goto err_fini_buf;
+	}
 
 	return exynos_gem_obj;
 
-err_gem_fini:
-	drm_gem_object_release(&exynos_gem_obj->base);
-	kfree(exynos_gem_obj);
 err_fini_buf:
 	exynos_drm_fini_buf(dev, buf);
 	return ERR_PTR(ret);
@@ -264,6 +246,8 @@ int exynos_drm_gem_create_ioctl(struct drm_device *dev, void *data,
 	struct drm_exynos_gem_create *args = data;
 	struct exynos_drm_gem_obj *exynos_gem_obj;
 	int ret;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	exynos_gem_obj = exynos_drm_gem_create(dev, args->flags, args->size);
 	if (IS_ERR(exynos_gem_obj))
@@ -301,6 +285,7 @@ void exynos_drm_gem_put_dma_addr(struct drm_device *dev,
 					unsigned int gem_handle,
 					struct drm_file *filp)
 {
+	struct exynos_drm_gem_obj *exynos_gem_obj;
 	struct drm_gem_object *obj;
 
 	obj = drm_gem_object_lookup(dev, filp, gem_handle);
@@ -308,6 +293,8 @@ void exynos_drm_gem_put_dma_addr(struct drm_device *dev,
 		DRM_ERROR("failed to lookup gem object.\n");
 		return;
 	}
+
+	exynos_gem_obj = to_exynos_gem_obj(obj);
 
 	drm_gem_object_unreference_unlocked(obj);
 
@@ -323,6 +310,8 @@ int exynos_drm_gem_map_offset_ioctl(struct drm_device *dev, void *data,
 {
 	struct drm_exynos_gem_map_off *args = data;
 
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
 	DRM_DEBUG_KMS("handle = 0x%x, offset = 0x%lx\n",
 			args->handle, (unsigned long)args->offset);
 
@@ -335,21 +324,53 @@ int exynos_drm_gem_map_offset_ioctl(struct drm_device *dev, void *data,
 			&args->offset);
 }
 
-int exynos_drm_gem_mmap_buffer(struct file *filp,
+static struct drm_file *exynos_drm_find_drm_file(struct drm_device *drm_dev,
+							struct file *filp)
+{
+	struct drm_file *file_priv;
+
+	mutex_lock(&drm_dev->struct_mutex);
+
+	/* find current process's drm_file from filelist. */
+	list_for_each_entry(file_priv, &drm_dev->filelist, lhead) {
+		if (file_priv->filp == filp) {
+			mutex_unlock(&drm_dev->struct_mutex);
+			return file_priv;
+		}
+	}
+
+	mutex_unlock(&drm_dev->struct_mutex);
+	WARN_ON(1);
+
+	return ERR_PTR(-EFAULT);
+}
+
+static int exynos_drm_gem_mmap_buffer(struct file *filp,
 				      struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = filp->private_data;
 	struct exynos_drm_gem_obj *exynos_gem_obj = to_exynos_gem_obj(obj);
 	struct drm_device *drm_dev = obj->dev;
 	struct exynos_drm_gem_buf *buffer;
+	struct drm_file *file_priv;
 	unsigned long vm_size;
 	int ret;
 
-	WARN_ON(!mutex_is_locked(&obj->dev->struct_mutex));
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_private_data = obj;
 	vma->vm_ops = drm_dev->driver->gem_vm_ops;
+
+	/* restore it to driver's fops. */
+	filp->f_op = fops_get(drm_dev->driver->fops);
+
+	file_priv = exynos_drm_find_drm_file(drm_dev, filp);
+	if (IS_ERR(file_priv))
+		return PTR_ERR(file_priv);
+
+	/* restore it to drm_file. */
+	filp->private_data = file_priv;
 
 	update_vm_cache_attr(exynos_gem_obj, vma);
 
@@ -379,49 +400,60 @@ int exynos_drm_gem_mmap_buffer(struct file *filp,
 	 */
 	drm_gem_object_reference(obj);
 
+	mutex_lock(&drm_dev->struct_mutex);
 	drm_vm_open_locked(drm_dev, vma);
+	mutex_unlock(&drm_dev->struct_mutex);
 
 	return 0;
 }
 
+static const struct file_operations exynos_drm_gem_fops = {
+	.mmap = exynos_drm_gem_mmap_buffer,
+};
+
 int exynos_drm_gem_mmap_ioctl(struct drm_device *dev, void *data,
 			      struct drm_file *file_priv)
 {
-	struct drm_exynos_file_private *exynos_file_priv;
 	struct drm_exynos_gem_mmap *args = data;
 	struct drm_gem_object *obj;
-	struct file *anon_filp;
-	unsigned long addr;
+	unsigned int addr;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	if (!(dev->driver->driver_features & DRIVER_GEM)) {
 		DRM_ERROR("does not support GEM.\n");
 		return -ENODEV;
 	}
 
-	mutex_lock(&dev->struct_mutex);
-
 	obj = drm_gem_object_lookup(dev, file_priv, args->handle);
 	if (!obj) {
 		DRM_ERROR("failed to lookup gem object.\n");
-		mutex_unlock(&dev->struct_mutex);
 		return -EINVAL;
 	}
 
-	exynos_file_priv = file_priv->driver_priv;
-	anon_filp = exynos_file_priv->anon_filp;
-	anon_filp->private_data = obj;
+	/*
+	 * Set specific mmper's fops. And it will be restored by
+	 * exynos_drm_gem_mmap_buffer to dev->driver->fops.
+	 * This is used to call specific mapper temporarily.
+	 */
+	file_priv->filp->f_op = &exynos_drm_gem_fops;
 
-	addr = vm_mmap(anon_filp, 0, args->size, PROT_READ | PROT_WRITE,
-			MAP_SHARED, 0);
+	/*
+	 * Set gem object to private_data so that specific mmaper
+	 * can get the gem object. And it will be restored by
+	 * exynos_drm_gem_mmap_buffer to drm_file.
+	 */
+	file_priv->filp->private_data = obj;
 
-	drm_gem_object_unreference(obj);
+	addr = vm_mmap(file_priv->filp, 0, args->size,
+			PROT_READ | PROT_WRITE, MAP_SHARED, 0);
 
-	if (IS_ERR_VALUE(addr)) {
-		mutex_unlock(&dev->struct_mutex);
-		return (int)addr;
+	drm_gem_object_unreference_unlocked(obj);
+
+	if (IS_ERR((void *)addr)) {
+		file_priv->filp->private_data = file_priv;
+		return PTR_ERR((void *)addr);
 	}
-
-	mutex_unlock(&dev->struct_mutex);
 
 	args->mapped = addr;
 
@@ -579,10 +611,19 @@ void exynos_gem_unmap_sgt_from_dma(struct drm_device *drm_dev,
 	dma_unmap_sg(drm_dev->dev, sgt->sgl, sgt->nents, dir);
 }
 
+int exynos_drm_gem_init_object(struct drm_gem_object *obj)
+{
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
+	return 0;
+}
+
 void exynos_drm_gem_free_object(struct drm_gem_object *obj)
 {
 	struct exynos_drm_gem_obj *exynos_gem_obj;
 	struct exynos_drm_gem_buf *buf;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	exynos_gem_obj = to_exynos_gem_obj(obj);
 	buf = exynos_gem_obj->buffer;
@@ -600,8 +641,10 @@ int exynos_drm_gem_dumb_create(struct drm_file *file_priv,
 	struct exynos_drm_gem_obj *exynos_gem_obj;
 	int ret;
 
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
 	/*
-	 * allocate memory to be used for framebuffer.
+	 * alocate memory to be used for framebuffer.
 	 * - this callback would be called by user application
 	 *	with DRM_IOCTL_MODE_CREATE_DUMB command.
 	 */
@@ -609,20 +652,9 @@ int exynos_drm_gem_dumb_create(struct drm_file *file_priv,
 	args->pitch = args->width * ((args->bpp + 7) / 8);
 	args->size = args->pitch * args->height;
 
-	if (is_drm_iommu_supported(dev)) {
-		exynos_gem_obj = exynos_drm_gem_create(dev,
-			EXYNOS_BO_NONCONTIG | EXYNOS_BO_WC,
-			args->size);
-	} else {
-		exynos_gem_obj = exynos_drm_gem_create(dev,
-			EXYNOS_BO_CONTIG | EXYNOS_BO_WC,
-			args->size);
-	}
-
-	if (IS_ERR(exynos_gem_obj)) {
-		dev_warn(dev->dev, "FB allocation failed.\n");
+	exynos_gem_obj = exynos_drm_gem_create(dev, args->flags, args->size);
+	if (IS_ERR(exynos_gem_obj))
 		return PTR_ERR(exynos_gem_obj);
-	}
 
 	ret = exynos_drm_gem_handle_create(&exynos_gem_obj->base, file_priv,
 			&args->handle);
@@ -641,6 +673,8 @@ int exynos_drm_gem_dumb_map_offset(struct drm_file *file_priv,
 	struct drm_gem_object *obj;
 	int ret = 0;
 
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
 	mutex_lock(&dev->struct_mutex);
 
 	/*
@@ -656,11 +690,13 @@ int exynos_drm_gem_dumb_map_offset(struct drm_file *file_priv,
 		goto unlock;
 	}
 
-	ret = drm_gem_create_mmap_offset(obj);
-	if (ret)
-		goto out;
+	if (!obj->map_list.map) {
+		ret = drm_gem_create_mmap_offset(obj);
+		if (ret)
+			goto out;
+	}
 
-	*offset = drm_vma_node_offset_addr(&obj->vma_node);
+	*offset = (u64)obj->map_list.hash.key << PAGE_SHIFT;
 	DRM_DEBUG_KMS("offset = 0x%lx\n", (unsigned long)*offset);
 
 out:
@@ -668,6 +704,28 @@ out:
 unlock:
 	mutex_unlock(&dev->struct_mutex);
 	return ret;
+}
+
+int exynos_drm_gem_dumb_destroy(struct drm_file *file_priv,
+				struct drm_device *dev,
+				unsigned int handle)
+{
+	int ret;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
+	/*
+	 * obj->refcount and obj->handle_count are decreased and
+	 * if both them are 0 then exynos_drm_gem_free_object()
+	 * would be called by callback to release resources.
+	 */
+	ret = drm_gem_handle_delete(file_priv, handle);
+	if (ret < 0) {
+		DRM_ERROR("failed to delete drm_gem_handle.\n");
+		return ret;
+	}
+
+	return 0;
 }
 
 int exynos_drm_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
@@ -698,6 +756,8 @@ int exynos_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	struct exynos_drm_gem_obj *exynos_gem_obj;
 	struct drm_gem_object *obj;
 	int ret;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	/* set vm_area_struct. */
 	ret = drm_gem_mmap(filp, vma);

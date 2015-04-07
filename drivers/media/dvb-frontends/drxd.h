@@ -24,7 +24,6 @@
 #ifndef _DRXD_H_
 #define _DRXD_H_
 
-#include <linux/kconfig.h>
 #include <linux/types.h>
 #include <linux/i2c.h>
 
@@ -52,7 +51,8 @@ struct drxd_config {
 	 s16(*osc_deviation) (void *priv, s16 dev, int flag);
 };
 
-#if IS_ENABLED(CONFIG_DVB_DRXD)
+#if defined(CONFIG_DVB_DRXD) || \
+			(defined(CONFIG_DVB_DRXD_MODULE) && defined(MODULE))
 extern
 struct dvb_frontend *drxd_attach(const struct drxd_config *config,
 				 void *priv, struct i2c_adapter *i2c,
@@ -69,4 +69,5 @@ struct dvb_frontend *drxd_attach(const struct drxd_config *config,
 }
 #endif
 
+extern int drxd_config_i2c(struct dvb_frontend *, int);
 #endif

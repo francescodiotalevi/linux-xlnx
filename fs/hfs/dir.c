@@ -25,9 +25,7 @@ static struct dentry *hfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct inode *inode = NULL;
 	int res;
 
-	res = hfs_find_init(HFS_SB(dir->i_sb)->cat_tree, &fd);
-	if (res)
-		return ERR_PTR(res);
+	hfs_find_init(HFS_SB(dir->i_sb)->cat_tree, &fd);
 	hfs_cat_build_key(dir->i_sb, fd.search_key, dir->i_ino, &dentry->d_name);
 	res = hfs_brec_read(&fd, &rec, sizeof(rec));
 	if (res) {
@@ -51,9 +49,9 @@ done:
 /*
  * hfs_readdir
  */
-static int hfs_readdir(struct file *file, struct dir_context *ctx)
+static int hfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = filp->f_path.dentry->d_inode;
 	struct super_block *sb = inode->i_sb;
 	int len, err;
 	char strbuf[HFS_MAX_NAMELEN];
@@ -62,24 +60,23 @@ static int hfs_readdir(struct file *file, struct dir_context *ctx)
 	struct hfs_readdir_data *rd;
 	u16 type;
 
-	if (ctx->pos >= inode->i_size)
+	if (filp->f_pos >= inode->i_size)
 		return 0;
 
-	err = hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
-	if (err)
-		return err;
+	hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
 	hfs_cat_build_key(sb, fd.search_key, inode->i_ino, NULL);
 	err = hfs_brec_find(&fd);
 	if (err)
 		goto out;
 
-	if (ctx->pos == 0) {
+	switch ((u32)filp->f_pos) {
+	case 0:
 		/* This is completely artificial... */
-		if (!dir_emit_dot(file, ctx))
+		if (filldir(dirent, ".", 1, 0, inode->i_ino, DT_DIR))
 			goto out;
-		ctx->pos = 1;
-	}
-	if (ctx->pos == 1) {
+		filp->f_pos++;
+		/* fall through */
+	case 1:
 		if (fd.entrylength > sizeof(entry) || fd.entrylength < 0) {
 			err = -EIO;
 			goto out;
@@ -87,29 +84,31 @@ static int hfs_readdir(struct file *file, struct dir_context *ctx)
 
 		hfs_bnode_read(fd.bnode, &entry, fd.entryoffset, fd.entrylength);
 		if (entry.type != HFS_CDR_THD) {
-			pr_err("bad catalog folder thread\n");
+			printk(KERN_ERR "hfs: bad catalog folder thread\n");
 			err = -EIO;
 			goto out;
 		}
 		//if (fd.entrylength < HFS_MIN_THREAD_SZ) {
-		//	pr_err("truncated catalog thread\n");
+		//	printk(KERN_ERR "hfs: truncated catalog thread\n");
 		//	err = -EIO;
 		//	goto out;
 		//}
-		if (!dir_emit(ctx, "..", 2,
+		if (filldir(dirent, "..", 2, 1,
 			    be32_to_cpu(entry.thread.ParID), DT_DIR))
 			goto out;
-		ctx->pos = 2;
+		filp->f_pos++;
+		/* fall through */
+	default:
+		if (filp->f_pos >= inode->i_size)
+			goto out;
+		err = hfs_brec_goto(&fd, filp->f_pos - 1);
+		if (err)
+			goto out;
 	}
-	if (ctx->pos >= inode->i_size)
-		goto out;
-	err = hfs_brec_goto(&fd, ctx->pos - 1);
-	if (err)
-		goto out;
 
 	for (;;) {
 		if (be32_to_cpu(fd.key->cat.ParID) != inode->i_ino) {
-			pr_err("walked past end of dir\n");
+			printk(KERN_ERR "hfs: walked past end of dir\n");
 			err = -EIO;
 			goto out;
 		}
@@ -124,43 +123,43 @@ static int hfs_readdir(struct file *file, struct dir_context *ctx)
 		len = hfs_mac2asc(sb, strbuf, &fd.key->cat.CName);
 		if (type == HFS_CDR_DIR) {
 			if (fd.entrylength < sizeof(struct hfs_cat_dir)) {
-				pr_err("small dir entry\n");
+				printk(KERN_ERR "hfs: small dir entry\n");
 				err = -EIO;
 				goto out;
 			}
-			if (!dir_emit(ctx, strbuf, len,
+			if (filldir(dirent, strbuf, len, filp->f_pos,
 				    be32_to_cpu(entry.dir.DirID), DT_DIR))
 				break;
 		} else if (type == HFS_CDR_FIL) {
 			if (fd.entrylength < sizeof(struct hfs_cat_file)) {
-				pr_err("small file entry\n");
+				printk(KERN_ERR "hfs: small file entry\n");
 				err = -EIO;
 				goto out;
 			}
-			if (!dir_emit(ctx, strbuf, len,
+			if (filldir(dirent, strbuf, len, filp->f_pos,
 				    be32_to_cpu(entry.file.FlNum), DT_REG))
 				break;
 		} else {
-			pr_err("bad catalog entry type %d\n", type);
+			printk(KERN_ERR "hfs: bad catalog entry type %d\n", type);
 			err = -EIO;
 			goto out;
 		}
-		ctx->pos++;
-		if (ctx->pos >= inode->i_size)
+		filp->f_pos++;
+		if (filp->f_pos >= inode->i_size)
 			goto out;
 		err = hfs_brec_goto(&fd, 1);
 		if (err)
 			goto out;
 	}
-	rd = file->private_data;
+	rd = filp->private_data;
 	if (!rd) {
 		rd = kmalloc(sizeof(struct hfs_readdir_data), GFP_KERNEL);
 		if (!rd) {
 			err = -ENOMEM;
 			goto out;
 		}
-		file->private_data = rd;
-		rd->file = file;
+		filp->private_data = rd;
+		rd->file = filp;
 		list_add(&rd->list, &HFS_I(inode)->open_dir_list);
 	}
 	memcpy(&rd->key, &fd.key, sizeof(struct hfs_cat_key));
@@ -173,9 +172,7 @@ static int hfs_dir_release(struct inode *inode, struct file *file)
 {
 	struct hfs_readdir_data *rd = file->private_data;
 	if (rd) {
-		mutex_lock(&inode->i_mutex);
 		list_del(&rd->list);
-		mutex_unlock(&inode->i_mutex);
 		kfree(rd);
 	}
 	return 0;
@@ -303,7 +300,7 @@ static int hfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 const struct file_operations hfs_dir_operations = {
 	.read		= generic_read_dir,
-	.iterate	= hfs_readdir,
+	.readdir	= hfs_readdir,
 	.llseek		= generic_file_llseek,
 	.release	= hfs_dir_release,
 };

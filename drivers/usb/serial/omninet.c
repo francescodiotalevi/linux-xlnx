@@ -13,6 +13,7 @@
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
@@ -32,7 +33,8 @@
 
 /* function prototypes */
 static int  omninet_open(struct tty_struct *tty, struct usb_serial_port *port);
-static void omninet_process_read_urb(struct urb *urb);
+static void omninet_close(struct usb_serial_port *port);
+static void omninet_read_bulk_callback(struct urb *urb);
 static void omninet_write_bulk_callback(struct urb *urb);
 static int  omninet_write(struct tty_struct *tty, struct usb_serial_port *port,
 				const unsigned char *buf, int count);
@@ -59,10 +61,11 @@ static struct usb_serial_driver zyxel_omninet_device = {
 	.port_probe =		omninet_port_probe,
 	.port_remove =		omninet_port_remove,
 	.open =			omninet_open,
+	.close =		omninet_close,
 	.write =		omninet_write,
 	.write_room =		omninet_write_room,
+	.read_bulk_callback =	omninet_read_bulk_callback,
 	.write_bulk_callback =	omninet_write_bulk_callback,
-	.process_read_urb =	omninet_process_read_urb,
 	.disconnect =		omninet_disconnect,
 };
 
@@ -71,28 +74,29 @@ static struct usb_serial_driver * const serial_drivers[] = {
 };
 
 
-/*
- * The protocol.
+/* The protocol.
  *
  * The omni.net always exchange 64 bytes of data with the host. The first
- * four bytes are the control header.
+ * four bytes are the control header, you can see it in the above structure.
  *
  * oh_seq is a sequence number. Don't know if/how it's used.
  * oh_len is the length of the data bytes in the packet.
  * oh_xxx Bit-mapped, related to handshaking and status info.
- *	I normally set it to 0x03 in transmitted frames.
+ *	I normally set it to 0x03 in trasmitted frames.
  *	7: Active when the TA is in a CONNECTed state.
  *	6: unknown
  *	5: handshaking, unknown
  *	4: handshaking, unknown
  *	3: unknown, usually 0
  *	2: unknown, usually 0
- *	1: handshaking, unknown, usually set to 1 in transmitted frames
- *	0: handshaking, unknown, usually set to 1 in transmitted frames
+ *	1: handshaking, unknown, usually set to 1 in trasmitted frames
+ *	0: handshaking, unknown, usually set to 1 in trasmitted frames
  * oh_pad Probably a pad byte.
  *
  * After the header you will find data bytes if oh_len was greater than zero.
+ *
  */
+
 struct omninet_header {
 	__u8	oh_seq;
 	__u8	oh_len;
@@ -108,7 +112,7 @@ static int omninet_port_probe(struct usb_serial_port *port)
 {
 	struct omninet_data *od;
 
-	od = kzalloc(sizeof(*od), GFP_KERNEL);
+	od = kmalloc(sizeof(struct omninet_data), GFP_KERNEL);
 	if (!od)
 		return -ENOMEM;
 
@@ -131,32 +135,60 @@ static int omninet_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct usb_serial	*serial = port->serial;
 	struct usb_serial_port	*wport;
+	int			result = 0;
 
 	wport = serial->port[1];
 	tty_port_tty_set(&wport->port, tty);
 
-	return usb_serial_generic_open(tty, port);
+	/* Start reading from the device */
+	result = usb_submit_urb(port->read_urb, GFP_KERNEL);
+	if (result)
+		dev_err(&port->dev,
+			"%s - failed submitting read urb, error %d\n",
+			__func__, result);
+	return result;
 }
 
-#define OMNINET_HEADERLEN	4
-#define OMNINET_BULKOUTSIZE	64
-#define OMNINET_PAYLOADSIZE	(OMNINET_BULKOUTSIZE - OMNINET_HEADERLEN)
-
-static void omninet_process_read_urb(struct urb *urb)
+static void omninet_close(struct usb_serial_port *port)
 {
-	struct usb_serial_port *port = urb->context;
-	const struct omninet_header *hdr = urb->transfer_buffer;
-	const unsigned char *data;
-	size_t data_len;
+	usb_kill_urb(port->read_urb);
+}
 
-	if (urb->actual_length <= OMNINET_HEADERLEN || !hdr->oh_len)
+
+#define OMNINET_DATAOFFSET	0x04
+#define OMNINET_HEADERLEN	sizeof(struct omninet_header)
+#define OMNINET_BULKOUTSIZE 	(64 - OMNINET_HEADERLEN)
+
+static void omninet_read_bulk_callback(struct urb *urb)
+{
+	struct usb_serial_port 	*port 	= urb->context;
+	unsigned char 		*data 	= urb->transfer_buffer;
+	struct omninet_header 	*header = (struct omninet_header *) &data[0];
+	int status = urb->status;
+	int result;
+
+	if (status) {
+		dev_dbg(&port->dev, "%s - nonzero read bulk status received: %d\n",
+			__func__, status);
 		return;
+	}
 
-	data = (char *)urb->transfer_buffer + OMNINET_HEADERLEN;
-	data_len = min_t(size_t, urb->actual_length - OMNINET_HEADERLEN,
-								hdr->oh_len);
-	tty_insert_flip_string(&port->port, data, data_len);
-	tty_flip_buffer_push(&port->port);
+	if (urb->actual_length && header->oh_len) {
+		struct tty_struct *tty = tty_port_tty_get(&port->port);
+		if (tty) {
+			tty_insert_flip_string(tty, data + OMNINET_DATAOFFSET,
+							header->oh_len);
+			tty_flip_buffer_push(tty);
+			tty_kref_put(tty);
+		}
+	}
+
+	/* Continue trying to always read  */
+	result = usb_submit_urb(urb, GFP_ATOMIC);
+	if (result)
+		dev_err(&port->dev,
+			"%s - failed resubmitting read urb, error %d\n",
+			__func__, result);
 }
 
 static int omninet_write(struct tty_struct *tty, struct usb_serial_port *port,
@@ -181,9 +213,9 @@ static int omninet_write(struct tty_struct *tty, struct usb_serial_port *port,
 		return 0;
 	}
 
-	count = (count > OMNINET_PAYLOADSIZE) ? OMNINET_PAYLOADSIZE : count;
+	count = (count > OMNINET_BULKOUTSIZE) ? OMNINET_BULKOUTSIZE : count;
 
-	memcpy(wport->write_urb->transfer_buffer + OMNINET_HEADERLEN,
+	memcpy(wport->write_urb->transfer_buffer + OMNINET_DATAOFFSET,
 								buf, count);
 
 	usb_serial_debug_data(&port->dev, __func__, count,
@@ -195,7 +227,7 @@ static int omninet_write(struct tty_struct *tty, struct usb_serial_port *port,
 	header->oh_pad 	= 0x00;
 
 	/* send the data out the bulk port, always 64 bytes */
-	wport->write_urb->transfer_buffer_length = OMNINET_BULKOUTSIZE;
+	wport->write_urb->transfer_buffer_length = 64;
 
 	result = usb_submit_urb(wport->write_urb, GFP_ATOMIC);
 	if (result) {

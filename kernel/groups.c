@@ -157,13 +157,17 @@ int groups_search(const struct group_info *group_info, kgid_t grp)
  * set_groups - Change a group subscription in a set of credentials
  * @new: The newly prepared set of credentials to alter
  * @group_info: The group list to install
+ *
+ * Validate a group subscription and, if valid, insert it into a set
+ * of credentials.
  */
-void set_groups(struct cred *new, struct group_info *group_info)
+int set_groups(struct cred *new, struct group_info *group_info)
 {
 	put_group_info(new->group_info);
 	groups_sort(group_info);
 	get_group_info(group_info);
 	new->group_info = group_info;
+	return 0;
 }
 
 EXPORT_SYMBOL(set_groups);
@@ -178,12 +182,18 @@ EXPORT_SYMBOL(set_groups);
 int set_current_groups(struct group_info *group_info)
 {
 	struct cred *new;
+	int ret;
 
 	new = prepare_creds();
 	if (!new)
 		return -ENOMEM;
 
-	set_groups(new, group_info);
+	ret = set_groups(new, group_info);
+	if (ret < 0) {
+		abort_creds(new);
+		return ret;
+	}
+
 	return commit_creds(new);
 }
 
@@ -223,7 +233,7 @@ SYSCALL_DEFINE2(setgroups, int, gidsetsize, gid_t __user *, grouplist)
 	struct group_info *group_info;
 	int retval;
 
-	if (!ns_capable(current_user_ns(), CAP_SETGID))
+	if (!nsown_capable(CAP_SETGID))
 		return -EPERM;
 	if ((unsigned)gidsetsize > NGROUPS_MAX)
 		return -EINVAL;

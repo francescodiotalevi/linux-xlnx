@@ -16,6 +16,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/stddef.h>
 #include <linux/interrupt.h>
@@ -37,7 +38,7 @@
 
 #include "ucc_geth.h"
 
-static const char hw_stat_gstrings[][ETH_GSTRING_LEN] = {
+static char hw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"tx-64-frames",
 	"tx-65-127-frames",
 	"tx-128-255-frames",
@@ -58,7 +59,7 @@ static const char hw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"rx-dropped-frames",
 };
 
-static const char tx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
+static char tx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"tx-single-collision",
 	"tx-multiple-collision",
 	"tx-late-collsion",
@@ -73,7 +74,7 @@ static const char tx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"tx-jumbo-frames",
 };
 
-static const char rx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
+static char rx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"rx-crc-errors",
 	"rx-alignment-errors",
 	"rx-in-range-length-errors",
@@ -159,7 +160,8 @@ uec_set_pauseparam(struct net_device *netdev,
 	if (ugeth->phydev->autoneg) {
 		if (netif_running(netdev)) {
 			/* FIXME: automatically restart */
-			netdev_info(netdev, "Please re-open the interface\n");
+			printk(KERN_INFO
+				"Please re-open the interface.\n");
 		}
 	} else {
 		struct ucc_geth_info *ug_info = ugeth->ug_info;
@@ -238,18 +240,18 @@ uec_set_ringparam(struct net_device *netdev,
 	int queue = 0, ret = 0;
 
 	if (ring->rx_pending < UCC_GETH_RX_BD_RING_SIZE_MIN) {
-		netdev_info(netdev, "RxBD ring size must be no smaller than %d\n",
-			    UCC_GETH_RX_BD_RING_SIZE_MIN);
+		printk("%s: RxBD ring size must be no smaller than %d.\n",
+			       	netdev->name, UCC_GETH_RX_BD_RING_SIZE_MIN);
 		return -EINVAL;
 	}
 	if (ring->rx_pending % UCC_GETH_RX_BD_RING_SIZE_ALIGNMENT) {
-		netdev_info(netdev, "RxBD ring size must be multiple of %d\n",
-			    UCC_GETH_RX_BD_RING_SIZE_ALIGNMENT);
+		printk("%s: RxBD ring size must be multiple of %d.\n",
+			netdev->name, UCC_GETH_RX_BD_RING_SIZE_ALIGNMENT);
 		return -EINVAL;
 	}
 	if (ring->tx_pending < UCC_GETH_TX_BD_RING_SIZE_MIN) {
-		netdev_info(netdev, "TxBD ring size must be no smaller than %d\n",
-			    UCC_GETH_TX_BD_RING_SIZE_MIN);
+		printk("%s: TxBD ring size must be no smaller than %d.\n",
+				netdev->name, UCC_GETH_TX_BD_RING_SIZE_MIN);
 		return -EINVAL;
 	}
 
@@ -258,7 +260,8 @@ uec_set_ringparam(struct net_device *netdev,
 
 	if (netif_running(netdev)) {
 		/* FIXME: restart automatically */
-		netdev_info(netdev, "Please re-open the interface\n");
+		printk(KERN_INFO
+			"Please re-open the interface.\n");
 	}
 
 	return ret;
@@ -347,10 +350,10 @@ static void
 uec_get_drvinfo(struct net_device *netdev,
                        struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
-	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
-	strlcpy(drvinfo->bus_info, "QUICC ENGINE", sizeof(drvinfo->bus_info));
+	strncpy(drvinfo->driver, DRV_NAME, 32);
+	strncpy(drvinfo->version, DRV_VERSION, 32);
+	strncpy(drvinfo->fw_version, "N/A", 32);
+	strncpy(drvinfo->bus_info, "QUICC ENGINE", 32);
 	drvinfo->eedump_len = 0;
 	drvinfo->regdump_len = uec_get_regs_len(netdev);
 }
@@ -417,5 +420,5 @@ static const struct ethtool_ops uec_ethtool_ops = {
 
 void uec_set_ethtool_ops(struct net_device *netdev)
 {
-	netdev->ethtool_ops = &uec_ethtool_ops;
+	SET_ETHTOOL_OPS(netdev, &uec_ethtool_ops);
 }

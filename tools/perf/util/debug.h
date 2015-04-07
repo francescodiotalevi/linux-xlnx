@@ -5,40 +5,46 @@
 #include <stdbool.h>
 #include "event.h"
 #include "../ui/helpline.h"
-#include "../ui/progress.h"
-#include "../ui/util.h"
 
 extern int verbose;
 extern bool quiet, dump_trace;
 
-#ifndef pr_fmt
-#define pr_fmt(fmt) fmt
-#endif
-
-#define pr_err(fmt, ...) \
-	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_warning(fmt, ...) \
-	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_info(fmt, ...) \
-	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debug(fmt, ...) \
-	eprintf(1, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debugN(n, fmt, ...) \
-	eprintf(n, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debug2(fmt, ...) pr_debugN(2, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debug3(fmt, ...) pr_debugN(3, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debug4(fmt, ...) pr_debugN(4, pr_fmt(fmt), ##__VA_ARGS__)
-
 int dump_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void trace_event(union perf_event *event);
 
+struct ui_progress;
+struct perf_error_ops;
+
+#if defined(NEWT_SUPPORT) || defined(GTK2_SUPPORT)
+
+#include "../ui/progress.h"
 int ui__error(const char *format, ...) __attribute__((format(printf, 1, 2)));
+#include "../ui/util.h"
+
+#else
+
+static inline void ui_progress__update(u64 curr __maybe_unused,
+				       u64 total __maybe_unused,
+				       const char *title __maybe_unused) {}
+static inline void ui_progress__finish(void) {}
+
+#define ui__error(format, arg...) ui__warning(format, ##arg)
+
+static inline int
+perf_error__register(struct perf_error_ops *eops __maybe_unused)
+{
+	return 0;
+}
+
+static inline int
+perf_error__unregister(struct perf_error_ops *eops __maybe_unused)
+{
+	return 0;
+}
+
+#endif /* NEWT_SUPPORT || GTK2_SUPPORT */
+
 int ui__warning(const char *format, ...) __attribute__((format(printf, 1, 2)));
-
-void pr_stat(const char *fmt, ...);
-
-int eprintf(int level, int var, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
-
-int perf_debug_option(const char *str);
+int ui__error_paranoid(void);
 
 #endif	/* __PERF_DEBUG_H */

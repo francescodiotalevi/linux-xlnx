@@ -419,8 +419,7 @@ static int db8500_thermal_probe(struct platform_device *pdev)
 	low_irq = platform_get_irq_byname(pdev, "IRQ_HOTMON_LOW");
 	if (low_irq < 0) {
 		dev_err(&pdev->dev, "Get IRQ_HOTMON_LOW failed.\n");
-		ret = low_irq;
-		goto out_unlock;
+		return low_irq;
 	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, low_irq, NULL,
@@ -428,14 +427,13 @@ static int db8500_thermal_probe(struct platform_device *pdev)
 		"dbx500_temp_low", pzone);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to allocate temp low irq.\n");
-		goto out_unlock;
+		return ret;
 	}
 
 	high_irq = platform_get_irq_byname(pdev, "IRQ_HOTMON_HIGH");
 	if (high_irq < 0) {
 		dev_err(&pdev->dev, "Get IRQ_HOTMON_HIGH failed.\n");
-		ret = high_irq;
-		goto out_unlock;
+		return high_irq;
 	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, high_irq, NULL,
@@ -443,16 +441,15 @@ static int db8500_thermal_probe(struct platform_device *pdev)
 		"dbx500_temp_high", pzone);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to allocate temp high irq.\n");
-		goto out_unlock;
+		return ret;
 	}
 
 	pzone->therm_dev = thermal_zone_device_register("db8500_thermal_zone",
 		ptrips->num_trips, 0, pzone, &thdev_ops, NULL, 0, 0);
 
-	if (IS_ERR(pzone->therm_dev)) {
+	if (IS_ERR_OR_NULL(pzone->therm_dev)) {
 		dev_err(&pdev->dev, "Register thermal zone device failed.\n");
-		ret = PTR_ERR(pzone->therm_dev);
-		goto out_unlock;
+		return PTR_ERR(pzone->therm_dev);
 	}
 	dev_info(&pdev->dev, "Thermal zone device registered.\n");
 
@@ -464,11 +461,9 @@ static int db8500_thermal_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pzone);
 	pzone->mode = THERMAL_DEVICE_ENABLED;
-
-out_unlock:
 	mutex_unlock(&pzone->th_lock);
 
-	return ret;
+	return 0;
 }
 
 static int db8500_thermal_remove(struct platform_device *pdev)
@@ -513,13 +508,15 @@ static const struct of_device_id db8500_thermal_match[] = {
 	{ .compatible = "stericsson,db8500-thermal" },
 	{},
 };
+#else
+#define db8500_thermal_match NULL
 #endif
 
 static struct platform_driver db8500_thermal_driver = {
 	.driver = {
 		.owner = THIS_MODULE,
 		.name = "db8500-thermal",
-		.of_match_table = of_match_ptr(db8500_thermal_match),
+		.of_match_table = db8500_thermal_match,
 	},
 	.probe = db8500_thermal_probe,
 	.suspend = db8500_thermal_suspend,

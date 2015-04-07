@@ -13,12 +13,11 @@
 #include "util/quote.h"
 #include "util/run-command.h"
 #include "util/parse-events.h"
-#include "util/debug.h"
-#include <api/fs/debugfs.h>
+#include "util/debugfs.h"
 #include <pthread.h>
 
 const char perf_usage_string[] =
-	"perf [--version] [--help] [OPTIONS] COMMAND [ARGS]";
+	"perf [--version] [--help] COMMAND [ARGS]";
 
 const char perf_more_info_string[] =
 	"See 'perf help COMMAND' for more information on a specific command.";
@@ -50,18 +49,17 @@ static struct cmd_struct commands[] = {
 	{ "version",	cmd_version,	0 },
 	{ "script",	cmd_script,	0 },
 	{ "sched",	cmd_sched,	0 },
-#ifdef HAVE_LIBELF_SUPPORT
+#ifdef LIBELF_SUPPORT
 	{ "probe",	cmd_probe,	0 },
 #endif
 	{ "kmem",	cmd_kmem,	0 },
 	{ "lock",	cmd_lock,	0 },
 	{ "kvm",	cmd_kvm,	0 },
 	{ "test",	cmd_test,	0 },
-#ifdef HAVE_LIBAUDIT_SUPPORT
+#ifdef LIBAUDIT_SUPPORT
 	{ "trace",	cmd_trace,	0 },
 #endif
 	{ "inject",	cmd_inject,	0 },
-	{ "mem",	cmd_mem,	0 },
 };
 
 struct pager_config {
@@ -195,13 +193,13 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				fprintf(stderr, "No directory given for --debugfs-dir.\n");
 				usage(perf_usage_string);
 			}
-			perf_debugfs_set_path((*argv)[1]);
+			debugfs_set_path((*argv)[1]);
 			if (envchanged)
 				*envchanged = 1;
 			(*argv)++;
 			(*argc)--;
 		} else if (!prefixcmp(cmd, CMD_DEBUGFS_DIR)) {
-			perf_debugfs_set_path(cmd + strlen(CMD_DEBUGFS_DIR));
+			debugfs_set_path(cmd + strlen(CMD_DEBUGFS_DIR));
 			fprintf(stderr, "dir: %s\n", debugfs_mountpoint);
 			if (envchanged)
 				*envchanged = 1;
@@ -213,16 +211,6 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				printf("%s ", p->cmd);
 			}
 			exit(0);
-		} else if (!strcmp(cmd, "--debug")) {
-			if (*argc < 2) {
-				fprintf(stderr, "No variable specified for --debug.\n");
-				usage(perf_usage_string);
-			}
-			if (perf_debug_option((*argv)[1]))
-				usage(perf_usage_string);
-
-			(*argv)++;
-			(*argc)--;
 		} else {
 			fprintf(stderr, "Unknown option: %s\n", cmd);
 			usage(perf_usage_string);
@@ -340,23 +328,14 @@ static int run_builtin(struct cmd_struct *p, int argc, const char **argv)
 	if (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode))
 		return 0;
 
-	status = 1;
 	/* Check for ENOSPC and EIO errors.. */
-	if (fflush(stdout)) {
-		fprintf(stderr, "write failure on standard output: %s", strerror(errno));
-		goto out;
-	}
-	if (ferror(stdout)) {
-		fprintf(stderr, "unknown write failure on standard output");
-		goto out;
-	}
-	if (fclose(stdout)) {
-		fprintf(stderr, "close failed on standard output: %s", strerror(errno));
-		goto out;
-	}
-	status = 0;
-out:
-	return status;
+	if (fflush(stdout))
+		die("write failure on standard output: %s", strerror(errno));
+	if (ferror(stdout))
+		die("unknown write failure on standard output");
+	if (fclose(stdout))
+		die("close failed on standard output: %s", strerror(errno));
+	return 0;
 }
 
 static void handle_internal_command(int argc, const char **argv)
@@ -467,15 +446,13 @@ int main(int argc, const char **argv)
 {
 	const char *cmd;
 
-	/* The page_size is placed in util object. */
 	page_size = sysconf(_SC_PAGE_SIZE);
-	cacheline_size = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
 
 	cmd = perf_extract_argv0_path(argv[0]);
 	if (!cmd)
 		cmd = "perf-help";
 	/* get debugfs mount point from /proc/mounts */
-	perf_debugfs_mount(NULL);
+	debugfs_mount(NULL);
 	/*
 	 * "perf-xxxx" is the same as "perf xxxx", but we obviously:
 	 *
@@ -490,21 +467,9 @@ int main(int argc, const char **argv)
 		cmd += 5;
 		argv[0] = cmd;
 		handle_internal_command(argc, argv);
-		fprintf(stderr, "cannot handle %s internally", cmd);
-		goto out;
+		die("cannot handle %s internally", cmd);
 	}
-	if (!prefixcmp(cmd, "trace")) {
-#ifdef HAVE_LIBAUDIT_SUPPORT
-		set_buildid_dir();
-		setup_path();
-		argv[0] = "trace";
-		return cmd_trace(argc, argv, NULL);
-#else
-		fprintf(stderr,
-			"trace command not available: missing audit-libs devel package at build time.\n");
-		goto out;
-#endif
-	}
+
 	/* Look for flags.. */
 	argv++;
 	argc--;
@@ -520,7 +485,7 @@ int main(int argc, const char **argv)
 		printf("\n usage: %s\n\n", perf_usage_string);
 		list_common_cmds_help();
 		printf("\n %s\n\n", perf_more_info_string);
-		goto out;
+		exit(1);
 	}
 	cmd = argv[0];
 
@@ -542,8 +507,9 @@ int main(int argc, const char **argv)
 
 	while (1) {
 		static int done_help;
-		int was_alias = run_argv(&argc, &argv);
+		static int was_alias;
 
+		was_alias = run_argv(&argc, &argv);
 		if (errno != ENOENT)
 			break;
 
@@ -551,7 +517,7 @@ int main(int argc, const char **argv)
 			fprintf(stderr, "Expansion of alias '%s' failed; "
 				"'%s' is not a perf-command\n",
 				cmd, argv[0]);
-			goto out;
+			exit(1);
 		}
 		if (!done_help) {
 			cmd = argv[0] = help_unknown_cmd(cmd);
@@ -562,6 +528,6 @@ int main(int argc, const char **argv)
 
 	fprintf(stderr, "Failed to run command '%s': %s\n",
 		cmd, strerror(errno));
-out:
+
 	return 1;
 }

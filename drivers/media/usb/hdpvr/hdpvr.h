@@ -16,7 +16,6 @@
 #include <linux/videodev2.h>
 
 #include <media/v4l2-device.h>
-#include <media/v4l2-ctrls.h>
 #include <media/ir-kbd-i2c.h>
 
 #define HDPVR_MAX 8
@@ -38,7 +37,6 @@
 #define HDPVR_FIRMWARE_VERSION_AC3	0x0d
 #define HDPVR_FIRMWARE_VERSION_0X12	0x12
 #define HDPVR_FIRMWARE_VERSION_0X15	0x15
-#define HDPVR_FIRMWARE_VERSION_0X1E	0x1e
 
 /* #define HDPVR_DEBUG */
 
@@ -67,19 +65,10 @@ struct hdpvr_options {
 struct hdpvr_device {
 	/* the v4l device for this device */
 	struct video_device	*video_dev;
-	/* the control handler for this device */
-	struct v4l2_ctrl_handler hdl;
 	/* the usb device for this device */
 	struct usb_device	*udev;
 	/* v4l2-device unused */
 	struct v4l2_device	v4l2_dev;
-	struct { /* video mode/bitrate control cluster */
-		struct v4l2_ctrl *video_mode;
-		struct v4l2_ctrl *video_bitrate;
-		struct v4l2_ctrl *video_bitrate_peak;
-	};
-	/* v4l2 format */
-	uint width, height;
 
 	/* the max packet size of the bulk endpoint */
 	size_t			bulk_in_size;
@@ -88,11 +77,11 @@ struct hdpvr_device {
 
 	/* holds the current device status */
 	__u8			status;
+	/* count the number of openers */
+	uint			open_count;
 
-	/* holds the current set options */
+	/* holds the cureent set options */
 	struct hdpvr_options	options;
-	v4l2_std_id		cur_std;
-	struct v4l2_dv_timings	cur_dv_timings;
 
 	uint			flags;
 
@@ -110,8 +99,6 @@ struct hdpvr_device {
 	struct workqueue_struct	*workqueue;
 	/**/
 	struct work_struct	worker;
-	/* current stream owner */
-	struct v4l2_fh		*owner;
 
 	/* I2C adapter */
 	struct i2c_adapter	i2c_adapter;
@@ -154,7 +141,6 @@ struct hdpvr_video_info {
 	u16	width;
 	u16	height;
 	u8	fps;
-	bool	valid;
 };
 
 enum {
@@ -304,7 +290,7 @@ int hdpvr_set_audio(struct hdpvr_device *dev, u8 input,
 int hdpvr_config_call(struct hdpvr_device *dev, uint value,
 		      unsigned char valbuf);
 
-int get_video_info(struct hdpvr_device *dev, struct hdpvr_video_info *vid_info);
+struct hdpvr_video_info *get_video_info(struct hdpvr_device *dev);
 
 /* :0 s b8 81 1800 0003 0003 3 < */
 /* :0 0 3 = 0301ff */

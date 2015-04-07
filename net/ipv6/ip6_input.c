@@ -44,12 +44,12 @@
 #include <net/ip6_route.h>
 #include <net/addrconf.h>
 #include <net/xfrm.h>
-#include <net/inet_ecn.h>
+
 
 
 int ip6_rcv_finish(struct sk_buff *skb)
 {
-	if (sysctl_ip_early_demux && !skb_dst(skb) && skb->sk == NULL) {
+	if (sysctl_ip_early_demux && !skb_dst(skb)) {
 		const struct inet6_protocol *ipprot;
 
 		ipprot = rcu_dereference(inet6_protos[ipv6_hdr(skb)->nexthdr]);
@@ -109,10 +109,6 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 	if (hdr->version != 6)
 		goto err;
 
-	IP6_ADD_STATS_BH(dev_net(dev), idev,
-			 IPSTATS_MIB_NOECTPKTS +
-				(ipv6_get_dsfield(hdr) & INET_ECN_MASK),
-			 max_t(unsigned short, 1, skb_shinfo(skb)->gso_segs));
 	/*
 	 * RFC4291 2.5.3
 	 * A packet received on an interface with a destination address
@@ -120,27 +116,6 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 	 */
 	if (!(dev->flags & IFF_LOOPBACK) &&
 	    ipv6_addr_loopback(&hdr->daddr))
-		goto err;
-
-	/* RFC4291 Errata ID: 3480
-	 * Interface-Local scope spans only a single interface on a
-	 * node and is useful only for loopback transmission of
-	 * multicast.  Packets with interface-local scope received
-	 * from another node must be discarded.
-	 */
-	if (!(skb->pkt_type == PACKET_LOOPBACK ||
-	      dev->flags & IFF_LOOPBACK) &&
-	    ipv6_addr_is_multicast(&hdr->daddr) &&
-	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 1)
-		goto err;
-
-	/* RFC4291 2.7
-	 * Nodes must not originate a packet to a multicast address whose scope
-	 * field contains the reserved value 0; if such a packet is received, it
-	 * must be silently dropped.
-	 */
-	if (ipv6_addr_is_multicast(&hdr->daddr) &&
-	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 0)
 		goto err;
 
 	/*
@@ -237,7 +212,7 @@ resubmit:
 			if (ipv6_addr_is_multicast(&hdr->daddr) &&
 			    !ipv6_chk_mcast_addr(skb->dev, &hdr->daddr,
 			    &hdr->saddr) &&
-			    !ipv6_is_mld(skb, nexthdr, skb_network_header_len(skb)))
+			    !ipv6_is_mld(skb, nexthdr))
 				goto discard;
 		}
 		if (!(ipprot->flags & INET6_PROTO_NOPOLICY) &&
@@ -257,11 +232,9 @@ resubmit:
 				icmpv6_send(skb, ICMPV6_PARAMPROB,
 					    ICMPV6_UNK_NEXTHDR, nhoff);
 			}
-			kfree_skb(skb);
-		} else {
+		} else
 			IP6_INC_STATS_BH(net, idev, IPSTATS_MIB_INDELIVERS);
-			consume_skb(skb);
-		}
+		kfree_skb(skb);
 	}
 	rcu_read_unlock();
 	return 0;
@@ -297,8 +270,7 @@ int ip6_mc_input(struct sk_buff *skb)
 	 *      IPv6 multicast router mode is now supported ;)
 	 */
 	if (dev_net(skb->dev)->ipv6.devconf_all->mc_forwarding &&
-	    !(ipv6_addr_type(&hdr->daddr) &
-	      (IPV6_ADDR_LOOPBACK|IPV6_ADDR_LINKLOCAL)) &&
+	    !(ipv6_addr_type(&hdr->daddr) & IPV6_ADDR_LINKLOCAL) &&
 	    likely(!(IP6CB(skb)->flags & IP6SKB_FORWARDED))) {
 		/*
 		 * Okay, we try to forward - split and duplicate
@@ -308,8 +280,10 @@ int ip6_mc_input(struct sk_buff *skb)
 		struct inet6_skb_parm *opt = IP6CB(skb);
 
 		/* Check for MLD */
-		if (unlikely(opt->flags & IP6SKB_ROUTERALERT)) {
+		if (unlikely(opt->ra)) {
 			/* Check if this is a mld message */
+			u8 *ptr = skb_network_header(skb) + opt->ra;
+			struct icmp6hdr *icmp6;
 			u8 nexthdr = hdr->nexthdr;
 			__be16 frag_off;
 			int offset;
@@ -317,7 +291,7 @@ int ip6_mc_input(struct sk_buff *skb)
 			/* Check if the value of Router Alert
 			 * is for MLD (0x0000).
 			 */
-			if (opt->ra == htons(IPV6_OPT_ROUTERALERT_MLD)) {
+			if ((ptr[2] | ptr[3]) == 0) {
 				deliver = false;
 
 				if (!ipv6_ext_hdr(nexthdr)) {
@@ -329,10 +303,24 @@ int ip6_mc_input(struct sk_buff *skb)
 				if (offset < 0)
 					goto out;
 
-				if (!ipv6_is_mld(skb, nexthdr, offset))
+				if (nexthdr != IPPROTO_ICMPV6)
 					goto out;
 
-				deliver = true;
+				if (!pskb_may_pull(skb, (skb_network_header(skb) +
+						   offset + 1 - skb->data)))
+					goto out;
+
+				icmp6 = (struct icmp6hdr *)(skb_network_header(skb) + offset);
+
+				switch (icmp6->icmp6_type) {
+				case ICMPV6_MGM_QUERY:
+				case ICMPV6_MGM_REPORT:
+				case ICMPV6_MGM_REDUCTION:
+				case ICMPV6_MLD2_REPORT:
+					deliver = true;
+					break;
+				}
+				goto out;
 			}
 			/* unknown RA - process it normally */
 		}

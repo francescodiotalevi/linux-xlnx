@@ -412,18 +412,19 @@ static int rtllib_ccmp_get_key(void *key, int len, u8 *seq, void *priv)
 }
 
 
-static void rtllib_ccmp_print_stats(struct seq_file *m, void *priv)
+static char *rtllib_ccmp_print_stats(char *p, void *priv)
 {
 	struct rtllib_ccmp_data *ccmp = priv;
-	seq_printf(m,
-		   "key[%d] alg=CCMP key_set=%d "
-		   "tx_pn=%pM rx_pn=%pM "
-		   "format_errors=%d replays=%d decrypt_errors=%d\n",
-		   ccmp->key_idx, ccmp->key_set,
-		   ccmp->tx_pn, ccmp->rx_pn,
-		   ccmp->dot11RSNAStatsCCMPFormatErrors,
-		   ccmp->dot11RSNAStatsCCMPReplays,
-		   ccmp->dot11RSNAStatsCCMPDecryptErrors);
+	p += sprintf(p, "key[%d] alg=CCMP key_set=%d "
+		     "tx_pn=%pM rx_pn=%pM "
+		     "format_errors=%d replays=%d decrypt_errors=%d\n",
+		     ccmp->key_idx, ccmp->key_set,
+		     ccmp->tx_pn, ccmp->rx_pn,
+		     ccmp->dot11RSNAStatsCCMPFormatErrors,
+		     ccmp->dot11RSNAStatsCCMPReplays,
+		     ccmp->dot11RSNAStatsCCMPDecryptErrors);
+
+	return p;
 }
 
 static struct lib80211_crypto_ops rtllib_crypt_ccmp = {
@@ -443,13 +444,13 @@ static struct lib80211_crypto_ops rtllib_crypt_ccmp = {
 };
 
 
-static int __init rtllib_crypto_ccmp_init(void)
+int __init rtllib_crypto_ccmp_init(void)
 {
 	return lib80211_register_crypto_ops(&rtllib_crypt_ccmp);
 }
 
 
-static void __exit rtllib_crypto_ccmp_exit(void)
+void __exit rtllib_crypto_ccmp_exit(void)
 {
 	lib80211_unregister_crypto_ops(&rtllib_crypt_ccmp);
 }

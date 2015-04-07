@@ -23,12 +23,16 @@
  * See the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with GNU CC; see the file COPYING.  If not, see
- * <http://www.gnu.org/licenses/>.
+ * along with GNU CC; see the file COPYING.  If not, write to
+ * the Free Software Foundation, 59 Temple Place - Suite 330,
+ * Boston, MA 02111-1307, USA.
  *
  * Please send any bug reports or fixes you make to the
  * email address(es):
- *    lksctp developers <linux-sctp@vger.kernel.org>
+ *    lksctp developers <lksctp-developers@lists.sourceforge.net>
+ *
+ * Or submit a bug report through the following website:
+ *    http://www.sf.net/projects/lksctp
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -36,6 +40,9 @@
  *    Jon Grimm <jgrimm@austin.ibm.com>
  *    Daisy Chang <daisyc@us.ibm.com>
  *    Dajiang Zhang <dajiang.zhang@nokia.com>
+ *
+ * Any bugs reported given to us we will try to fix... any fixes shared will
+ * be incorporated into the next SCTP release.
  */
 
 #include <linux/types.h>
@@ -68,8 +75,7 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 	if (!ep->digest)
 		return NULL;
 
-	ep->auth_enable = net->sctp.auth_enable;
-	if (ep->auth_enable) {
+	if (net->sctp.auth_enable) {
 		/* Allocate space for HMACS and CHUNKS authentication
 		 * variables.  There are arrays that we encode directly
 		 * into parameters to make the rest of the operations easier.
@@ -115,7 +121,8 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 
 	/* Initialize the basic object fields. */
 	atomic_set(&ep->base.refcnt, 1);
-	ep->base.dead = false;
+	ep->base.dead = 0;
+	ep->base.malloced = 1;
 
 	/* Create an input queue.  */
 	sctp_inq_init(&ep->base.inqueue);
@@ -144,11 +151,13 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 	ep->rcvbuf_policy = net->sctp.rcvbuf_policy;
 
 	/* Initialize the secret key used with cookie. */
-	get_random_bytes(ep->secret_key, sizeof(ep->secret_key));
+	get_random_bytes(&ep->secret_key[0], SCTP_SECRET_SIZE);
+	ep->last_key = ep->current_key = 0;
+	ep->key_changed_at = jiffies;
 
 	/* SCTP-AUTH extensions*/
 	INIT_LIST_HEAD(&ep->endpoint_shared_keys);
-	null_key = sctp_auth_shkey_create(0, gfp);
+	null_key = sctp_auth_shkey_create(0, GFP_KERNEL);
 	if (!null_key)
 		goto nomem;
 
@@ -186,13 +195,12 @@ struct sctp_endpoint *sctp_endpoint_new(struct sock *sk, gfp_t gfp)
 	struct sctp_endpoint *ep;
 
 	/* Build a local endpoint. */
-	ep = kzalloc(sizeof(*ep), gfp);
+	ep = t_new(struct sctp_endpoint, gfp);
 	if (!ep)
 		goto fail;
-
 	if (!sctp_endpoint_init(ep, sk, gfp))
 		goto fail_init;
-
+	ep->base.malloced = 1;
 	SCTP_DBG_OBJCNT_INC(ep);
 	return ep;
 
@@ -228,7 +236,7 @@ void sctp_endpoint_add_asoc(struct sctp_endpoint *ep,
  */
 void sctp_endpoint_free(struct sctp_endpoint *ep)
 {
-	ep->base.dead = true;
+	ep->base.dead = 1;
 
 	ep->base.sk->sk_state = SCTP_SS_CLOSED;
 
@@ -241,12 +249,12 @@ void sctp_endpoint_free(struct sctp_endpoint *ep)
 /* Final destructor for endpoint.  */
 static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 {
-	struct sock *sk;
+	int i;
 
-	if (unlikely(!ep->base.dead)) {
-		WARN(1, "Attempt to destroy undead endpoint %p!\n", ep);
-		return;
-	}
+	SCTP_ASSERT(ep->base.dead, "Endpoint is not dead", return);
+
+	/* Free up the HMAC transform. */
+	crypto_free_hash(sctp_sk(ep->base.sk)->hmac);
 
 	/* Free the digest buffer */
 	kfree(ep->digest);
@@ -265,20 +273,22 @@ static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 	sctp_inq_free(&ep->base.inqueue);
 	sctp_bind_addr_free(&ep->base.bind_addr);
 
-	memset(ep->secret_key, 0, sizeof(ep->secret_key));
+	for (i = 0; i < SCTP_HOW_MANY_SECRETS; ++i)
+		memset(&ep->secret_key[i], 0, SCTP_SECRET_SIZE);
+
+	/* Remove and free the port */
+	if (sctp_sk(ep->base.sk)->bind_hash)
+		sctp_put_port(ep->base.sk);
 
 	/* Give up our hold on the sock. */
-	sk = ep->base.sk;
-	if (sk != NULL) {
-		/* Remove and free the port */
-		if (sctp_sk(sk)->bind_hash)
-			sctp_put_port(sk);
+	if (ep->base.sk)
+		sock_put(ep->base.sk);
 
-		sock_put(sk);
+	/* Finally, free up our memory. */
+	if (ep->base.malloced) {
+		kfree(ep);
+		SCTP_DBG_OBJCNT_DEC(ep);
 	}
-
-	kfree(ep);
-	SCTP_DBG_OBJCNT_DEC(ep);
 }
 
 /* Hold a reference to an endpoint. */
@@ -327,6 +337,7 @@ static struct sctp_association *__sctp_endpoint_lookup_assoc(
 	struct sctp_transport *t = NULL;
 	struct sctp_hashbucket *head;
 	struct sctp_ep_common *epb;
+	struct hlist_node *node;
 	int hash;
 	int rport;
 
@@ -344,7 +355,7 @@ static struct sctp_association *__sctp_endpoint_lookup_assoc(
 				 rport);
 	head = &sctp_assoc_hashtable[hash];
 	read_lock(&head->lock);
-	sctp_for_each_hentry(epb, &head->chain) {
+	sctp_for_each_hentry(epb, node, &head->chain) {
 		tmp = sctp_assoc(epb);
 		if (tmp->ep != ep || rport != tmp->peer.port)
 			continue;
@@ -369,9 +380,9 @@ struct sctp_association *sctp_endpoint_lookup_assoc(
 {
 	struct sctp_association *asoc;
 
-	local_bh_disable();
+	sctp_local_bh_disable();
 	asoc = __sctp_endpoint_lookup_assoc(ep, paddr, transport);
-	local_bh_enable();
+	sctp_local_bh_enable();
 
 	return asoc;
 }
@@ -481,7 +492,7 @@ normal:
 		}
 
 		if (chunk->transport)
-			chunk->transport->last_time_heard = ktime_get();
+			chunk->transport->last_time_heard = jiffies;
 
 		error = sctp_do_sm(net, SCTP_EVENT_T_CHUNK, subtype, state,
 				   ep, asoc, chunk, GFP_ATOMIC);

@@ -14,7 +14,6 @@
 #include <linux/pagemap.h>
 #include <linux/writeback.h>
 #include <linux/pagevec.h>
-#include <linux/aio.h>
 #include "internal.h"
 
 static int afs_write_back_from_locked_page(struct afs_writeback *wb,
@@ -121,7 +120,7 @@ int afs_write_begin(struct file *file, struct address_space *mapping,
 		    struct page **pagep, void **fsdata)
 {
 	struct afs_writeback *candidate, *wb;
-	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
+	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
 	struct page *page;
 	struct key *key = file->private_data;
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
@@ -246,7 +245,7 @@ int afs_write_end(struct file *file, struct address_space *mapping,
 		  loff_t pos, unsigned len, unsigned copied,
 		  struct page *page, void *fsdata)
 {
-	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
+	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
 	loff_t i_size, maybe_i_size;
 
 	_enter("{%x:%u},{%lx}",
@@ -625,14 +624,16 @@ void afs_pages_written_back(struct afs_vnode *vnode, struct afs_call *call)
 /*
  * write to an AFS file
  */
-ssize_t afs_file_write(struct kiocb *iocb, struct iov_iter *from)
+ssize_t afs_file_write(struct kiocb *iocb, const struct iovec *iov,
+		       unsigned long nr_segs, loff_t pos)
 {
-	struct afs_vnode *vnode = AFS_FS_I(file_inode(iocb->ki_filp));
+	struct dentry *dentry = iocb->ki_filp->f_path.dentry;
+	struct afs_vnode *vnode = AFS_FS_I(dentry->d_inode);
 	ssize_t result;
-	size_t count = iov_iter_count(from);
+	size_t count = iov_length(iov, nr_segs);
 
-	_enter("{%x.%u},{%zu},",
-	       vnode->fid.vid, vnode->fid.vnode, count);
+	_enter("{%x.%u},{%zu},%lu,",
+	       vnode->fid.vid, vnode->fid.vnode, count, nr_segs);
 
 	if (IS_SWAPFILE(&vnode->vfs_inode)) {
 		printk(KERN_INFO
@@ -643,7 +644,7 @@ ssize_t afs_file_write(struct kiocb *iocb, struct iov_iter *from)
 	if (!count)
 		return 0;
 
-	result = generic_file_write_iter(iocb, from);
+	result = generic_file_aio_write(iocb, iov, nr_segs, pos);
 	if (IS_ERR_VALUE(result)) {
 		_leave(" = %zd", result);
 		return result;

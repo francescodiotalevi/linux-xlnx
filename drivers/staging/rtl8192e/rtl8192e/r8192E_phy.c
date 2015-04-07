@@ -567,7 +567,7 @@ static bool rtl8192_BB_Config_ParaFile(struct net_device *dev)
 		rtStatus  = rtl8192_phy_checkBBAndRF(dev,
 					 (enum hw90_block)eCheckItem,
 					 (enum rf90_radio_path)0);
-		if (!rtStatus) {
+		if (rtStatus != true) {
 			RT_TRACE((COMP_ERR | COMP_PHY), "PHY_RF8256_Config():"
 				 "Check PHY%d Fail!!\n", eCheckItem-1);
 			return rtStatus;
@@ -729,6 +729,7 @@ u8 rtl8192_phy_ConfigRFWithHeaderFile(struct net_device *dev,
 {
 
 	int i;
+	u8 ret = 0;
 
 	switch (eRFPath) {
 	case RF90_PATH_A:
@@ -786,7 +787,7 @@ u8 rtl8192_phy_ConfigRFWithHeaderFile(struct net_device *dev,
 		break;
 	}
 
-	return 0;
+	return ret;
 
 }
 static void rtl8192_SetTxPowerLevel(struct net_device *dev, u8 channel)
@@ -1178,7 +1179,7 @@ void rtl8192_SetBWModeWorkItem(struct net_device *dev)
 
 	RT_TRACE(COMP_SWBW, "==>rtl8192_SetBWModeWorkItem()  Switch to %s "
 		 "bandwidth\n", priv->CurrentChannelBW == HT_CHANNEL_WIDTH_20 ?
-		 "20MHz" : "40MHz");
+		 "20MHz" : "40MHz")
 
 
 	if (priv->rf_chip == RF_PSEUDO_11N) {
@@ -1424,7 +1425,7 @@ static bool SetRFPowerState8190(struct net_device *dev,
 	u8	i = 0, QueueID = 0;
 	struct rtl8192_tx_ring  *ring = NULL;
 
-	if (priv->SetRFPowerStateInProgress)
+	if (priv->SetRFPowerStateInProgress == true)
 		return false;
 	RT_TRACE(COMP_PS, "===========> SetRFPowerState8190()!\n");
 	priv->SetRFPowerStateInProgress = true;
@@ -1442,9 +1443,10 @@ static bool SetRFPowerState8190(struct net_device *dev,
 					InitilizeCount--;
 					priv->RegRfOff = false;
 					rtstatus = NicIFEnableNIC(dev);
-				} while (!rtstatus && (InitilizeCount > 0));
+				} while ((rtstatus != true) &&
+					 (InitilizeCount > 0));
 
-				if (!rtstatus) {
+				if (rtstatus != true) {
 					RT_TRACE(COMP_ERR, "%s():Initialize Ada"
 						 "pter fail,return\n",
 						 __func__);
@@ -1554,7 +1556,7 @@ static bool SetRFPowerState8190(struct net_device *dev,
 
 		default:
 			bResult = false;
-			RT_TRACE(COMP_ERR, "SetRFPowerState8190(): unknown state"
+			RT_TRACE(COMP_ERR, "SetRFPowerState8190(): unknow state"
 				 " to set: 0x%X!!!\n", eRFPowerState);
 			break;
 		}

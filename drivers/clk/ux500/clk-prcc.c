@@ -13,6 +13,7 @@
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/types.h>
+#include <mach/hardware.h>
 
 #include "clk.h"
 

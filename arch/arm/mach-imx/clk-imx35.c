@@ -45,8 +45,6 @@ static struct arm_ahb_div clk_consumer[] = {
 static char hsp_div_532[] = { 4, 8, 3, 0 };
 static char hsp_div_400[] = { 3, 6, 3, 0 };
 
-static struct clk_onecell_data clk_data;
-
 static const char *std_sel[] = {"ppll", "arm"};
 static const char *ipg_per_sel[] = {"ahb_per_div", "arm_per_div"};
 
@@ -69,12 +67,13 @@ enum mx35_clks {
 
 static struct clk *clk[clk_max];
 
-int __init mx35_clocks_init(void)
+int __init mx35_clocks_init()
 {
 	void __iomem *base = MX35_IO_ADDRESS(MX35_CCM_BASE_ADDR);
 	u32 pdr0, consumer_sel, hsp_sel;
 	struct arm_ahb_div *aad;
 	unsigned char *hsp_div;
+	int i;
 
 	pdr0 = __raw_readl(base + MXC_CCM_PDR0);
 	consumer_sel = (pdr0 >> 16) & 0xf;
@@ -199,7 +198,10 @@ int __init mx35_clocks_init(void)
 	clk[iim_gate] = imx_clk_gate2("iim_gate", "ipg", base + MX35_CCM_CGR3,  2);
 	clk[gpu2d_gate] = imx_clk_gate2("gpu2d_gate", "ahb", base + MX35_CCM_CGR3,  4);
 
-	imx_check_clocks(clk, ARRAY_SIZE(clk));
+	for (i = 0; i < ARRAY_SIZE(clk); i++)
+		if (IS_ERR(clk[i]))
+			pr_err("i.MX35 clk %d: register failed with %ld\n",
+				i, PTR_ERR(clk[i]));
 
 	clk_register_clkdev(clk[pata_gate], NULL, "pata_imx");
 	clk_register_clkdev(clk[can1_gate], NULL, "flexcan.0");
@@ -255,7 +257,6 @@ int __init mx35_clocks_init(void)
 	clk_register_clkdev(clk[wdog_gate], NULL, "imx2-wdt.0");
 	clk_register_clkdev(clk[nfc_div], NULL, "imx25-nand.0");
 	clk_register_clkdev(clk[csi_gate], NULL, "mx3-camera.0");
-	clk_register_clkdev(clk[admux_gate], "audmux", NULL);
 
 	clk_prepare_enable(clk[spba_gate]);
 	clk_prepare_enable(clk[gpio1_gate]);
@@ -263,8 +264,6 @@ int __init mx35_clocks_init(void)
 	clk_prepare_enable(clk[gpio3_gate]);
 	clk_prepare_enable(clk[iim_gate]);
 	clk_prepare_enable(clk[emi_gate]);
-	clk_prepare_enable(clk[max_gate]);
-	clk_prepare_enable(clk[iomuxc_gate]);
 
 	/*
 	 * SCC is needed to boot via mmc after a watchdog reset. The clock code
@@ -277,20 +276,12 @@ int __init mx35_clocks_init(void)
 	imx_print_silicon_rev("i.MX35", mx35_revision());
 
 #ifdef CONFIG_MXC_USE_EPIT
-	epit_timer_init(MX35_IO_ADDRESS(MX35_EPIT1_BASE_ADDR), MX35_INT_EPIT1);
+	epit_timer_init(MX35_IO_ADDRESS(MX35_EPIT1_BASE_ADDR), 
+			MX35_EPIT1_BASE_ADDR, MX35_INT_EPIT1);
 #else
-	mxc_timer_init(MX35_IO_ADDRESS(MX35_GPT1_BASE_ADDR), MX35_INT_GPT);
+	mxc_timer_init(MX35_IO_ADDRESS(MX35_GPT1_BASE_ADDR), 
+		       MX35_GPT1_BASE_ADDR, MX35_INT_GPT);
 #endif
 
 	return 0;
 }
-
-static void __init mx35_clocks_init_dt(struct device_node *ccm_node)
-{
-	clk_data.clks = clk;
-	clk_data.clk_num = ARRAY_SIZE(clk);
-	of_clk_add_provider(ccm_node, of_clk_src_onecell_get, &clk_data);
-
-	mx35_clocks_init();
-}
-CLK_OF_DECLARE(imx35, "fsl,imx35-ccm", mx35_clocks_init_dt);

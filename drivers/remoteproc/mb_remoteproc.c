@@ -1,8 +1,7 @@
 /*
  * Microblaze Remote Processor driver
  *
- * Copyright (C) 2012 - 2013 Michal Simek <monstr@monstr.eu>
- * Copyright (C) 2013 Xilinx, Inc.
+ * Copyright (C) 2012 Michal Simek <monstr@monstr.eu>
  * Copyright (C) 2012 PetaLogix
  *
  * Based on origin OMAP Remote Processor driver
@@ -22,97 +21,55 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/moduleloader.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/remoteproc.h>
 #include <linux/interrupt.h>
 #include <linux/of_irq.h>
-#include <linux/of_gpio.h>
-#include <linux/of_platform.h>
 #include <linux/smp.h>
-#include <linux/irqchip/arm-gic.h>
+#include <asm/hardware/gic.h>
 #include <asm/outercache.h>
 #include <asm/cacheflush.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
-#include <linux/gpio.h>
-#include <linux/io.h>
-#include <linux/delay.h>
 
 #include "remoteproc_internal.h"
+
+extern int __cpuinit zynq_cpun_start(u32 address, int cpu);
 
 /* Module parameter */
 static char *firmware;
 
+/* Structure for storing IRQs */
+struct irq_list {
+	int irq;
+	struct list_head list;
+};
+
 /* Private data */
 struct mb_rproc_pdata {
+	struct irq_list mylist;
 	struct rproc *rproc;
 	u32 mem_start;
 	u32 mem_end;
-	int reset_gpio;
-	int mb_debug_gpio;
-	int ipi;
-	int vring0;
-	int vring1;
-	void __iomem *vbase;
-	const unsigned char *bootloader;
+	u32 *gpio_reset_addr;
+	u32 reset_gpio_pin;
 };
-
-/* Store rproc for IPI handler */
-static struct platform_device *remoteprocdev;
-static struct work_struct workqueue;
-
-static void handle_event(struct work_struct *work)
-{
-	struct mb_rproc_pdata *local = platform_get_drvdata(remoteprocdev);
-
-	flush_cache_all();
-	outer_flush_range(local->mem_start, local->mem_end);
-
-	if (rproc_vq_interrupt(local->rproc, 0) == IRQ_NONE)
-		dev_info(&remoteprocdev->dev, "no message found in vqid 0\n");
-}
-
-static irqreturn_t ipi_kick(int irq, void *dev_id)
-{
-	dev_dbg(&remoteprocdev->dev, "KICK Linux because of pending message\n");
-	schedule_work(&workqueue);
-	dev_dbg(&remoteprocdev->dev, "KICK Linux handled\n");
-
-	return IRQ_HANDLED;
-}
 
 static int mb_rproc_start(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct mb_rproc_pdata *local = platform_get_drvdata(pdev);
-	const struct firmware *fw;
-	int ret;
 
 	dev_info(dev, "%s\n", __func__);
-	INIT_WORK(&workqueue, handle_event);
 
 	flush_cache_all();
 	outer_flush_range(local->mem_start, local->mem_end);
 
-	remoteprocdev = pdev;
-
-	ret = request_firmware(&fw, local->bootloader, &pdev->dev);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "request_firmware failed\n");
-		return ret;
-	}
-	/* Copy bootloader to memory */
-	memcpy(local->vbase, fw->data, fw->size);
-	release_firmware(fw);
-
-	/* Just for sure synchronize memories */
-	dsb();
-
-	/* Release Microblaze from reset */
-	gpio_set_value(local->reset_gpio, 0);
+	*local->gpio_reset_addr &= ~(1 << local->reset_gpio_pin);
 
 	return 0;
 }
@@ -121,28 +78,9 @@ static int mb_rproc_start(struct rproc *rproc)
 static void mb_rproc_kick(struct rproc *rproc, int vqid)
 {
 	struct device *dev = rproc->dev.parent;
-	struct platform_device *pdev = to_platform_device(dev);
-	struct mb_rproc_pdata *local = platform_get_drvdata(pdev);
 
-	dev_dbg(dev, "KICK Firmware to start send messages vqid %d\n", vqid);
-
-	flush_cache_all();
-	outer_flush_all();
-
-	/* Send swirq to firmware */
-	gpio_set_value(local->vring0, 0);
-	gpio_set_value(local->vring1, 0);
-	dsb();
-
-	if (!vqid) {
-		udelay(500);
-		gpio_set_value(local->vring0, 1);
-		dsb();
-	} else {
-		udelay(100);
-		gpio_set_value(local->vring1, 1);
-		dsb();
-	}
+	dev_info(dev, "KICK Firmware to start send messages vqid %d\n",
+									vqid);
 }
 
 /* power off the remote processor */
@@ -152,21 +90,10 @@ static int mb_rproc_stop(struct rproc *rproc)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct mb_rproc_pdata *local = platform_get_drvdata(pdev);
 
-	/* Setup MB to the state where all memory transactions are done */
-	gpio_set_value(local->mb_debug_gpio, 1);
-	dsb(); /* Be sure that this write has been done */
-	/*
-	 * This should be enough to ensure one CLK as
-	 * it is written in MB ref guide
-	 */
-	gpio_set_value(local->mb_debug_gpio, 0);
+	dev_info(dev, "%s\n", __func__);
 
-	udelay(1000); /* Wait some time to finish all mem transactions */
+	*local->gpio_reset_addr |= 1 << local->reset_gpio_pin;
 
-	/* Add Microblaze to reset state */
-	gpio_set_value(local->reset_gpio, 1);
-
-	/* No reason to wait that operations where done */
 	return 0;
 }
 
@@ -186,19 +113,37 @@ static irqreturn_t mb_remoteproc_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void clear_irq(struct platform_device *pdev)
+{
+	struct list_head *pos, *q;
+	struct irq_list *tmp;
+	struct mb_rproc_pdata *local = platform_get_drvdata(pdev);
+
+	dev_info(&pdev->dev, "Deleting the irq_list\n");
+	list_for_each_safe(pos, q, &local->mylist.list) {
+		tmp = list_entry(pos, struct irq_list, list);
+		free_irq(tmp->irq, &pdev->dev);
+		list_del(pos);
+		kfree(tmp);
+	}
+}
+
 static int mb_remoteproc_probe(struct platform_device *pdev)
 {
 	const unsigned char *prop;
-	struct platform_device *bram_pdev;
-	struct device_node *bram_dev;
+	const void *of_prop;
 	struct resource *res; /* IO mem resources */
 	int ret = 0;
-	int count = 0;
+	struct irq_list *tmp;
+	int count;
 	struct mb_rproc_pdata *local;
 
-	local = devm_kzalloc(&pdev->dev, sizeof(*local), GFP_KERNEL);
-	if (!local)
+
+	local = kzalloc(sizeof(struct mb_rproc_pdata), GFP_KERNEL);
+	if (!local) {
+		dev_err(&pdev->dev, "Unable to alloc private data\n");
 		return -ENOMEM;
+	}
 
 	platform_set_drvdata(pdev, local);
 
@@ -218,140 +163,67 @@ static int mb_remoteproc_probe(struct platform_device *pdev)
 		DMA_MEMORY_IO);
 	if (!ret) {
 		dev_err(&pdev->dev, "dma_declare_coherent_memory failed\n");
-		return -ENOMEM;
+		return ret;
 	}
 
 	ret = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret) {
 		dev_err(&pdev->dev, "dma_set_coherent_mask: %d\n", ret);
-		goto dma_mask_fault;
+		return ret;
 	}
 
+	/* Init list for IRQs - it can be long list */
+	INIT_LIST_HEAD(&local->mylist.list);
+
+	count = of_irq_count(pdev->dev.of_node);
 	/* Alloc IRQ based on DTS to be sure that no other driver will use it */
-	while (1) {
-		int irq;
-		/* Allocating shared IRQs will ensure that any module will
-		 * use these IRQs */
-		irq = platform_get_irq(pdev, count++);
-		if (irq == -ENXIO || irq == -EINVAL)
-			break;
-		ret = devm_request_irq(&pdev->dev, irq, mb_remoteproc_interrupt,
-				       0, dev_name(&pdev->dev), &pdev->dev);
-		if (ret) {
-			dev_err(&pdev->dev, "IRQ %d already allocated\n", irq);
-			goto dma_mask_fault;
+	while (count--) {
+		tmp = kzalloc(sizeof(struct irq_list), GFP_KERNEL);
+		if (!tmp) {
+			dev_err(&pdev->dev, "Unable to alloc irq list\n");
+			ret = -ENOMEM;
+			goto irq_fault;
 		}
 
-		dev_info(&pdev->dev, "%d: Alloc irq: %d\n", count, irq);
+		tmp->irq = irq_of_parse_and_map(pdev->dev.of_node, count);
+
+		dev_info(&pdev->dev, "%d: Alloc irq: %d\n", count, tmp->irq);
+
+		/* Allocating shared IRQs will ensure that any module will
+		 * use these IRQs */
+		ret = request_irq(tmp->irq, mb_remoteproc_interrupt, 0,
+					dev_name(&pdev->dev), &pdev->dev);
+		if (ret) {
+			dev_err(&pdev->dev, "IRQ %d already allocated\n",
+								tmp->irq);
+			goto irq_fault;
+		}
+
+		list_add(&(tmp->list), &(local->mylist.list));
 	}
 
-	/* Find out reset gpio and keep microblaze in reset */
-	local->reset_gpio = of_get_named_gpio(pdev->dev.of_node, "reset", 0);
-	if (local->reset_gpio < 0) {
-		dev_err(&pdev->dev, "reset-gpio property not found\n");
-		ret = local->reset_gpio;
-		goto dma_mask_fault;
-	}
-	ret = devm_gpio_request_one(&pdev->dev, local->reset_gpio,
-				    GPIOF_OUT_INIT_HIGH, "mb_reset");
-	if (ret) {
+
+	of_prop = of_get_property(pdev->dev.of_node, "reset-gpio", NULL);
+	if (!of_prop) {
 		dev_err(&pdev->dev, "Please specify gpio reset addr\n");
-		goto dma_mask_fault;
+		goto irq_fault;
 	}
 
-	/* Find out reset gpio and keep microblaze in reset */
-	local->mb_debug_gpio = of_get_named_gpio(pdev->dev.of_node, "debug", 0);
-	if (local->mb_debug_gpio < 0) {
-		dev_err(&pdev->dev, "mb-debug-gpio property not found\n");
-		ret = local->mb_debug_gpio;
-		goto dma_mask_fault;
-	}
-	ret = devm_gpio_request_one(&pdev->dev, local->mb_debug_gpio,
-				    GPIOF_OUT_INIT_LOW, "mb_debug");
-	if (ret) {
-		dev_err(&pdev->dev, "Please specify gpio debug pin\n");
-		goto dma_mask_fault;
+	local->gpio_reset_addr = ioremap(be32_to_cpup(of_prop), 0x1000);
+	if (!local->gpio_reset_addr) {
+		dev_err(&pdev->dev, "Reset GPIO ioremap failed\n");
+		goto irq_fault;
 	}
 
-	/* IPI number for getting irq from firmware */
-	local->ipi = of_get_named_gpio(pdev->dev.of_node, "ipino", 0);
-	if (local->ipi < 0) {
-		dev_err(&pdev->dev, "ipi-gpio property not found\n");
-		ret = local->ipi;
-		goto dma_mask_fault;
+	of_prop = of_get_property(pdev->dev.of_node, "reset-gpio-pin", NULL);
+	if (!of_prop) {
+		dev_err(&pdev->dev, "Please specify cpu number\n");
+		goto irq_fault;
 	}
-	ret = devm_gpio_request_one(&pdev->dev, local->ipi, GPIOF_IN, "mb_ipi");
-	if (ret) {
-		dev_err(&pdev->dev, "Please specify gpio reset addr\n");
-		goto dma_mask_fault;
-	}
-	ret = devm_request_irq(&pdev->dev, gpio_to_irq(local->ipi),
-			       ipi_kick, IRQF_SHARED|IRQF_TRIGGER_RISING,
-			       dev_name(&pdev->dev), local);
-	if (ret) {
-		dev_err(&pdev->dev, "IRQ %d already allocated\n", local->ipi);
-		goto dma_mask_fault;
-	}
+	local->reset_gpio_pin = be32_to_cpup(of_prop);
 
-	/* Find out vring0 pin */
-	local->vring0 = of_get_named_gpio(pdev->dev.of_node, "vring0", 0);
-	if (local->vring0 < 0) {
-		dev_err(&pdev->dev, "reset-gpio property not found\n");
-		ret = local->vring0;
-		goto dma_mask_fault;
-	}
-	ret = devm_gpio_request_one(&pdev->dev, local->vring0,
-				    GPIOF_DIR_OUT, "mb_vring0");
-	if (ret) {
-		dev_err(&pdev->dev, "Please specify gpio reset addr\n");
-		goto dma_mask_fault;
-	}
-
-	/* Find out vring1 pin */
-	local->vring1 = of_get_named_gpio(pdev->dev.of_node, "vring1", 0);
-	if (local->vring1 < 0) {
-		dev_err(&pdev->dev, "reset-gpio property not found\n");
-		ret = local->vring1;
-		goto dma_mask_fault;
-	}
-	ret = devm_gpio_request_one(&pdev->dev, local->vring1,
-				    GPIOF_DIR_OUT, "mb_vring1");
-	if (ret) {
-		dev_err(&pdev->dev, "Please specify gpio reset addr\n");
-		goto dma_mask_fault;
-	}
-
-	/* Allocate bram device */
-	bram_dev = of_parse_phandle(pdev->dev.of_node, "bram", 0);
-	if (!bram_dev) {
-		dev_err(&pdev->dev, "Please specify bram connection\n");
-		ret = -ENODEV;
-		goto dma_mask_fault;
-	}
-	bram_pdev = of_find_device_by_node(bram_dev);
-	if (!bram_pdev) {
-		dev_err(&pdev->dev, "BRAM device hasn't found\n");
-		ret = -ENODEV;
-		goto dma_mask_fault;
-	}
-	res = platform_get_resource(bram_pdev, IORESOURCE_MEM, 0);
-	local->vbase = devm_ioremap_resource(&pdev->dev, res);
-	if (!local->vbase) {
-		ret = -ENODEV;
-		goto dma_mask_fault;
-	}
-
-	/* Load simple bootloader to bram */
-	local->bootloader = of_get_property(pdev->dev.of_node,
-					    "bram-firmware", NULL);
-	if (!local->bootloader) {
-		dev_err(&pdev->dev, "Please specify BRAM firmware\n");
-		ret = -ENODEV;
-		goto dma_mask_fault;
-	}
-
-	dev_info(&pdev->dev, "Using microblaze BRAM bootloader: %s\n",
-		 local->bootloader);
+	/* Keep mb in reset */
+	*local->gpio_reset_addr |= 1 << local->reset_gpio_pin;
 
 	/* Module param firmware first */
 	if (firmware)
@@ -365,23 +237,24 @@ static int mb_remoteproc_probe(struct platform_device *pdev)
 				&mb_rproc_ops, prop, sizeof(struct rproc));
 		if (!local->rproc) {
 			dev_err(&pdev->dev, "rproc allocation failed\n");
-			ret = -ENODEV;
-			goto dma_mask_fault;
+			goto rproc_fault;
 		}
 
 		ret = rproc_add(local->rproc);
 		if (ret) {
 			dev_err(&pdev->dev, "rproc registration failed\n");
-			rproc_put(local->rproc);
-			goto dma_mask_fault;
+			goto rproc_fault;
 		}
-		return 0;
-	} else {
-		ret = -ENODEV;
-	}
 
-dma_mask_fault:
-	dma_release_declared_memory(&pdev->dev);
+		return ret;
+	} else
+		ret = -ENODEV;
+
+rproc_fault:
+	rproc_put(local->rproc);
+
+irq_fault:
+	clear_irq(pdev);
 
 	return ret;
 }
@@ -393,6 +266,8 @@ static int mb_remoteproc_remove(struct platform_device *pdev)
 	dev_info(&pdev->dev, "%s\n", __func__);
 
 	dma_release_declared_memory(&pdev->dev);
+
+	clear_irq(pdev);
 
 	rproc_del(local->rproc);
 	rproc_put(local->rproc);

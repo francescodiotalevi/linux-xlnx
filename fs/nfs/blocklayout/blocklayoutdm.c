@@ -55,8 +55,7 @@ static void dev_remove(struct net *net, dev_t dev)
 
 	bl_pipe_msg.bl_wq = &nn->bl_wq;
 	memset(msg, 0, sizeof(*msg));
-	msg->len = sizeof(bl_msg) + bl_msg.totallen;
-	msg->data = kzalloc(msg->len, GFP_NOFS);
+	msg->data = kzalloc(1 + sizeof(bl_umount_request), GFP_NOFS);
 	if (!msg->data)
 		goto out;
 
@@ -67,6 +66,7 @@ static void dev_remove(struct net *net, dev_t dev)
 	memcpy(msg->data, &bl_msg, sizeof(bl_msg));
 	dataptr = (uint8_t *) msg->data;
 	memcpy(&dataptr[sizeof(bl_msg)], &bl_umount_request, sizeof(bl_umount_request));
+	msg->len = sizeof(bl_msg) + bl_msg.totallen;
 
 	add_wait_queue(&nn->bl_wq, &wq);
 	if (rpc_queue_upcall(nn->bl_device_pipe, msg) < 0) {
@@ -88,8 +88,14 @@ out:
  */
 static void nfs4_blk_metadev_release(struct pnfs_block_dev *bdev)
 {
+	int rv;
+
 	dprintk("%s Releasing\n", __func__);
-	nfs4_blkdev_put(bdev->bm_mdev);
+	rv = nfs4_blkdev_put(bdev->bm_mdev);
+	if (rv)
+		printk(KERN_ERR "NFS: %s nfs4_blkdev_put returns %d\n",
+				__func__, rv);
+
 	dev_remove(bdev->net, bdev->bm_mdev->bd_dev);
 }
 

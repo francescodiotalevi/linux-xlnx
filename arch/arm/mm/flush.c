@@ -17,7 +17,6 @@
 #include <asm/highmem.h>
 #include <asm/smp_plat.h>
 #include <asm/tlbflush.h>
-#include <linux/hugetlb.h>
 
 #include "mm.h"
 
@@ -104,20 +103,17 @@ void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsig
 #define flush_icache_alias(pfn,vaddr,len)	do { } while (0)
 #endif
 
-#define FLAG_PA_IS_EXEC 1
-#define FLAG_PA_CORE_IN_MM 2
-
 static void flush_ptrace_access_other(void *args)
 {
 	__flush_icache_all();
 }
 
-static inline
-void __flush_ptrace_access(struct page *page, unsigned long uaddr, void *kaddr,
-			   unsigned long len, unsigned int flags)
+static
+void flush_ptrace_access(struct vm_area_struct *vma, struct page *page,
+			 unsigned long uaddr, void *kaddr, unsigned long len)
 {
 	if (cache_is_vivt()) {
-		if (flags & FLAG_PA_CORE_IN_MM) {
+		if (fcse_mm_in_cache(vma->vm_mm)) {
 			unsigned long addr = (unsigned long)kaddr;
 			__cpuc_coherent_kern_range(addr, addr + len);
 		}
@@ -131,7 +127,7 @@ void __flush_ptrace_access(struct page *page, unsigned long uaddr, void *kaddr,
 	}
 
 	/* VIPT non-aliasing D-cache */
-	if (flags & FLAG_PA_IS_EXEC) {
+	if (vma->vm_flags & VM_EXEC) {
 		unsigned long addr = (unsigned long)kaddr;
 		if (icache_is_vipt_aliasing())
 			flush_icache_alias(page_to_pfn(page), uaddr, len);
@@ -141,26 +137,6 @@ void __flush_ptrace_access(struct page *page, unsigned long uaddr, void *kaddr,
 			smp_call_function(flush_ptrace_access_other,
 					  NULL, 1);
 	}
-}
-
-static
-void flush_ptrace_access(struct vm_area_struct *vma, struct page *page,
-			 unsigned long uaddr, void *kaddr, unsigned long len)
-{
-	unsigned int flags = 0;
-	if (cpumask_test_cpu(smp_processor_id(), mm_cpumask(vma->vm_mm)))
-		flags |= FLAG_PA_CORE_IN_MM;
-	if (vma->vm_flags & VM_EXEC)
-		flags |= FLAG_PA_IS_EXEC;
-	__flush_ptrace_access(page, uaddr, kaddr, len, flags);
-}
-
-void flush_uprobe_xol_access(struct page *page, unsigned long uaddr,
-			     void *kaddr, unsigned long len)
-{
-	unsigned int flags = FLAG_PA_CORE_IN_MM|FLAG_PA_IS_EXEC;
-
-	__flush_ptrace_access(page, uaddr, kaddr, len, flags);
 }
 
 /*
@@ -177,6 +153,7 @@ void copy_to_user_page(struct vm_area_struct *vma, struct page *page,
 #ifdef CONFIG_SMP
 	preempt_disable();
 #endif
+	fcse_flush_cache_user_range(vma, uaddr, uaddr + len);
 	memcpy(dst, src, len);
 	flush_ptrace_access(vma, page, uaddr, dst, len);
 #ifdef CONFIG_SMP
@@ -192,24 +169,17 @@ void __flush_dcache_page(struct address_space *mapping, struct page *page)
 	 * coherent with the kernels mapping.
 	 */
 	if (!PageHighMem(page)) {
-		size_t page_size = PAGE_SIZE << compound_order(page);
-		__cpuc_flush_dcache_area(page_address(page), page_size);
+		__cpuc_flush_dcache_area(page_address(page), PAGE_SIZE);
 	} else {
-		unsigned long i;
-		if (cache_is_vipt_nonaliasing()) {
-			for (i = 0; i < (1 << compound_order(page)); i++) {
-				void *addr = kmap_atomic(page + i);
-				__cpuc_flush_dcache_area(addr, PAGE_SIZE);
-				kunmap_atomic(addr);
-			}
-		} else {
-			for (i = 0; i < (1 << compound_order(page)); i++) {
-				void *addr = kmap_high_get(page + i);
-				if (addr) {
-					__cpuc_flush_dcache_area(addr, PAGE_SIZE);
-					kunmap_high(page + i);
-				}
-			}
+		void *addr = kmap_high_get(page);
+		if (addr) {
+			__cpuc_flush_dcache_area(addr, PAGE_SIZE);
+			kunmap_high(page);
+		} else if (cache_is_vipt()) {
+			/* unmapped pages might still be cached */
+			addr = kmap_atomic(page);
+			__cpuc_flush_dcache_area(addr, PAGE_SIZE);
+			kunmap_atomic(addr);
 		}
 	}
 
@@ -315,7 +285,7 @@ void flush_dcache_page(struct page *page)
 	mapping = page_mapping(page);
 
 	if (!cache_ops_need_broadcast() &&
-	    mapping && !page_mapped(page))
+	    mapping && !mapping_mapped(mapping))
 		clear_bit(PG_dcache_clean, &page->flags);
 	else {
 		__flush_dcache_page(mapping, page);
@@ -327,39 +297,6 @@ void flush_dcache_page(struct page *page)
 	}
 }
 EXPORT_SYMBOL(flush_dcache_page);
-
-/*
- * Ensure cache coherency for the kernel mapping of this page. We can
- * assume that the page is pinned via kmap.
- *
- * If the page only exists in the page cache and there are no user
- * space mappings, this is a no-op since the page was already marked
- * dirty at creation.  Otherwise, we need to flush the dirty kernel
- * cache lines directly.
- */
-void flush_kernel_dcache_page(struct page *page)
-{
-	if (cache_is_vivt() || cache_is_vipt_aliasing()) {
-		struct address_space *mapping;
-
-		mapping = page_mapping(page);
-
-		if (!mapping || mapping_mapped(mapping)) {
-			void *addr;
-
-			addr = page_address(page);
-			/*
-			 * kmap_atomic() doesn't set the page virtual
-			 * address for highmem pages, and
-			 * kunmap_atomic() takes care of cache
-			 * flushing already.
-			 */
-			if (!IS_ENABLED(CONFIG_HIGHMEM) || addr)
-				__cpuc_flush_dcache_area(addr, PAGE_SIZE);
-		}
-	}
-}
-EXPORT_SYMBOL(flush_kernel_dcache_page);
 
 /*
  * Flush an anonymous page so that users of get_user_pages()

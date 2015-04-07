@@ -35,7 +35,6 @@
 #include <linux/poll.h>
 #include <linux/mutex.h>
 #include <linux/of_device.h>
-#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/slab.h>
 
@@ -121,7 +120,11 @@ static void smu_start_cmd(void)
 
 	DPRINTK("SMU: starting cmd %x, %d bytes data\n", cmd->cmd,
 		cmd->data_len);
-	DPRINTK("SMU: data buffer: %8ph\n", cmd->data_buf);
+	DPRINTK("SMU: data buffer: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		((u8 *)cmd->data_buf)[0], ((u8 *)cmd->data_buf)[1],
+		((u8 *)cmd->data_buf)[2], ((u8 *)cmd->data_buf)[3],
+		((u8 *)cmd->data_buf)[4], ((u8 *)cmd->data_buf)[5],
+		((u8 *)cmd->data_buf)[6], ((u8 *)cmd->data_buf)[7]);
 
 	/* Fill the SMU command buffer */
 	smu->cmd_buf->cmd = cmd->cmd;
@@ -1257,8 +1260,7 @@ static unsigned int smu_fpoll(struct file *file, poll_table *wait)
 		if (pp->busy && pp->cmd.status != 1)
 			mask |= POLLIN;
 		spin_unlock_irqrestore(&pp->lock, flags);
-	}
-	if (pp->mode == smu_file_events) {
+	} if (pp->mode == smu_file_events) {
 		/* Not yet implemented */
 	}
 	return mask;

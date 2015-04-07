@@ -45,7 +45,6 @@
 #include "si21xx.h"
 #include "cx24116.h"
 #include "z0194a.h"
-#include "ts2020.h"
 #include "ds3000.h"
 
 #define MODULE_NAME "dm1105"
@@ -678,8 +677,7 @@ static void dm1105_emit_key(struct work_struct *work)
 
 	data = (ircom >> 8) & 0x7f;
 
-	/* FIXME: UNKNOWN because we don't generate a full NEC scancode (yet?) */
-	rc_keydown(ir->dev, RC_TYPE_UNKNOWN, data, 0);
+	rc_keydown(ir->dev, data, 0);
 }
 
 /* work handler */
@@ -851,11 +849,6 @@ static struct ds3000_config dvbworld_ds3000_config = {
 	.demod_address = 0x68,
 };
 
-static struct ts2020_config dvbworld_ts2020_config  = {
-	.tuner_address = 0x60,
-	.clk_out_div = 1,
-};
-
 static int frontend_init(struct dm1105_dev *dev)
 {
 	int ret;
@@ -905,11 +898,8 @@ static int frontend_init(struct dm1105_dev *dev)
 		dev->fe = dvb_attach(
 			ds3000_attach, &dvbworld_ds3000_config,
 			&dev->i2c_adap);
-		if (dev->fe) {
-			dvb_attach(ts2020_attach, dev->fe,
-				&dvbworld_ts2020_config, &dev->i2c_adap);
+		if (dev->fe)
 			dev->fe->ops.set_voltage = dm1105_set_voltage;
-		}
 
 		break;
 	case DM1105_BOARD_DVBWORLD_2002:
@@ -1179,6 +1169,7 @@ err_pci_release_regions:
 err_pci_disable_device:
 	pci_disable_device(pdev);
 err_kfree:
+	pci_set_drvdata(pdev, NULL);
 	kfree(dev);
 	return ret;
 }
@@ -1202,7 +1193,8 @@ static void dm1105_remove(struct pci_dev *pdev)
 	dvb_dmxdev_release(&dev->dmxdev);
 	dvb_dmx_release(dvbdemux);
 	dvb_unregister_adapter(dvb_adapter);
-	i2c_del_adapter(&dev->i2c_adap);
+	if (&dev->i2c_adap)
+		i2c_del_adapter(&dev->i2c_adap);
 
 	dm1105_hw_exit(dev);
 	synchronize_irq(pdev->irq);
@@ -1210,6 +1202,7 @@ static void dm1105_remove(struct pci_dev *pdev)
 	pci_iounmap(pdev, dev->io_mem);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
+	pci_set_drvdata(pdev, NULL);
 	dm1105_devcount--;
 	kfree(dev);
 }
@@ -1239,7 +1232,18 @@ static struct pci_driver dm1105_driver = {
 	.remove = dm1105_remove,
 };
 
-module_pci_driver(dm1105_driver);
+static int __init dm1105_init(void)
+{
+	return pci_register_driver(&dm1105_driver);
+}
+
+static void __exit dm1105_exit(void)
+{
+	pci_unregister_driver(&dm1105_driver);
+}
+
+module_init(dm1105_init);
+module_exit(dm1105_exit);
 
 MODULE_AUTHOR("Igor M. Liplianin <liplianin@me.by>");
 MODULE_DESCRIPTION("SDMC DM1105 DVB driver");

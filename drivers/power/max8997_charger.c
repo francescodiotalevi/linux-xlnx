@@ -138,8 +138,7 @@ static int max8997_battery_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	charger = devm_kzalloc(&pdev->dev, sizeof(struct charger_data),
-				GFP_KERNEL);
+	charger = kzalloc(sizeof(struct charger_data), GFP_KERNEL);
 	if (charger == NULL) {
 		dev_err(&pdev->dev, "Cannot allocate memory.\n");
 		return -ENOMEM;
@@ -159,10 +158,13 @@ static int max8997_battery_probe(struct platform_device *pdev)
 	ret = power_supply_register(&pdev->dev, &charger->battery);
 	if (ret) {
 		dev_err(&pdev->dev, "failed: power supply register\n");
-		return ret;
+		goto err;
 	}
 
 	return 0;
+err:
+	kfree(charger);
+	return ret;
 }
 
 static int max8997_battery_remove(struct platform_device *pdev)
@@ -170,6 +172,7 @@ static int max8997_battery_remove(struct platform_device *pdev)
 	struct charger_data *charger = platform_get_drvdata(pdev);
 
 	power_supply_unregister(&charger->battery);
+	kfree(charger);
 	return 0;
 }
 

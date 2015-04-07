@@ -54,7 +54,7 @@ static ssize_t dbfs_read(struct file *file, char __user *buf,
 	if (*ppos != 0)
 		return 0;
 
-	df = file_inode(file)->i_private;
+	df = file->f_path.dentry->d_inode->i_private;
 	mutex_lock(&df->lock);
 	if (!df->data) {
 		data = hypfs_dbfs_data_alloc(df);
@@ -81,25 +81,9 @@ static ssize_t dbfs_read(struct file *file, char __user *buf,
 	return rc;
 }
 
-static long dbfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	struct hypfs_dbfs_file *df;
-	long rc;
-
-	df = file->f_path.dentry->d_inode->i_private;
-	mutex_lock(&df->lock);
-	if (df->unlocked_ioctl)
-		rc = df->unlocked_ioctl(file, cmd, arg);
-	else
-		rc = -ENOTTY;
-	mutex_unlock(&df->lock);
-	return rc;
-}
-
 static const struct file_operations dbfs_ops = {
 	.read		= dbfs_read,
 	.llseek		= no_llseek,
-	.unlocked_ioctl = dbfs_ioctl,
 };
 
 int hypfs_dbfs_create_file(struct hypfs_dbfs_file *df)
@@ -121,7 +105,9 @@ void hypfs_dbfs_remove_file(struct hypfs_dbfs_file *df)
 int hypfs_dbfs_init(void)
 {
 	dbfs_dir = debugfs_create_dir("s390_hypfs", NULL);
-	return PTR_ERR_OR_ZERO(dbfs_dir);
+	if (IS_ERR(dbfs_dir))
+		return PTR_ERR(dbfs_dir);
+	return 0;
 }
 
 void hypfs_dbfs_exit(void)

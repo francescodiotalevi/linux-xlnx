@@ -206,4 +206,16 @@ static struct pcmcia_driver sedlbauer_driver = {
 	.suspend	= sedlbauer_suspend,
 	.resume		= sedlbauer_resume,
 };
-module_pcmcia_driver(sedlbauer_driver);
+
+static int __init init_sedlbauer_cs(void)
+{
+	return pcmcia_register_driver(&sedlbauer_driver);
+}
+
+static void __exit exit_sedlbauer_cs(void)
+{
+	pcmcia_unregister_driver(&sedlbauer_driver);
+}
+
+module_init(init_sedlbauer_cs);
+module_exit(exit_sedlbauer_cs);

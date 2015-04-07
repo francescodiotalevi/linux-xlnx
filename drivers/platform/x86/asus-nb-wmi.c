@@ -59,23 +59,8 @@ static struct quirk_entry quirk_asus_unknown = {
 	.wapf = 0,
 };
 
-/*
- * For those machines that need software to control bt/wifi status
- * and can't adjust brightness through ACPI interface
- * and have duplicate events(ACPI and WMI) for display toggle
- */
-static struct quirk_entry quirk_asus_x55u = {
+static struct quirk_entry quirk_asus_x401u = {
 	.wapf = 4,
-	.wmi_backlight_power = true,
-	.no_display_toggle = true,
-};
-
-static struct quirk_entry quirk_asus_wapf4 = {
-	.wapf = 4,
-};
-
-static struct quirk_entry quirk_asus_x200ca = {
-	.wapf = 2,
 };
 
 static int dmi_matched(const struct dmi_system_id *dmi)
@@ -84,21 +69,7 @@ static int dmi_matched(const struct dmi_system_id *dmi)
 	return 1;
 }
 
-static const struct dmi_system_id asus_quirks[] = {
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. U32U",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK Computer Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "U32U"),
-		},
-		/*
-		 * Note this machine has a Brazos APU, and most Brazos Asus
-		 * machines need quirk_asus_x55u / wmi_backlight_power but
-		 * here acpi-video seems to work fine for backlight control.
-		 */
-		.driver_data = &quirk_asus_wapf4,
-	},
+static struct dmi_system_id asus_quirks[] = {
 	{
 		.callback = dmi_matched,
 		.ident = "ASUSTeK COMPUTER INC. X401U",
@@ -106,16 +77,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X401U"),
 		},
-		.driver_data = &quirk_asus_x55u,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X401A",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X401A"),
-		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -124,7 +86,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X401A1"),
 		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -133,16 +95,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X501U"),
 		},
-		.driver_data = &quirk_asus_x55u,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X501A",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X501A"),
-		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -151,34 +104,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X501A1"),
 		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X550CA",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X550CA"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X550CC",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X550CC"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X550CL",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X550CL"),
-		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -187,7 +113,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X55A"),
 		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -196,7 +122,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X55C"),
 		},
-		.driver_data = &quirk_asus_wapf4,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -205,7 +131,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X55U"),
 		},
-		.driver_data = &quirk_asus_x55u,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{
 		.callback = dmi_matched,
@@ -214,52 +140,7 @@ static const struct dmi_system_id asus_quirks[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X55VD"),
 		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X75A",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X75A"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X75VBP",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X75VBP"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. 1015E",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "1015E"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. 1015U",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "1015U"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X200CA",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X200CA"),
-		},
-		.driver_data = &quirk_asus_x200ca,
+		.driver_data = &quirk_asus_x401u,
 	},
 	{},
 };
@@ -280,8 +161,6 @@ static void asus_nb_wmi_quirks(struct asus_wmi_driver *driver)
 }
 
 static const struct key_entry asus_nb_wmi_keymap[] = {
-	{ KE_KEY, ASUS_WMI_BRN_DOWN, { KEY_BRIGHTNESSDOWN } },
-	{ KE_KEY, ASUS_WMI_BRN_UP, { KEY_BRIGHTNESSUP } },
 	{ KE_KEY, 0x30, { KEY_VOLUMEUP } },
 	{ KE_KEY, 0x31, { KEY_VOLUMEDOWN } },
 	{ KE_KEY, 0x32, { KEY_MUTE } },
@@ -289,9 +168,9 @@ static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, 0x34, { KEY_DISPLAY_OFF } }, /* LCD off */
 	{ KE_KEY, 0x40, { KEY_PREVIOUSSONG } },
 	{ KE_KEY, 0x41, { KEY_NEXTSONG } },
-	{ KE_KEY, 0x43, { KEY_STOPCD } }, /* Stop/Eject */
+	{ KE_KEY, 0x43, { KEY_STOPCD } },
 	{ KE_KEY, 0x45, { KEY_PLAYPAUSE } },
-	{ KE_KEY, 0x4c, { KEY_MEDIA } }, /* WMP Key */
+	{ KE_KEY, 0x4c, { KEY_MEDIA } },
 	{ KE_KEY, 0x50, { KEY_EMAIL } },
 	{ KE_KEY, 0x51, { KEY_WWW } },
 	{ KE_KEY, 0x55, { KEY_CALC } },
@@ -301,43 +180,25 @@ static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, 0x5D, { KEY_WLAN } }, /* Wireless console Toggle */
 	{ KE_KEY, 0x5E, { KEY_WLAN } }, /* Wireless console Enable */
 	{ KE_KEY, 0x5F, { KEY_WLAN } }, /* Wireless console Disable */
-	{ KE_KEY, 0x60, { KEY_TOUCHPAD_ON } },
-	{ KE_KEY, 0x61, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD only */
-	{ KE_KEY, 0x62, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT only */
-	{ KE_KEY, 0x63, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT */
-	{ KE_KEY, 0x64, { KEY_SWITCHVIDEOMODE } }, /* SDSP TV */
-	{ KE_KEY, 0x65, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + TV */
-	{ KE_KEY, 0x66, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + TV */
-	{ KE_KEY, 0x67, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + TV */
+	{ KE_KEY, 0x60, { KEY_SWITCHVIDEOMODE } },
+	{ KE_KEY, 0x61, { KEY_SWITCHVIDEOMODE } },
+	{ KE_KEY, 0x62, { KEY_SWITCHVIDEOMODE } },
+	{ KE_KEY, 0x63, { KEY_SWITCHVIDEOMODE } },
 	{ KE_KEY, 0x6B, { KEY_TOUCHPAD_TOGGLE } },
-	{ KE_IGNORE, 0x6E, },  /* Low Battery notification */
-	{ KE_KEY, 0x7D, { KEY_BLUETOOTH } }, /* Bluetooth Enable */
-	{ KE_KEY, 0x7E, { KEY_BLUETOOTH } }, /* Bluetooth Disable */
+	{ KE_KEY, 0x7D, { KEY_BLUETOOTH } },
+	{ KE_KEY, 0x7E, { KEY_BLUETOOTH } },
 	{ KE_KEY, 0x82, { KEY_CAMERA } },
-	{ KE_KEY, 0x88, { KEY_RFKILL  } }, /* Radio Toggle Key */
-	{ KE_KEY, 0x8A, { KEY_PROG1 } }, /* Color enhancement mode */
-	{ KE_KEY, 0x8C, { KEY_SWITCHVIDEOMODE } }, /* SDSP DVI only */
-	{ KE_KEY, 0x8D, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + DVI */
-	{ KE_KEY, 0x8E, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + DVI */
-	{ KE_KEY, 0x8F, { KEY_SWITCHVIDEOMODE } }, /* SDSP TV + DVI */
-	{ KE_KEY, 0x90, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + DVI */
-	{ KE_KEY, 0x91, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + TV + DVI */
-	{ KE_KEY, 0x92, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + TV + DVI */
-	{ KE_KEY, 0x93, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + TV + DVI */
+	{ KE_KEY, 0x88, { KEY_RFKILL  } },
+	{ KE_KEY, 0x8A, { KEY_PROG1 } },
 	{ KE_KEY, 0x95, { KEY_MEDIA } },
 	{ KE_KEY, 0x99, { KEY_PHONE } },
 	{ KE_KEY, 0xA0, { KEY_SWITCHVIDEOMODE } }, /* SDSP HDMI only */
 	{ KE_KEY, 0xA1, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + HDMI */
 	{ KE_KEY, 0xA2, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + HDMI */
 	{ KE_KEY, 0xA3, { KEY_SWITCHVIDEOMODE } }, /* SDSP TV + HDMI */
-	{ KE_KEY, 0xA4, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + HDMI */
-	{ KE_KEY, 0xA5, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + TV + HDMI */
-	{ KE_KEY, 0xA6, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + TV + HDMI */
-	{ KE_KEY, 0xA7, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + TV + HDMI */
-	{ KE_KEY, 0xB5, { KEY_CALC } },
-	{ KE_KEY, 0xC4, { KEY_KBDILLUMUP } },
-	{ KE_KEY, 0xC5, { KEY_KBDILLUMDOWN } },
-	{ KE_IGNORE, 0xC6, },  /* Ambient Light Sensor notification */
+	{ KE_KEY, 0xb5, { KEY_CALC } },
+	{ KE_KEY, 0xc4, { KEY_KBDILLUMUP } },
+	{ KE_KEY, 0xc5, { KEY_KBDILLUMDOWN } },
 	{ KE_END, 0},
 };
 

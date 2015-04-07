@@ -24,7 +24,7 @@
 /* constants */
 #define TX_URB_COUNT            32
 #define RX_URB_COUNT            32
-#define ATH6KL_USB_RX_BUFFER_SIZE  4096
+#define ATH6KL_USB_RX_BUFFER_SIZE  1700
 
 /* tx/rx pipes for usb */
 enum ATH6KL_USB_PIPE_ID {
@@ -159,8 +159,10 @@ static void ath6kl_usb_free_urb_to_pipe(struct ath6kl_usb_pipe *pipe,
 
 static void ath6kl_usb_cleanup_recv_urb(struct ath6kl_urb_context *urb_context)
 {
-	dev_kfree_skb(urb_context->skb);
-	urb_context->skb = NULL;
+	if (urb_context->skb != NULL) {
+		dev_kfree_skb(urb_context->skb);
+		urb_context->skb = NULL;
+	}
 
 	ath6kl_usb_free_urb_to_pipe(urb_context->pipe, urb_context);
 }
@@ -236,6 +238,7 @@ static void ath6kl_usb_free_pipe_resources(struct ath6kl_usb_pipe *pipe)
 			break;
 		kfree(urb_context);
 	}
+
 }
 
 static void ath6kl_usb_cleanup_pipe_resources(struct ath6kl_usb *ar_usb)
@@ -244,6 +247,7 @@ static void ath6kl_usb_cleanup_pipe_resources(struct ath6kl_usb *ar_usb)
 
 	for (i = 0; i < ATH6KL_USB_PIPE_MAX; i++)
 		ath6kl_usb_free_pipe_resources(&ar_usb->pipes[i]);
+
 }
 
 static u8 ath6kl_usb_get_logical_pipe_num(struct ath6kl_usb *ar_usb,
@@ -479,8 +483,8 @@ static void ath6kl_usb_start_recv_pipes(struct ath6kl_usb *ar_usb)
 	 *		ATH6KL_USB_RX_BUFFER_SIZE);
 	 */
 
-	ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_cnt_thresh = 1;
-
+	ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_cnt_thresh =
+	    ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA].urb_alloc / 2;
 	ath6kl_usb_post_recv_transfers(&ar_usb->pipes[ATH6KL_USB_PIPE_RX_DATA],
 				       ATH6KL_USB_RX_BUFFER_SIZE);
 }
@@ -802,8 +806,7 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VI_SVC:
 
-		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
-			     ar->fw_capabilities))
+		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -815,8 +818,7 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VO_SVC:
 
-		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
-			     ar->fw_capabilities))
+		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -856,9 +858,11 @@ static int ath6kl_usb_submit_ctrl_out(struct ath6kl_usb *ar_usb,
 	int ret;
 
 	if (size > 0) {
-		buf = kmemdup(data, size, GFP_KERNEL);
+		buf = kmalloc(size, GFP_KERNEL);
 		if (buf == NULL)
 			return -ENOMEM;
+
+		memcpy(buf, data, size);
 	}
 
 	/* note: if successful returns number of bytes transfered */
@@ -870,9 +874,8 @@ static int ath6kl_usb_submit_ctrl_out(struct ath6kl_usb *ar_usb,
 			      size, 1000);
 
 	if (ret < 0) {
-		ath6kl_warn("Failed to submit usb control message: %d\n", ret);
-		kfree(buf);
-		return ret;
+		ath6kl_dbg(ATH6KL_DBG_USB, "%s failed,result = %d\n",
+			   __func__, ret);
 	}
 
 	kfree(buf);
@@ -902,9 +905,8 @@ static int ath6kl_usb_submit_ctrl_in(struct ath6kl_usb *ar_usb,
 				 size, 2 * HZ);
 
 	if (ret < 0) {
-		ath6kl_warn("Failed to read usb control message: %d\n", ret);
-		kfree(buf);
-		return ret;
+		ath6kl_dbg(ATH6KL_DBG_USB, "%s failed,result = %d\n",
+			   __func__, ret);
 	}
 
 	memcpy((u8 *) data, buf, size);
@@ -961,10 +963,8 @@ static int ath6kl_usb_diag_read32(struct ath6kl *ar, u32 address, u32 *data)
 				ATH6KL_USB_CONTROL_REQ_DIAG_RESP,
 				ar_usb->diag_resp_buffer, &resp_len);
 
-	if (ret) {
-		ath6kl_warn("diag read32 failed: %d\n", ret);
+	if (ret)
 		return ret;
-	}
 
 	resp = (struct ath6kl_usb_ctrl_diag_resp_read *)
 		ar_usb->diag_resp_buffer;
@@ -978,7 +978,6 @@ static int ath6kl_usb_diag_write32(struct ath6kl *ar, u32 address, __le32 data)
 {
 	struct ath6kl_usb *ar_usb = ar->hif_priv;
 	struct ath6kl_usb_ctrl_diag_cmd_write *cmd;
-	int ret;
 
 	cmd = (struct ath6kl_usb_ctrl_diag_cmd_write *) ar_usb->diag_cmd_buffer;
 
@@ -987,17 +986,12 @@ static int ath6kl_usb_diag_write32(struct ath6kl *ar, u32 address, __le32 data)
 	cmd->address = cpu_to_le32(address);
 	cmd->value = data;
 
-	ret = ath6kl_usb_ctrl_msg_exchange(ar_usb,
-					   ATH6KL_USB_CONTROL_REQ_DIAG_CMD,
-					   (u8 *) cmd,
-					   sizeof(*cmd),
-					   0, NULL, NULL);
-	if (ret) {
-		ath6kl_warn("diag_write32 failed: %d\n", ret);
-		return ret;
-	}
+	return ath6kl_usb_ctrl_msg_exchange(ar_usb,
+					    ATH6KL_USB_CONTROL_REQ_DIAG_CMD,
+					    (u8 *) cmd,
+					    sizeof(*cmd),
+					    0, NULL, NULL);
 
-	return 0;
 }
 
 static int ath6kl_usb_bmi_read(struct ath6kl *ar, u8 *buf, u32 len)
@@ -1009,7 +1003,7 @@ static int ath6kl_usb_bmi_read(struct ath6kl *ar, u8 *buf, u32 len)
 	ret = ath6kl_usb_submit_ctrl_in(ar_usb,
 					ATH6KL_USB_CONTROL_REQ_RECV_BMI_RESP,
 					0, 0, buf, len);
-	if (ret) {
+	if (ret != 0) {
 		ath6kl_err("Unable to read the bmi data from the device: %d\n",
 			   ret);
 		return ret;
@@ -1027,7 +1021,7 @@ static int ath6kl_usb_bmi_write(struct ath6kl *ar, u8 *buf, u32 len)
 	ret = ath6kl_usb_submit_ctrl_out(ar_usb,
 					 ATH6KL_USB_CONTROL_REQ_SEND_BMI_CMD,
 					 0, 0, buf, len);
-	if (ret) {
+	if (ret != 0) {
 		ath6kl_err("unable to send the bmi data to the device: %d\n",
 			   ret);
 		return ret;
@@ -1061,22 +1055,6 @@ static void ath6kl_usb_cleanup_scatter(struct ath6kl *ar)
 	return;
 }
 
-static int ath6kl_usb_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
-{
-	/*
-	 * cfg80211 suspend/WOW currently not supported for USB.
-	 */
-	return 0;
-}
-
-static int ath6kl_usb_resume(struct ath6kl *ar)
-{
-	/*
-	 * cfg80211 resume currently not supported for USB.
-	 */
-	return 0;
-}
-
 static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.diag_read32 = ath6kl_usb_diag_read32,
 	.diag_write32 = ath6kl_usb_diag_write32,
@@ -1090,8 +1068,6 @@ static const struct ath6kl_hif_ops ath6kl_usb_ops = {
 	.pipe_map_service = ath6kl_usb_map_service_pipe,
 	.pipe_get_free_queue_number = ath6kl_usb_get_free_queue_number,
 	.cleanup_scatter = ath6kl_usb_cleanup_scatter,
-	.suspend = ath6kl_usb_suspend,
-	.resume = ath6kl_usb_resume,
 };
 
 /* ath6kl usb driver registered functions */
@@ -1170,7 +1146,7 @@ static void ath6kl_usb_remove(struct usb_interface *interface)
 
 #ifdef CONFIG_PM
 
-static int ath6kl_usb_pm_suspend(struct usb_interface *interface,
+static int ath6kl_usb_suspend(struct usb_interface *interface,
 			      pm_message_t message)
 {
 	struct ath6kl_usb *device;
@@ -1180,7 +1156,7 @@ static int ath6kl_usb_pm_suspend(struct usb_interface *interface,
 	return 0;
 }
 
-static int ath6kl_usb_pm_resume(struct usb_interface *interface)
+static int ath6kl_usb_resume(struct usb_interface *interface)
 {
 	struct ath6kl_usb *device;
 	device = usb_get_intfdata(interface);
@@ -1193,7 +1169,7 @@ static int ath6kl_usb_pm_resume(struct usb_interface *interface)
 	return 0;
 }
 
-static int ath6kl_usb_pm_reset_resume(struct usb_interface *intf)
+static int ath6kl_usb_reset_resume(struct usb_interface *intf)
 {
 	if (usb_get_intfdata(intf))
 		ath6kl_usb_remove(intf);
@@ -1202,15 +1178,14 @@ static int ath6kl_usb_pm_reset_resume(struct usb_interface *intf)
 
 #else
 
-#define ath6kl_usb_pm_suspend NULL
-#define ath6kl_usb_pm_resume NULL
-#define ath6kl_usb_pm_reset_resume NULL
+#define ath6kl_usb_suspend NULL
+#define ath6kl_usb_resume NULL
+#define ath6kl_usb_reset_resume NULL
 
 #endif
 
 /* table of devices that work with this driver */
 static struct usb_device_id ath6kl_usb_ids[] = {
-	{USB_DEVICE(0x0cf3, 0x9375)},
 	{USB_DEVICE(0x0cf3, 0x9374)},
 	{ /* Terminating entry */ },
 };
@@ -1220,9 +1195,9 @@ MODULE_DEVICE_TABLE(usb, ath6kl_usb_ids);
 static struct usb_driver ath6kl_usb_driver = {
 	.name = "ath6kl_usb",
 	.probe = ath6kl_usb_probe,
-	.suspend = ath6kl_usb_pm_suspend,
-	.resume = ath6kl_usb_pm_resume,
-	.reset_resume = ath6kl_usb_pm_reset_resume,
+	.suspend = ath6kl_usb_suspend,
+	.resume = ath6kl_usb_resume,
+	.reset_resume = ath6kl_usb_reset_resume,
 	.disconnect = ath6kl_usb_remove,
 	.id_table = ath6kl_usb_ids,
 	.supports_autosuspend = true,

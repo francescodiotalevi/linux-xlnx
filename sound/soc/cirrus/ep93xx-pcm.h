@@ -1,22 +1,20 @@
 /*
- * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * sound/soc/ep93xx/ep93xx-pcm.h - EP93xx ALSA PCM interface
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * Copyright (C) 2006 Lennert Buytenhek <buytenh@wantstofly.org>
+ * Copyright (C) 2006 Applied Data Systems
  *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
-#ifndef __EP93XX_PCM_H__
-#define __EP93XX_PCM_H__
+#ifndef _EP93XX_SND_SOC_PCM_H
+#define _EP93XX_SND_SOC_PCM_H
 
-int devm_ep93xx_pcm_platform_register(struct device *dev);
+struct ep93xx_pcm_dma_params {
+	char	*name;
+	int	dma_port;
+};
 
-#endif
+#endif /* _EP93XX_SND_SOC_PCM_H */

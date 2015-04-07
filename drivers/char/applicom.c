@@ -345,6 +345,7 @@ out:
 			free_irq(apbs[i].irq, &dummy);
 		iounmap(apbs[i].RamIO);
 	}
+	pci_disable_device(dev);
 	return ret;
 }
 
@@ -803,8 +804,8 @@ static long ac_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 			printk(KERN_INFO "Prom version board %d ....... V%d.%d %s",
 			       i+1,
-			       (int)(readb(apbs[i].RamIO + VERS) >> 4),
-			       (int)(readb(apbs[i].RamIO + VERS) & 0xF),
+			       (int)(readb(apbs[IndexCard].RamIO + VERS) >> 4),
+			       (int)(readb(apbs[IndexCard].RamIO + VERS) & 0xF),
 			       boardname);
 
 

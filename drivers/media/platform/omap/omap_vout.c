@@ -165,6 +165,7 @@ static int omap_vout_try_format(struct v4l2_pix_format *pix)
 
 	pix->pixelformat = omap_formats[ifmt].pixelformat;
 	pix->field = V4L2_FIELD_ANY;
+	pix->priv = 0;
 
 	switch (pix->pixelformat) {
 	case V4L2_PIX_FMT_YUYV:
@@ -204,21 +205,19 @@ static u32 omap_vout_uservirt_to_phys(u32 virtp)
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 
-	/* For kernel direct-mapped memory, take the easy way */
-	if (virtp >= PAGE_OFFSET)
-		return virt_to_phys((void *) virtp);
-
-	down_read(&current->mm->mmap_sem);
 	vma = find_vma(mm, virtp);
-	if (vma && (vma->vm_flags & VM_IO) && vma->vm_pgoff) {
+	/* For kernel direct-mapped memory, take the easy way */
+	if (virtp >= PAGE_OFFSET) {
+		physp = virt_to_phys((void *) virtp);
+	} else if (vma && (vma->vm_flags & VM_IO) && vma->vm_pgoff) {
 		/* this will catch, kernel-allocated, mmaped-to-usermode
 		   addresses */
 		physp = (vma->vm_pgoff << PAGE_SHIFT) + (virtp - vma->vm_start);
-		up_read(&current->mm->mmap_sem);
 	} else {
 		/* otherwise, use get_user_pages() for general userland pages */
 		int res, nr_pages = 1;
 		struct page *pages;
+		down_read(&current->mm->mmap_sem);
 
 		res = get_user_pages(current, current->mm, virtp, nr_pages, 1,
 				0, &pages, NULL);
@@ -334,6 +333,8 @@ static int video_mode_to_dss_mode(struct omap_vout_device *vout)
 	ovl = ovid->overlays[0];
 
 	switch (pix->pixelformat) {
+	case 0:
+		break;
 	case V4L2_PIX_FMT_YUYV:
 		mode = OMAP_DSS_COLOR_YUV2;
 		break;
@@ -355,7 +356,6 @@ static int video_mode_to_dss_mode(struct omap_vout_device *vout)
 		break;
 	default:
 		mode = -EINVAL;
-		break;
 	}
 	return mode;
 }
@@ -595,12 +595,11 @@ static void omap_vout_isr(void *arg, unsigned int irqstatus)
 		return;
 
 	spin_lock(&vout->vbq_lock);
-	v4l2_get_timestamp(&timevalue);
+	do_gettimeofday(&timevalue);
 
 	switch (cur_display->type) {
 	case OMAP_DISPLAY_TYPE_DSI:
 	case OMAP_DISPLAY_TYPE_DPI:
-	case OMAP_DISPLAY_TYPE_DVI:
 		if (mgr_id == OMAP_DSS_CHANNEL_LCD)
 			irq = DISPC_IRQ_VSYNC;
 		else if (mgr_id == OMAP_DSS_CHANNEL_LCD2)
@@ -647,12 +646,9 @@ static void omap_vout_isr(void *arg, unsigned int irqstatus)
 
 	/* First save the configuration in ovelray structure */
 	ret = omapvid_init(vout, addr);
-	if (ret) {
+	if (ret)
 		printk(KERN_ERR VOUT_NAME
 			"failed to set overlay info\n");
-		goto vout_isr_err;
-	}
-
 	/* Enable the pipeline and set the Go bit */
 	ret = omapvid_apply_changes(vout);
 	if (ret)
@@ -1234,6 +1230,21 @@ static int vidioc_s_fmt_vid_overlay(struct file *file, void *fh,
 	return ret;
 }
 
+static int vidioc_enum_fmt_vid_overlay(struct file *file, void *fh,
+			struct v4l2_fmtdesc *fmt)
+{
+	int index = fmt->index;
+
+	if (index >= NUM_OUTPUT_FORMATS)
+		return -EINVAL;
+
+	fmt->flags = omap_formats[index].flags;
+	strlcpy(fmt->description, omap_formats[index].description,
+			sizeof(fmt->description));
+	fmt->pixelformat = omap_formats[index].pixelformat;
+	return 0;
+}
+
 static int vidioc_g_fmt_vid_overlay(struct file *file, void *fh,
 			struct v4l2_format *f)
 {
@@ -1662,16 +1673,13 @@ static int vidioc_streamon(struct file *file, void *fh, enum v4l2_buf_type i)
 	mask = DISPC_IRQ_VSYNC | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD
 		| DISPC_IRQ_VSYNC2;
 
-	/* First save the configuration in ovelray structure */
-	ret = omapvid_init(vout, addr);
-	if (ret) {
-		v4l2_err(&vout->vid_dev->v4l2_dev,
-				"failed to set overlay info\n");
-		goto streamon_err1;
-	}
-
 	omap_dispc_register_isr(omap_vout_isr, vout, mask);
 
+	/* First save the configuration in ovelray structure */
+	ret = omapvid_init(vout, addr);
+	if (ret)
+		v4l2_err(&vout->vid_dev->v4l2_dev,
+				"failed to set overlay info\n");
 	/* Enable the pipeline and set the Go bit */
 	ret = omapvid_apply_changes(vout);
 	if (ret)
@@ -1850,9 +1858,10 @@ static const struct v4l2_ioctl_ops vout_ioctl_ops = {
 	.vidioc_s_fbuf				= vidioc_s_fbuf,
 	.vidioc_g_fbuf				= vidioc_g_fbuf,
 	.vidioc_s_ctrl       			= vidioc_s_ctrl,
-	.vidioc_try_fmt_vid_out_overlay		= vidioc_try_fmt_vid_overlay,
-	.vidioc_s_fmt_vid_out_overlay		= vidioc_s_fmt_vid_overlay,
-	.vidioc_g_fmt_vid_out_overlay		= vidioc_g_fmt_vid_overlay,
+	.vidioc_try_fmt_vid_overlay 		= vidioc_try_fmt_vid_overlay,
+	.vidioc_s_fmt_vid_overlay		= vidioc_s_fmt_vid_overlay,
+	.vidioc_enum_fmt_vid_overlay		= vidioc_enum_fmt_vid_overlay,
+	.vidioc_g_fmt_vid_overlay		= vidioc_g_fmt_vid_overlay,
 	.vidioc_cropcap				= vidioc_cropcap,
 	.vidioc_g_crop				= vidioc_g_crop,
 	.vidioc_s_crop				= vidioc_s_crop,
@@ -1895,6 +1904,7 @@ static int __init omap_vout_setup_video_data(struct omap_vout_device *vout)
 	pix->field = V4L2_FIELD_ANY;
 	pix->bytesperline = pix->width * 2;
 	pix->sizeimage = pix->bytesperline * pix->height;
+	pix->priv = 0;
 	pix->colorspace = V4L2_COLORSPACE_JPEG;
 
 	vout->bpp = RGB565_BPP;
@@ -2147,9 +2157,6 @@ static int __init omap_vout_probe(struct platform_device *pdev)
 	struct omap_dss_device *dssdev = NULL;
 	struct omap_dss_device *def_display;
 	struct omap2video_device *vid_dev = NULL;
-
-	if (omapdss_is_initialized() == false)
-		return -EPROBE_DEFER;
 
 	ret = omapdss_compat_init();
 	if (ret) {

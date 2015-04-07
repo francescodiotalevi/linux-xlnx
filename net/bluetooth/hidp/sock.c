@@ -77,12 +77,21 @@ static int hidp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 			return err;
 		}
 
-		err = hidp_connection_add(&ca, csock, isock);
-		if (!err && copy_to_user(argp, &ca, sizeof(ca)))
-			err = -EFAULT;
+		if (csock->sk->sk_state != BT_CONNECTED ||
+				isock->sk->sk_state != BT_CONNECTED) {
+			sockfd_put(csock);
+			sockfd_put(isock);
+			return -EBADFD;
+		}
 
-		sockfd_put(csock);
-		sockfd_put(isock);
+		err = hidp_add_connection(&ca, csock, isock);
+		if (!err) {
+			if (copy_to_user(argp, &ca, sizeof(ca)))
+				err = -EFAULT;
+		} else {
+			sockfd_put(csock);
+			sockfd_put(isock);
+		}
 
 		return err;
 
@@ -93,7 +102,7 @@ static int hidp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 		if (copy_from_user(&cd, argp, sizeof(cd)))
 			return -EFAULT;
 
-		return hidp_connection_del(&cd);
+		return hidp_del_connection(&cd);
 
 	case HIDPGETCONNLIST:
 		if (copy_from_user(&cl, argp, sizeof(cl)))
@@ -275,7 +284,7 @@ int __init hidp_init_sockets(void)
 		goto error;
 	}
 
-	err = bt_procfs_init(&init_net, "hidp", &hidp_sk_list, NULL);
+	err = bt_procfs_init(THIS_MODULE, &init_net, "hidp", &hidp_sk_list, NULL);
 	if (err < 0) {
 		BT_ERR("Failed to create HIDP proc file");
 		bt_sock_unregister(BTPROTO_HIDP);
@@ -287,6 +296,7 @@ int __init hidp_init_sockets(void)
 	return 0;
 
 error:
+	BT_ERR("Can't register HIDP socket");
 	proto_unregister(&hidp_proto);
 	return err;
 }
@@ -294,6 +304,8 @@ error:
 void __exit hidp_cleanup_sockets(void)
 {
 	bt_procfs_cleanup(&init_net, "hidp");
-	bt_sock_unregister(BTPROTO_HIDP);
+	if (bt_sock_unregister(BTPROTO_HIDP) < 0)
+		BT_ERR("Can't unregister HIDP socket");
+
 	proto_unregister(&hidp_proto);
 }

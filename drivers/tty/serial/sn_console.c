@@ -275,6 +275,15 @@ static void snp_release_port(struct uart_port *port)
 }
 
 /**
+ * snp_enable_ms - Force modem status interrupts on - no-op for us
+ * @port: Port to operate on - we ignore - no-op function
+ *
+ */
+static void snp_enable_ms(struct uart_port *port)
+{
+}
+
+/**
  * snp_shutdown - shut down the port - free irq and disable - no-op for us
  * @port: Port to shut down - we ignore
  *
@@ -387,6 +396,7 @@ static struct uart_ops sn_console_ops = {
 	.stop_tx = snp_stop_tx,
 	.start_tx = snp_start_tx,
 	.stop_rx = snp_stop_rx,
+	.enable_ms = snp_enable_ms,
 	.break_ctl = snp_break_ctl,
 	.startup = snp_startup,
 	.shutdown = snp_shutdown,
@@ -447,8 +457,8 @@ static int sn_debug_printf(const char *fmt, ...)
 static void
 sn_receive_chars(struct sn_cons_port *port, unsigned long flags)
 {
-	struct tty_port *tport = NULL;
 	int ch;
+	struct tty_struct *tty;
 
 	if (!port) {
 		printk(KERN_ERR "sn_receive_chars - port NULL so can't receive\n");
@@ -462,7 +472,11 @@ sn_receive_chars(struct sn_cons_port *port, unsigned long flags)
 
 	if (port->sc_port.state) {
 		/* The serial_core stuffs are initialized, use them */
-		tport = &port->sc_port.state->port;
+		tty = port->sc_port.state->port.tty;
+	}
+	else {
+		/* Not registered yet - can't pass to tty layer.  */
+		tty = NULL;
 	}
 
 	while (port->sc_ops->sal_input_pending()) {
@@ -502,15 +516,15 @@ sn_receive_chars(struct sn_cons_port *port, unsigned long flags)
 #endif /* CONFIG_MAGIC_SYSRQ */
 
 		/* record the character to pass up to the tty layer */
-		if (tport) {
-			if (tty_insert_flip_char(tport, ch, TTY_NORMAL) == 0)
+		if (tty) {
+			if(tty_insert_flip_char(tty, ch, TTY_NORMAL) == 0)
 				break;
 		}
 		port->sc_port.icount.rx++;
 	}
 
-	if (tport)
-		tty_flip_buffer_push(tport);
+	if (tty)
+		tty_flip_buffer_push(tty);
 }
 
 /**

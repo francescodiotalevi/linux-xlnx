@@ -1171,7 +1171,8 @@ static void ivtvfb_release_buffers (struct ivtv *itv)
 		fb_dealloc_cmap(&oi->ivtvfb_info.cmap);
 
 	/* Release pseudo palette */
-	kfree(oi->ivtvfb_info.pseudo_palette);
+	if (oi->ivtvfb_info.pseudo_palette)
+		kfree(oi->ivtvfb_info.pseudo_palette);
 
 #ifdef CONFIG_MTRR
 	if (oi->fb_end_aligned_physaddr) {

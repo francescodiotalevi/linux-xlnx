@@ -30,8 +30,6 @@ static int battery_technology		= POWER_SUPPLY_TECHNOLOGY_LION;
 static int battery_capacity		= 50;
 static int battery_voltage		= 3300;
 
-static bool module_initialized;
-
 static int test_power_get_ac_property(struct power_supply *psy,
 				      enum power_supply_property psp,
 				      union power_supply_propval *val)
@@ -187,7 +185,6 @@ static int __init test_power_init(void)
 		}
 	}
 
-	module_initialized = true;
 	return 0;
 failed:
 	while (--i >= 0)
@@ -212,8 +209,6 @@ static void __exit test_power_exit(void)
 
 	for (i = 0; i < ARRAY_SIZE(test_power_supplies); i++)
 		power_supply_unregister(&test_power_supplies[i]);
-
-	module_initialized = false;
 }
 module_exit(test_power_exit);
 
@@ -226,8 +221,8 @@ struct battery_property_map {
 };
 
 static struct battery_property_map map_ac_online[] = {
-	{ 0,  "off"  },
-	{ 1,  "on" },
+	{ 0,  "on"  },
+	{ 1,  "off" },
 	{ -1, NULL  },
 };
 
@@ -300,16 +295,10 @@ static const char *map_get_key(struct battery_property_map *map, int value,
 	return def_key;
 }
 
-static inline void signal_power_supply_changed(struct power_supply *psy)
-{
-	if (module_initialized)
-		power_supply_changed(psy);
-}
-
 static int param_set_ac_online(const char *key, const struct kernel_param *kp)
 {
 	ac_online = map_get_value(map_ac_online, key, ac_online);
-	signal_power_supply_changed(&test_power_supplies[0]);
+	power_supply_changed(&test_power_supplies[0]);
 	return 0;
 }
 
@@ -322,7 +311,7 @@ static int param_get_ac_online(char *buffer, const struct kernel_param *kp)
 static int param_set_usb_online(const char *key, const struct kernel_param *kp)
 {
 	usb_online = map_get_value(map_ac_online, key, usb_online);
-	signal_power_supply_changed(&test_power_supplies[2]);
+	power_supply_changed(&test_power_supplies[2]);
 	return 0;
 }
 
@@ -336,7 +325,7 @@ static int param_set_battery_status(const char *key,
 					const struct kernel_param *kp)
 {
 	battery_status = map_get_value(map_status, key, battery_status);
-	signal_power_supply_changed(&test_power_supplies[1]);
+	power_supply_changed(&test_power_supplies[1]);
 	return 0;
 }
 
@@ -350,7 +339,7 @@ static int param_set_battery_health(const char *key,
 					const struct kernel_param *kp)
 {
 	battery_health = map_get_value(map_health, key, battery_health);
-	signal_power_supply_changed(&test_power_supplies[1]);
+	power_supply_changed(&test_power_supplies[1]);
 	return 0;
 }
 
@@ -364,7 +353,7 @@ static int param_set_battery_present(const char *key,
 					const struct kernel_param *kp)
 {
 	battery_present = map_get_value(map_present, key, battery_present);
-	signal_power_supply_changed(&test_power_supplies[0]);
+	power_supply_changed(&test_power_supplies[0]);
 	return 0;
 }
 
@@ -380,7 +369,7 @@ static int param_set_battery_technology(const char *key,
 {
 	battery_technology = map_get_value(map_technology, key,
 						battery_technology);
-	signal_power_supply_changed(&test_power_supplies[1]);
+	power_supply_changed(&test_power_supplies[1]);
 	return 0;
 }
 
@@ -401,7 +390,7 @@ static int param_set_battery_capacity(const char *key,
 		return -EINVAL;
 
 	battery_capacity = tmp;
-	signal_power_supply_changed(&test_power_supplies[1]);
+	power_supply_changed(&test_power_supplies[1]);
 	return 0;
 }
 
@@ -416,7 +405,7 @@ static int param_set_battery_voltage(const char *key,
 		return -EINVAL;
 
 	battery_voltage = tmp;
-	signal_power_supply_changed(&test_power_supplies[1]);
+	power_supply_changed(&test_power_supplies[1]);
 	return 0;
 }
 

@@ -31,7 +31,6 @@
 #include <linux/kernel.h>
 #include <linux/kgdb.h>
 #include <linux/kdb.h>
-#include <linux/serial_core.h>
 #include <linux/reboot.h>
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
@@ -246,7 +245,7 @@ char *kgdb_mem2hex(char *mem, char *buf, int count)
 	 */
 	tmp = buf + count;
 
-	err = probe_kernel_read(tmp, mem, count);
+	err = ipipe_probe_kernel_read(tmp, mem, count);
 	if (err)
 		return NULL;
 	while (count > 0) {
@@ -282,7 +281,7 @@ int kgdb_hex2mem(char *buf, char *mem, int count)
 		*tmp_raw |= hex_to_bin(*tmp_hex--) << 4;
 	}
 
-	return probe_kernel_write(mem, tmp_raw, count);
+	return ipipe_probe_kernel_write(mem, tmp_raw, count);
 }
 
 /*
@@ -334,7 +333,7 @@ static int kgdb_ebin2mem(char *buf, char *mem, int count)
 		size++;
 	}
 
-	return probe_kernel_write(mem, c, size);
+	return ipipe_probe_kernel_write(mem, c, size);
 }
 
 #if DBG_MAX_REG_NUM > 0
@@ -783,10 +782,7 @@ static void gdb_cmd_query(struct kgdb_state *ks)
 			len = len / 2;
 			remcom_out_buffer[len++] = 0;
 
-			kdb_common_init_state(ks);
 			kdb_parse(remcom_out_buffer);
-			kdb_common_deinit_state();
-
 			strcpy(remcom_out_buffer, "OK");
 		}
 		break;

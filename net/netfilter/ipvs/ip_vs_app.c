@@ -58,18 +58,6 @@ static inline void ip_vs_app_put(struct ip_vs_app *app)
 	module_put(app->module);
 }
 
-static void ip_vs_app_inc_destroy(struct ip_vs_app *inc)
-{
-	kfree(inc->timeout_table);
-	kfree(inc);
-}
-
-static void ip_vs_app_inc_rcu_free(struct rcu_head *head)
-{
-	struct ip_vs_app *inc = container_of(head, struct ip_vs_app, rcu_head);
-
-	ip_vs_app_inc_destroy(inc);
-}
 
 /*
  *	Allocate/initialize app incarnation and register it in proto apps.
@@ -118,7 +106,8 @@ ip_vs_app_inc_new(struct net *net, struct ip_vs_app *app, __u16 proto,
 	return 0;
 
   out:
-	ip_vs_app_inc_destroy(inc);
+	kfree(inc->timeout_table);
+	kfree(inc);
 	return ret;
 }
 
@@ -142,7 +131,8 @@ ip_vs_app_inc_release(struct net *net, struct ip_vs_app *inc)
 
 	list_del(&inc->a_list);
 
-	call_rcu(&inc->rcu_head, ip_vs_app_inc_rcu_free);
+	kfree(inc->timeout_table);
+	kfree(inc);
 }
 
 
@@ -154,9 +144,9 @@ int ip_vs_app_inc_get(struct ip_vs_app *inc)
 {
 	int result;
 
-	result = ip_vs_app_get(inc->app);
-	if (result)
-		atomic_inc(&inc->usecnt);
+	atomic_inc(&inc->usecnt);
+	if (unlikely((result = ip_vs_app_get(inc->app)) != 1))
+		atomic_dec(&inc->usecnt);
 	return result;
 }
 
@@ -166,8 +156,8 @@ int ip_vs_app_inc_get(struct ip_vs_app *inc)
  */
 void ip_vs_app_inc_put(struct ip_vs_app *inc)
 {
-	atomic_dec(&inc->usecnt);
 	ip_vs_app_put(inc->app);
+	atomic_dec(&inc->usecnt);
 }
 
 
@@ -228,7 +218,6 @@ out_unlock:
 /*
  *	ip_vs_app unregistration routine
  *	We are sure there are no app incarnations attached to services
- *	Caller should use synchronize_rcu() or rcu_barrier()
  */
 void unregister_ip_vs_app(struct net *net, struct ip_vs_app *app)
 {
@@ -352,14 +341,14 @@ static inline void vs_seq_update(struct ip_vs_conn *cp, struct ip_vs_seq *vseq,
 				 unsigned int flag, __u32 seq, int diff)
 {
 	/* spinlock is to keep updating cp->flags atomic */
-	spin_lock_bh(&cp->lock);
+	spin_lock(&cp->lock);
 	if (!(cp->flags & flag) || after(seq, vseq->init_seq)) {
 		vseq->previous_delta = vseq->delta;
 		vseq->delta += diff;
 		vseq->init_seq = seq;
 		cp->flags |= flag;
 	}
-	spin_unlock_bh(&cp->lock);
+	spin_unlock(&cp->lock);
 }
 
 static inline int app_tcp_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb,
@@ -616,12 +605,12 @@ int __net_init ip_vs_app_net_init(struct net *net)
 	struct netns_ipvs *ipvs = net_ipvs(net);
 
 	INIT_LIST_HEAD(&ipvs->app_list);
-	proc_create("ip_vs_app", 0, net->proc_net, &ip_vs_app_fops);
+	proc_net_fops_create(net, "ip_vs_app", 0, &ip_vs_app_fops);
 	return 0;
 }
 
 void __net_exit ip_vs_app_net_cleanup(struct net *net)
 {
 	unregister_ip_vs_app(net, NULL /* all */);
-	remove_proc_entry("ip_vs_app", net->proc_net);
+	proc_net_remove(net, "ip_vs_app");
 }

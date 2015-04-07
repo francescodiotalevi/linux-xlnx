@@ -53,10 +53,10 @@ objlayout_alloc_layout_hdr(struct inode *inode, gfp_t gfp_flags)
 	struct objlayout *objlay;
 
 	objlay = kzalloc(sizeof(struct objlayout), gfp_flags);
-	if (!objlay)
-		return NULL;
-	spin_lock_init(&objlay->lock);
-	INIT_LIST_HEAD(&objlay->err_list);
+	if (objlay) {
+		spin_lock_init(&objlay->lock);
+		INIT_LIST_HEAD(&objlay->err_list);
+	}
 	dprintk("%s: Return %p\n", __func__, objlay);
 	return &objlay->pnfs_layout;
 }
@@ -229,36 +229,36 @@ objlayout_io_set_result(struct objlayout_io_res *oir, unsigned index,
 static void _rpc_read_complete(struct work_struct *work)
 {
 	struct rpc_task *task;
-	struct nfs_pgio_header *hdr;
+	struct nfs_read_data *rdata;
 
 	dprintk("%s enter\n", __func__);
 	task = container_of(work, struct rpc_task, u.tk_work);
-	hdr = container_of(task, struct nfs_pgio_header, task);
+	rdata = container_of(task, struct nfs_read_data, task);
 
-	pnfs_ld_read_done(hdr);
+	pnfs_ld_read_done(rdata);
 }
 
 void
 objlayout_read_done(struct objlayout_io_res *oir, ssize_t status, bool sync)
 {
-	struct nfs_pgio_header *hdr = oir->rpcdata;
+	struct nfs_read_data *rdata = oir->rpcdata;
 
-	oir->status = hdr->task.tk_status = status;
+	oir->status = rdata->task.tk_status = status;
 	if (status >= 0)
-		hdr->res.count = status;
+		rdata->res.count = status;
 	else
-		hdr->pnfs_error = status;
+		rdata->header->pnfs_error = status;
 	objlayout_iodone(oir);
 	/* must not use oir after this point */
 
 	dprintk("%s: Return status=%zd eof=%d sync=%d\n", __func__,
-		status, hdr->res.eof, sync);
+		status, rdata->res.eof, sync);
 
 	if (sync)
-		pnfs_ld_read_done(hdr);
+		pnfs_ld_read_done(rdata);
 	else {
-		INIT_WORK(&hdr->task.u.tk_work, _rpc_read_complete);
-		schedule_work(&hdr->task.u.tk_work);
+		INIT_WORK(&rdata->task.u.tk_work, _rpc_read_complete);
+		schedule_work(&rdata->task.u.tk_work);
 	}
 }
 
@@ -266,11 +266,12 @@ objlayout_read_done(struct objlayout_io_res *oir, ssize_t status, bool sync)
  * Perform sync or async reads.
  */
 enum pnfs_try_status
-objlayout_read_pagelist(struct nfs_pgio_header *hdr)
+objlayout_read_pagelist(struct nfs_read_data *rdata)
 {
+	struct nfs_pgio_header *hdr = rdata->header;
 	struct inode *inode = hdr->inode;
-	loff_t offset = hdr->args.offset;
-	size_t count = hdr->args.count;
+	loff_t offset = rdata->args.offset;
+	size_t count = rdata->args.count;
 	int err;
 	loff_t eof;
 
@@ -278,23 +279,23 @@ objlayout_read_pagelist(struct nfs_pgio_header *hdr)
 	if (unlikely(offset + count > eof)) {
 		if (offset >= eof) {
 			err = 0;
-			hdr->res.count = 0;
-			hdr->res.eof = 1;
+			rdata->res.count = 0;
+			rdata->res.eof = 1;
 			/*FIXME: do we need to call pnfs_ld_read_done() */
 			goto out;
 		}
 		count = eof - offset;
 	}
 
-	hdr->res.eof = (offset + count) >= eof;
-	_fix_verify_io_params(hdr->lseg, &hdr->args.pages,
-			      &hdr->args.pgbase,
-			      hdr->args.offset, hdr->args.count);
+	rdata->res.eof = (offset + count) >= eof;
+	_fix_verify_io_params(hdr->lseg, &rdata->args.pages,
+			      &rdata->args.pgbase,
+			      rdata->args.offset, rdata->args.count);
 
 	dprintk("%s: inode(%lx) offset 0x%llx count 0x%Zx eof=%d\n",
-		__func__, inode->i_ino, offset, count, hdr->res.eof);
+		__func__, inode->i_ino, offset, count, rdata->res.eof);
 
-	err = objio_read_pagelist(hdr);
+	err = objio_read_pagelist(rdata);
  out:
 	if (unlikely(err)) {
 		hdr->pnfs_error = err;
@@ -311,38 +312,38 @@ objlayout_read_pagelist(struct nfs_pgio_header *hdr)
 static void _rpc_write_complete(struct work_struct *work)
 {
 	struct rpc_task *task;
-	struct nfs_pgio_header *hdr;
+	struct nfs_write_data *wdata;
 
 	dprintk("%s enter\n", __func__);
 	task = container_of(work, struct rpc_task, u.tk_work);
-	hdr = container_of(task, struct nfs_pgio_header, task);
+	wdata = container_of(task, struct nfs_write_data, task);
 
-	pnfs_ld_write_done(hdr);
+	pnfs_ld_write_done(wdata);
 }
 
 void
 objlayout_write_done(struct objlayout_io_res *oir, ssize_t status, bool sync)
 {
-	struct nfs_pgio_header *hdr = oir->rpcdata;
+	struct nfs_write_data *wdata = oir->rpcdata;
 
-	oir->status = hdr->task.tk_status = status;
+	oir->status = wdata->task.tk_status = status;
 	if (status >= 0) {
-		hdr->res.count = status;
-		hdr->verf.committed = oir->committed;
+		wdata->res.count = status;
+		wdata->verf.committed = oir->committed;
 	} else {
-		hdr->pnfs_error = status;
+		wdata->header->pnfs_error = status;
 	}
 	objlayout_iodone(oir);
 	/* must not use oir after this point */
 
 	dprintk("%s: Return status %zd committed %d sync=%d\n", __func__,
-		status, hdr->verf.committed, sync);
+		status, wdata->verf.committed, sync);
 
 	if (sync)
-		pnfs_ld_write_done(hdr);
+		pnfs_ld_write_done(wdata);
 	else {
-		INIT_WORK(&hdr->task.u.tk_work, _rpc_write_complete);
-		schedule_work(&hdr->task.u.tk_work);
+		INIT_WORK(&wdata->task.u.tk_work, _rpc_write_complete);
+		schedule_work(&wdata->task.u.tk_work);
 	}
 }
 
@@ -350,15 +351,17 @@ objlayout_write_done(struct objlayout_io_res *oir, ssize_t status, bool sync)
  * Perform sync or async writes.
  */
 enum pnfs_try_status
-objlayout_write_pagelist(struct nfs_pgio_header *hdr, int how)
+objlayout_write_pagelist(struct nfs_write_data *wdata,
+			 int how)
 {
+	struct nfs_pgio_header *hdr = wdata->header;
 	int err;
 
-	_fix_verify_io_params(hdr->lseg, &hdr->args.pages,
-			      &hdr->args.pgbase,
-			      hdr->args.offset, hdr->args.count);
+	_fix_verify_io_params(hdr->lseg, &wdata->args.pages,
+			      &wdata->args.pgbase,
+			      wdata->args.offset, wdata->args.count);
 
-	err = objio_write_pagelist(hdr, how);
+	err = objio_write_pagelist(wdata, how);
 	if (unlikely(err)) {
 		hdr->pnfs_error = err;
 		dprintk("%s: Returned Error %d\n", __func__, err);
@@ -610,10 +613,8 @@ int objlayout_get_deviceinfo(struct pnfs_layout_hdr *pnfslay,
 	pd.pgbase = 0;
 	pd.pglen = PAGE_SIZE;
 	pd.mincount = 0;
-	pd.maxcount = PAGE_SIZE;
 
-	err = nfs4_proc_getdeviceinfo(NFS_SERVER(pnfslay->plh_inode), &pd,
-			pnfslay->plh_lc_cred);
+	err = nfs4_proc_getdeviceinfo(NFS_SERVER(pnfslay->plh_inode), &pd);
 	dprintk("%s nfs_getdeviceinfo returned %d\n", __func__, err);
 	if (err)
 		goto err_out;

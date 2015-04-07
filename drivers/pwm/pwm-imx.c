@@ -16,7 +16,6 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/pwm.h>
-#include <linux/of.h>
 #include <linux/of_device.h>
 
 /* i.MX1 and i.MX21 share the same PWM function block: */
@@ -44,6 +43,7 @@ struct imx_chip {
 	struct clk	*clk_per;
 	struct clk	*clk_ipg;
 
+	int		enabled;
 	void __iomem	*mmio_base;
 
 	struct pwm_chip	chip;
@@ -135,7 +135,7 @@ static int imx_pwm_config_v2(struct pwm_chip *chip,
 		MX3_PWMCR_DOZEEN | MX3_PWMCR_WAITEN |
 		MX3_PWMCR_DBGEN | MX3_PWMCR_CLKSRC_IPG_HIGH;
 
-	if (test_bit(PWMF_ENABLED, &pwm->flags))
+	if (imx->enabled)
 		cr |= MX3_PWMCR_EN;
 
 	writel(cr, imx->mmio_base + MX3_PWMCR);
@@ -186,6 +186,8 @@ static int imx_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 
 	imx->set_enable(chip, true);
 
+	imx->enabled = 1;
+
 	return 0;
 }
 
@@ -196,6 +198,7 @@ static void imx_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	imx->set_enable(chip, false);
 
 	clk_disable_unprepare(imx->clk_per);
+	imx->enabled = 0;
 }
 
 static struct pwm_ops imx_pwm_ops = {
@@ -241,8 +244,10 @@ static int imx_pwm_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	imx = devm_kzalloc(&pdev->dev, sizeof(*imx), GFP_KERNEL);
-	if (imx == NULL)
+	if (imx == NULL) {
+		dev_err(&pdev->dev, "failed to allocate memory\n");
 		return -ENOMEM;
+	}
 
 	imx->clk_per = devm_clk_get(&pdev->dev, "per");
 	if (IS_ERR(imx->clk_per)) {
@@ -262,12 +267,16 @@ static int imx_pwm_probe(struct platform_device *pdev)
 	imx->chip.dev = &pdev->dev;
 	imx->chip.base = -1;
 	imx->chip.npwm = 1;
-	imx->chip.can_sleep = true;
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	imx->mmio_base = devm_ioremap_resource(&pdev->dev, r);
-	if (IS_ERR(imx->mmio_base))
-		return PTR_ERR(imx->mmio_base);
+	if (r == NULL) {
+		dev_err(&pdev->dev, "no memory resource defined\n");
+		return -ENODEV;
+	}
+
+	imx->mmio_base = devm_request_and_ioremap(&pdev->dev, r);
+	if (imx->mmio_base == NULL)
+		return -EADDRNOTAVAIL;
 
 	data = of_id->data;
 	imx->config = data->config;
@@ -295,8 +304,7 @@ static int imx_pwm_remove(struct platform_device *pdev)
 static struct platform_driver imx_pwm_driver = {
 	.driver		= {
 		.name	= "imx-pwm",
-		.owner = THIS_MODULE,
-		.of_match_table = imx_pwm_dt_ids,
+		.of_match_table = of_match_ptr(imx_pwm_dt_ids),
 	},
 	.probe		= imx_pwm_probe,
 	.remove		= imx_pwm_remove,

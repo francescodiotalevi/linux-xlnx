@@ -31,12 +31,9 @@
 #include <asm/pgtable.h>
 #include <asm/vaddrs.h>
 #include <asm/pgalloc.h>	/* bug in asm-generic/tlb.h: check_pgt_cache */
-#include <asm/setup.h>
 #include <asm/tlb.h>
 #include <asm/prom.h>
 #include <asm/leon.h>
-
-#include "mm_32.h"
 
 unsigned long *sparc_valid_addr_bitmap;
 EXPORT_SYMBOL(sparc_valid_addr_bitmap);
@@ -60,12 +57,13 @@ void show_mem(unsigned int filter)
 	printk("Mem-info:\n");
 	show_free_areas(filter);
 	printk("Free swap:       %6ldkB\n",
-	       get_nr_swap_pages() << (PAGE_SHIFT-10));
+	       nr_swap_pages << (PAGE_SHIFT-10));
 	printk("%ld pages of RAM\n", totalram_pages);
 	printk("%ld free pages\n", nr_free_pages());
 }
 
 
+extern unsigned long cmdline_memory_size;
 unsigned long last_valid_pfn;
 
 unsigned long calc_highpages(void)
@@ -248,6 +246,9 @@ unsigned long __init bootmem_init(unsigned long *pages_avail)
  * init routine based upon the Sun model type on the Sparc.
  *
  */
+extern void srmmu_paging_init(void);
+extern void device_scan(void);
+
 void __init paging_init(void)
 {
 	srmmu_paging_init();
@@ -281,12 +282,22 @@ static void map_high_region(unsigned long start_pfn, unsigned long end_pfn)
 	printk("mapping high region %08lx - %08lx\n", start_pfn, end_pfn);
 #endif
 
-	for (tmp = start_pfn; tmp < end_pfn; tmp++)
-		free_highmem_page(pfn_to_page(tmp));
+	for (tmp = start_pfn; tmp < end_pfn; tmp++) {
+		struct page *page = pfn_to_page(tmp);
+
+		ClearPageReserved(page);
+		init_page_count(page);
+		__free_page(page);
+		totalhigh_pages++;
+	}
 }
 
 void __init mem_init(void)
 {
+	int codepages = 0;
+	int datapages = 0;
+	int initpages = 0; 
+	int reservedpages = 0;
 	int i;
 
 	if (PKMAP_BASE+LAST_PKMAP*PAGE_SIZE >= FIXADDR_START) {
@@ -318,11 +329,14 @@ void __init mem_init(void)
 
 	max_mapnr = last_valid_pfn - pfn_base;
 	high_memory = __va(max_low_pfn << PAGE_SHIFT);
-	free_all_bootmem();
+
+	totalram_pages = free_all_bootmem();
 
 	for (i = 0; sp_banks[i].num_bytes != 0; i++) {
 		unsigned long start_pfn = sp_banks[i].base_addr >> PAGE_SHIFT;
 		unsigned long end_pfn = (sp_banks[i].base_addr + sp_banks[i].num_bytes) >> PAGE_SHIFT;
+
+		num_physpages += sp_banks[i].num_bytes >> PAGE_SHIFT;
 
 		if (end_pfn <= highstart_pfn)
 			continue;
@@ -333,19 +347,72 @@ void __init mem_init(void)
 		map_high_region(start_pfn, end_pfn);
 	}
 	
-	mem_init_print_info(NULL);
+	totalram_pages += totalhigh_pages;
+
+	codepages = (((unsigned long) &_etext) - ((unsigned long)&_start));
+	codepages = PAGE_ALIGN(codepages) >> PAGE_SHIFT;
+	datapages = (((unsigned long) &_edata) - ((unsigned long)&_etext));
+	datapages = PAGE_ALIGN(datapages) >> PAGE_SHIFT;
+	initpages = (((unsigned long) &__init_end) - ((unsigned long) &__init_begin));
+	initpages = PAGE_ALIGN(initpages) >> PAGE_SHIFT;
+
+	/* Ignore memory holes for the purpose of counting reserved pages */
+	for (i=0; i < max_low_pfn; i++)
+		if (test_bit(i >> (20 - PAGE_SHIFT), sparc_valid_addr_bitmap)
+		    && PageReserved(pfn_to_page(i)))
+			reservedpages++;
+
+	printk(KERN_INFO "Memory: %luk/%luk available (%dk kernel code, %dk reserved, %dk data, %dk init, %ldk highmem)\n",
+	       nr_free_pages() << (PAGE_SHIFT-10),
+	       num_physpages << (PAGE_SHIFT - 10),
+	       codepages << (PAGE_SHIFT-10),
+	       reservedpages << (PAGE_SHIFT - 10),
+	       datapages << (PAGE_SHIFT-10), 
+	       initpages << (PAGE_SHIFT-10),
+	       totalhigh_pages << (PAGE_SHIFT-10));
 }
 
 void free_initmem (void)
 {
-	free_initmem_default(POISON_FREE_INITMEM);
+	unsigned long addr;
+	unsigned long freed;
+
+	addr = (unsigned long)(&__init_begin);
+	freed = (unsigned long)(&__init_end) - addr;
+	for (; addr < (unsigned long)(&__init_end); addr += PAGE_SIZE) {
+		struct page *p;
+
+		memset((void *)addr, POISON_FREE_INITMEM, PAGE_SIZE);
+		p = virt_to_page(addr);
+
+		ClearPageReserved(p);
+		init_page_count(p);
+		__free_page(p);
+		totalram_pages++;
+		num_physpages++;
+	}
+	printk(KERN_INFO "Freeing unused kernel memory: %ldk freed\n",
+		freed >> 10);
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
-	free_reserved_area((void *)start, (void *)end, POISON_FREE_INITMEM,
-			   "initrd");
+	if (start < end)
+		printk(KERN_INFO "Freeing initrd memory: %ldk freed\n",
+			(end - start) >> 10);
+	for (; start < end; start += PAGE_SIZE) {
+		struct page *p;
+
+		memset((void *)start, POISON_FREE_INITMEM, PAGE_SIZE);
+		p = virt_to_page(start);
+
+		ClearPageReserved(p);
+		init_page_count(p);
+		__free_page(p);
+		totalram_pages++;
+		num_physpages++;
+	}
 }
 #endif
 

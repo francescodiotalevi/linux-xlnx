@@ -40,6 +40,7 @@ struct ir_t {
 	char phys[32];
 
 	char *rc_codes;
+	u64 protocol;
 
 	u32 timeout;
 	u32 controller;

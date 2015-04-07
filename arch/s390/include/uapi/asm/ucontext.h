@@ -16,9 +16,7 @@ struct ucontext_extended {
 	struct ucontext  *uc_link;
 	stack_t		  uc_stack;
 	_sigregs	  uc_mcontext;
-	sigset_t	  uc_sigmask;
-	/* Allow for uc_sigmask growth.  Glibc uses a 1024-bit sigset_t.  */
-	unsigned char	  __unused[128 - sizeof(sigset_t)];
+	unsigned long	  uc_sigmask[2];
 	unsigned long	  uc_gprs_high[16];
 };
 
@@ -29,9 +27,7 @@ struct ucontext {
 	struct ucontext  *uc_link;
 	stack_t		  uc_stack;
 	_sigregs          uc_mcontext;
-	sigset_t	  uc_sigmask;
-	/* Allow for uc_sigmask growth.  Glibc uses a 1024-bit sigset_t.  */
-	unsigned char	  __unused[128 - sizeof(sigset_t)];
+	sigset_t	  uc_sigmask;	/* mask last for extensibility */
 };
 
 #endif /* !_ASM_S390_UCONTEXT_H */

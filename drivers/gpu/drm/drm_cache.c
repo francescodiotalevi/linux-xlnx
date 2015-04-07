@@ -32,12 +32,6 @@
 #include <drm/drmP.h>
 
 #if defined(CONFIG_X86)
-
-/*
- * clflushopt is an unordered instruction which needs fencing with mfence or
- * sfence to avoid ordering issues.  For drm_clflush_page this fencing happens
- * in the caller.
- */
 static void
 drm_clflush_page(struct page *page)
 {
@@ -50,7 +44,7 @@ drm_clflush_page(struct page *page)
 
 	page_virtual = kmap_atomic(page);
 	for (i = 0; i < PAGE_SIZE; i += size)
-		clflushopt(page_virtual + i);
+		clflush(page_virtual + i);
 	kunmap_atomic(page_virtual);
 }
 
@@ -111,11 +105,12 @@ drm_clflush_sg(struct sg_table *st)
 {
 #if defined(CONFIG_X86)
 	if (cpu_has_clflush) {
-		struct sg_page_iter sg_iter;
+		struct scatterlist *sg;
+		int i;
 
 		mb();
-		for_each_sg_page(st->sgl, &sg_iter, st->nents, 0)
-			drm_clflush_page(sg_page_iter_page(&sg_iter));
+		for_each_sg(st->sgl, sg, st->nents, i)
+			drm_clflush_page(sg_page(sg));
 		mb();
 
 		return;
@@ -131,15 +126,15 @@ drm_clflush_sg(struct sg_table *st)
 EXPORT_SYMBOL(drm_clflush_sg);
 
 void
-drm_clflush_virt_range(void *addr, unsigned long length)
+drm_clflush_virt_range(char *addr, unsigned long length)
 {
 #if defined(CONFIG_X86)
 	if (cpu_has_clflush) {
-		void *end = addr + length;
+		char *end = addr + length;
 		mb();
 		for (; addr < end; addr += boot_cpu_data.x86_clflush_size)
-			clflushopt(addr);
-		clflushopt(end - 1);
+			clflush(addr);
+		clflush(end - 1);
 		mb();
 		return;
 	}

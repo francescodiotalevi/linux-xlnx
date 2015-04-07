@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -84,7 +84,7 @@ static u8 acpi_rs_count_set_bits(u16 bit_field)
 		bit_field &= (u16) (bit_field - 1);
 	}
 
-	return (bits_set);
+	return bits_set;
 }
 
 /*******************************************************************************
@@ -174,7 +174,6 @@ acpi_rs_stream_option_length(u32 resource_length,
  * FUNCTION:    acpi_rs_get_aml_length
  *
  * PARAMETERS:  resource            - Pointer to the resource linked list
- *              resource_list_size  - Size of the resource linked list
  *              size_needed         - Where the required size is returned
  *
  * RETURN:      Status
@@ -186,31 +185,21 @@ acpi_rs_stream_option_length(u32 resource_length,
  ******************************************************************************/
 
 acpi_status
-acpi_rs_get_aml_length(struct acpi_resource *resource,
-		       acpi_size resource_list_size, acpi_size * size_needed)
+acpi_rs_get_aml_length(struct acpi_resource * resource, acpi_size * size_needed)
 {
 	acpi_size aml_size_needed = 0;
-	struct acpi_resource *resource_end;
 	acpi_rs_length total_size;
 
 	ACPI_FUNCTION_TRACE(rs_get_aml_length);
 
 	/* Traverse entire list of internal resource descriptors */
 
-	resource_end =
-	    ACPI_ADD_PTR(struct acpi_resource, resource, resource_list_size);
-	while (resource < resource_end) {
+	while (resource) {
 
 		/* Validate the descriptor type */
 
 		if (resource->type > ACPI_RESOURCE_TYPE_MAX) {
 			return_ACPI_STATUS(AE_AML_INVALID_RESOURCE_TYPE);
-		}
-
-		/* Sanity check the length. It must not be zero, or we loop forever */
-
-		if (!resource->length) {
-			return_ACPI_STATUS(AE_AML_BAD_RESOURCE_LENGTH);
 		}
 
 		/* Get the base size of the (external stream) resource descriptor */
@@ -357,7 +346,6 @@ acpi_rs_get_aml_length(struct acpi_resource *resource,
 			break;
 
 		default:
-
 			break;
 		}
 
@@ -419,9 +407,7 @@ acpi_rs_get_list_length(u8 * aml_buffer,
 
 		/* Validate the Resource Type and Resource Length */
 
-		status =
-		    acpi_ut_validate_resource(NULL, aml_buffer,
-					      &resource_index);
+		status = acpi_ut_validate_resource(aml_buffer, &resource_index);
 		if (ACPI_FAILURE(status)) {
 			/*
 			 * Exit on failure. Cannot continue because the descriptor length
@@ -545,7 +531,6 @@ acpi_rs_get_list_length(u8 * aml_buffer,
 			break;
 
 		default:
-
 			break;
 		}
 
@@ -636,7 +621,7 @@ acpi_rs_get_pci_routing_table_length(union acpi_operand_object *package_object,
 
 	for (index = 0; index < number_of_elements; index++) {
 
-		/* Dereference the subpackage */
+		/* Dereference the sub-package */
 
 		package_element = *top_object_list;
 
@@ -657,9 +642,8 @@ acpi_rs_get_pci_routing_table_length(union acpi_operand_object *package_object,
 
 		name_found = FALSE;
 
-		for (table_index = 0;
-		     table_index < package_element->package.count
-		     && !name_found; table_index++) {
+		for (table_index = 0; table_index < 4 && !name_found;
+		     table_index++) {
 			if (*sub_object_list &&	/* Null object allowed */
 			    ((ACPI_TYPE_STRING ==
 			      (*sub_object_list)->common.type) ||

@@ -44,33 +44,47 @@ struct max77686_clk {
 	struct clk_lookup *lookup;
 };
 
-static struct max77686_clk *to_max77686_clk(struct clk_hw *hw)
+static struct max77686_clk *get_max77686_clk(struct clk_hw *hw)
 {
 	return container_of(hw, struct max77686_clk, hw);
 }
 
 static int max77686_clk_prepare(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk *max77686;
+	int ret;
 
-	return regmap_update_bits(max77686->iodev->regmap,
-				  MAX77686_REG_32KHZ, max77686->mask,
-				  max77686->mask);
+	max77686 = get_max77686_clk(hw);
+	if (!max77686)
+		return -ENOMEM;
+
+	ret = regmap_update_bits(max77686->iodev->regmap,
+		MAX77686_REG_32KHZ, max77686->mask, max77686->mask);
+
+	return ret;
 }
 
 static void max77686_clk_unprepare(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk *max77686;
+
+	max77686 = get_max77686_clk(hw);
+	if (!max77686)
+		return;
 
 	regmap_update_bits(max77686->iodev->regmap,
 		MAX77686_REG_32KHZ, max77686->mask, ~max77686->mask);
 }
 
-static int max77686_clk_is_prepared(struct clk_hw *hw)
+static int max77686_clk_is_enabled(struct clk_hw *hw)
 {
-	struct max77686_clk *max77686 = to_max77686_clk(hw);
+	struct max77686_clk *max77686;
 	int ret;
 	u32 val;
+
+	max77686 = get_max77686_clk(hw);
+	if (!max77686)
+		return -ENOMEM;
 
 	ret = regmap_read(max77686->iodev->regmap,
 				MAX77686_REG_32KHZ, &val);
@@ -81,17 +95,10 @@ static int max77686_clk_is_prepared(struct clk_hw *hw)
 	return val & max77686->mask;
 }
 
-static unsigned long max77686_recalc_rate(struct clk_hw *hw,
-					  unsigned long parent_rate)
-{
-	return 32768;
-}
-
 static struct clk_ops max77686_clk_ops = {
 	.prepare	= max77686_clk_prepare,
 	.unprepare	= max77686_clk_unprepare,
-	.is_prepared	= max77686_clk_is_prepared,
-	.recalc_rate	= max77686_recalc_rate,
+	.is_enabled	= max77686_clk_is_enabled,
 };
 
 static struct clk_init_data max77686_clks_init[MAX77686_CLKS_NUM] = {
@@ -112,44 +119,45 @@ static struct clk_init_data max77686_clks_init[MAX77686_CLKS_NUM] = {
 	},
 };
 
-static struct clk *max77686_clk_register(struct device *dev,
+static int max77686_clk_register(struct device *dev,
 				struct max77686_clk *max77686)
 {
 	struct clk *clk;
 	struct clk_hw *hw = &max77686->hw;
 
 	clk = clk_register(dev, hw);
-	if (IS_ERR(clk))
-		return clk;
 
-	max77686->lookup = kzalloc(sizeof(struct clk_lookup), GFP_KERNEL);
-	if (!max77686->lookup)
-		return ERR_PTR(-ENOMEM);
+	if (IS_ERR(clk))
+		return -ENOMEM;
+
+	max77686->lookup = devm_kzalloc(dev, sizeof(struct clk_lookup),
+					GFP_KERNEL);
+	if (IS_ERR(max77686->lookup))
+		return -ENOMEM;
 
 	max77686->lookup->con_id = hw->init->name;
 	max77686->lookup->clk = clk;
 
 	clkdev_add(max77686->lookup);
 
-	return clk;
+	return 0;
 }
 
 static int max77686_clk_probe(struct platform_device *pdev)
 {
 	struct max77686_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct max77686_clk *max77686_clks[MAX77686_CLKS_NUM];
-	struct clk **clocks;
+	struct max77686_clk **max77686_clks;
 	int i, ret;
 
-	clocks = devm_kzalloc(&pdev->dev, sizeof(struct clk *)
+	max77686_clks = devm_kzalloc(&pdev->dev, sizeof(struct max77686_clk *)
 					* MAX77686_CLKS_NUM, GFP_KERNEL);
-	if (!clocks)
+	if (IS_ERR(max77686_clks))
 		return -ENOMEM;
 
 	for (i = 0; i < MAX77686_CLKS_NUM; i++) {
 		max77686_clks[i] = devm_kzalloc(&pdev->dev,
 					sizeof(struct max77686_clk), GFP_KERNEL);
-		if (!max77686_clks[i])
+		if (IS_ERR(max77686_clks[i]))
 			return -ENOMEM;
 	}
 
@@ -158,63 +166,47 @@ static int max77686_clk_probe(struct platform_device *pdev)
 		max77686_clks[i]->mask = 1 << i;
 		max77686_clks[i]->hw.init = &max77686_clks_init[i];
 
-		clocks[i] = max77686_clk_register(&pdev->dev, max77686_clks[i]);
-		if (IS_ERR(clocks[i])) {
-			ret = PTR_ERR(clocks[i]);
-			dev_err(&pdev->dev, "failed to register %s\n",
-				max77686_clks[i]->hw.init->name);
-			goto err_clocks;
-		}
-	}
-
-	platform_set_drvdata(pdev, clocks);
-
-	if (iodev->dev->of_node) {
-		struct clk_onecell_data *of_data;
-
-		of_data = devm_kzalloc(&pdev->dev,
-					sizeof(*of_data), GFP_KERNEL);
-		if (!of_data) {
-			ret = -ENOMEM;
-			goto err_clocks;
-		}
-
-		of_data->clks = clocks;
-		of_data->clk_num = MAX77686_CLKS_NUM;
-		ret = of_clk_add_provider(iodev->dev->of_node,
-					of_clk_src_onecell_get, of_data);
+		ret = max77686_clk_register(&pdev->dev, max77686_clks[i]);
 		if (ret) {
-			dev_err(&pdev->dev, "failed to register OF clock provider\n");
-			goto err_clocks;
+			switch (i) {
+			case MAX77686_CLK_AP:
+				dev_err(&pdev->dev, "Fail to register CLK_AP\n");
+				goto err_clk_ap;
+				break;
+			case MAX77686_CLK_CP:
+				dev_err(&pdev->dev, "Fail to register CLK_CP\n");
+				goto err_clk_cp;
+				break;
+			case MAX77686_CLK_PMIC:
+				dev_err(&pdev->dev, "Fail to register CLK_PMIC\n");
+				goto err_clk_pmic;
+			}
 		}
 	}
 
-	return 0;
+	platform_set_drvdata(pdev, max77686_clks);
 
-err_clocks:
-	for (--i; i >= 0; --i) {
-		clkdev_drop(max77686_clks[i]->lookup);
-		clk_unregister(max77686_clks[i]->hw.clk);
-	}
+	goto out;
 
+err_clk_pmic:
+	clkdev_drop(max77686_clks[MAX77686_CLK_CP]->lookup);
+	kfree(max77686_clks[MAX77686_CLK_CP]->hw.clk);
+err_clk_cp:
+	clkdev_drop(max77686_clks[MAX77686_CLK_AP]->lookup);
+	kfree(max77686_clks[MAX77686_CLK_AP]->hw.clk);
+err_clk_ap:
+out:
 	return ret;
 }
 
 static int max77686_clk_remove(struct platform_device *pdev)
 {
-	struct max77686_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct clk **clocks = platform_get_drvdata(pdev);
+	struct max77686_clk **max77686_clks = platform_get_drvdata(pdev);
 	int i;
 
-	if (iodev->dev->of_node)
-		of_clk_del_provider(iodev->dev->of_node);
-
 	for (i = 0; i < MAX77686_CLKS_NUM; i++) {
-		struct clk_hw *hw = __clk_get_hw(clocks[i]);
-		struct max77686_clk *max77686 = to_max77686_clk(hw);
-
-		clkdev_drop(max77686->lookup);
-		clk_unregister(clocks[i]);
+		clkdev_drop(max77686_clks[i]->lookup);
+		kfree(max77686_clks[i]->hw.clk);
 	}
 	return 0;
 }

@@ -43,6 +43,7 @@ static __be32
 nfsd3_proc_getattr(struct svc_rqst *rqstp, struct nfsd_fhandle  *argp,
 					   struct nfsd3_attrstat *resp)
 {
+	int	err;
 	__be32	nfserr;
 
 	dprintk("nfsd: GETATTR(3)  %s\n",
@@ -54,7 +55,9 @@ nfsd3_proc_getattr(struct svc_rqst *rqstp, struct nfsd_fhandle  *argp,
 	if (nfserr)
 		RETURN_STATUS(nfserr);
 
-	nfserr = fh_getattr(&resp->fh, &resp->stat);
+	err = vfs_getattr(resp->fh.fh_export->ex_path.mnt,
+			  resp->fh.fh_dentry, &resp->stat);
+	nfserr = nfserrno(err);
 
 	RETURN_STATUS(nfserr);
 }
@@ -157,7 +160,11 @@ nfsd3_proc_read(struct svc_rqst *rqstp, struct nfsd3_readargs *argp,
 	 * 1 (status) + 22 (post_op_attr) + 1 (count) + 1 (eof)
 	 * + 1 (xdr opaque byte count) = 26
 	 */
-	resp->count = min(argp->count, max_blocksize);
+
+	resp->count = argp->count;
+	if (max_blocksize < resp->count)
+		resp->count = max_blocksize;
+
 	svc_reserve_auth(rqstp, ((1 + NFS3_POST_OP_ATTR_WORDS + 3)<<2) + resp->count +4);
 
 	fh_copy(&resp->fh, &argp->fh);
@@ -282,7 +289,8 @@ nfsd3_proc_symlink(struct svc_rqst *rqstp, struct nfsd3_symlinkargs *argp,
 	fh_copy(&resp->dirfh, &argp->ffh);
 	fh_init(&resp->fh, NFS3_FHSIZE);
 	nfserr = nfsd_symlink(rqstp, &resp->dirfh, argp->fname, argp->flen,
-						   argp->tname, &resp->fh);
+						   argp->tname, argp->tlen,
+						   &resp->fh, &argp->attrs);
 	RETURN_STATUS(nfserr);
 }
 

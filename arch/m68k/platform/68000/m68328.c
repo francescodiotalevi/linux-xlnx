@@ -15,7 +15,6 @@
 
 /***************************************************************************/
 
-#include <linux/init.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/rtc.h>
@@ -43,7 +42,7 @@ void m68328_reset (void)
 
 /***************************************************************************/
 
-void __init config_BSP(char *command, int len)
+void config_BSP(char *command, int len)
 {
   printk(KERN_INFO "\n68328 support D. Jeff Dionne <jeff@uclinux.org>\n");
   printk(KERN_INFO "68328 support Kenneth Albanowski <kjahds@kjshds.com>\n");

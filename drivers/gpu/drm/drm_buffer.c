@@ -80,7 +80,11 @@ int drm_buffer_alloc(struct drm_buffer **buf, int size)
 
 error_out:
 
-	for (; idx >= 0; --idx)
+	/* Only last element can be null pointer so check for it first. */
+	if ((*buf)->data[idx])
+		kfree((*buf)->data[idx]);
+
+	for (--idx; idx >= 0; --idx)
 		kfree((*buf)->data[idx]);
 
 	kfree(*buf);
@@ -110,7 +114,7 @@ int drm_buffer_copy_from_user(struct drm_buffer *buf,
 
 	for (idx = 0; idx < nr_pages; ++idx) {
 
-		if (copy_from_user(buf->data[idx],
+		if (DRM_COPY_FROM_USER(buf->data[idx],
 			user_data + idx * PAGE_SIZE,
 			min(PAGE_SIZE, size - idx * PAGE_SIZE))) {
 			DRM_ERROR("Failed to copy user data (%p) to drm buffer"

@@ -318,8 +318,7 @@ return_fib:
 			kthread_stop(dev->thread);
 			ssleep(1);
 			dev->aif_thread = 0;
-			dev->thread = kthread_run(aac_command_thread, dev,
-						  "%s", dev->name);
+			dev->thread = kthread_run(aac_command_thread, dev, dev->name);
 			ssleep(1);
 		}
 		if (f.wait) {
@@ -511,8 +510,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 		goto cleanup;
 	}
 
-	if ((fibsize < (sizeof(struct user_aac_srb) - sizeof(struct user_sgentry))) ||
-	    (fibsize > (dev->max_fib_size - sizeof(struct aac_fibhdr)))) {
+	if (fibsize > (dev->max_fib_size - sizeof(struct aac_fibhdr))) {
 		rcode = -EINVAL;
 		goto cleanup;
 	}

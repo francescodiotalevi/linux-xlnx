@@ -316,23 +316,17 @@ static char *usb_dump_iad_descriptor(char *start, char *end,
  */
 static char *usb_dump_config_descriptor(char *start, char *end,
 				const struct usb_config_descriptor *desc,
-				int active, int speed)
+				int active)
 {
-	int mul;
-
 	if (start > end)
 		return start;
-	if (speed == USB_SPEED_SUPER)
-		mul = 8;
-	else
-		mul = 2;
 	start += sprintf(start, format_config,
 			 /* mark active/actual/current cfg. */
 			 active ? '*' : ' ',
 			 desc->bNumInterfaces,
 			 desc->bConfigurationValue,
 			 desc->bmAttributes,
-			 desc->bMaxPower * mul);
+			 desc->bMaxPower * 2);
 	return start;
 }
 
@@ -348,8 +342,7 @@ static char *usb_dump_config(int speed, char *start, char *end,
 	if (!config)
 		/* getting these some in 2.3.7; none in 2.3.6 */
 		return start + sprintf(start, "(null Cfg. desc.)\n");
-	start = usb_dump_config_descriptor(start, end, &config->desc, active,
-			speed);
+	start = usb_dump_config_descriptor(start, end, &config->desc, active);
 	for (i = 0; i < USB_MAXIADS; i++) {
 		if (config->intf_assoc[i] == NULL)
 			break;
@@ -665,7 +658,7 @@ static loff_t usb_device_lseek(struct file *file, loff_t offset, int orig)
 {
 	loff_t ret;
 
-	mutex_lock(&file_inode(file)->i_mutex);
+	mutex_lock(&file->f_dentry->d_inode->i_mutex);
 
 	switch (orig) {
 	case 0:
@@ -681,7 +674,7 @@ static loff_t usb_device_lseek(struct file *file, loff_t offset, int orig)
 		ret = -EINVAL;
 	}
 
-	mutex_unlock(&file_inode(file)->i_mutex);
+	mutex_unlock(&file->f_dentry->d_inode->i_mutex);
 	return ret;
 }
 

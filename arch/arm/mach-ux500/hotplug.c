@@ -12,9 +12,10 @@
 #include <linux/errno.h>
 #include <linux/smp.h>
 
+#include <asm/cacheflush.h>
 #include <asm/smp_plat.h>
 
-#include "setup.h"
+#include <mach/setup.h>
 
 /*
  * platform-specific code to shutdown a CPU
@@ -23,6 +24,8 @@
  */
 void __ref ux500_cpu_die(unsigned int cpu)
 {
+	flush_cache_all();
+
 	/* directly enter low power state, skipping secure registers */
 	for (;;) {
 		__asm__ __volatile__("dsb\n\t" "wfi\n\t"

@@ -37,6 +37,12 @@
 #include "internal.h"
 
 /*
+ * power management idle function, if any..
+ */
+void (*pm_idle)(void);
+EXPORT_SYMBOL(pm_idle);
+
+/*
  * return saved PC of a blocked thread.
  */
 unsigned long thread_saved_pc(struct task_struct *tsk)
@@ -50,19 +56,78 @@ unsigned long thread_saved_pc(struct task_struct *tsk)
 void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
 
+#if !defined(CONFIG_SMP) || defined(CONFIG_HOTPLUG_CPU)
+/*
+ * we use this if we don't have any better idle routine
+ */
+static void default_idle(void)
+{
+	local_irq_disable();
+	if (!need_resched())
+		safe_halt();
+	else
+		local_irq_enable();
+}
+
+#else /* !CONFIG_SMP || CONFIG_HOTPLUG_CPU  */
 /*
  * On SMP it's slightly faster (but much more power-consuming!)
  * to poll the ->work.need_resched flag instead of waiting for the
  * cross-CPU IPI to arrive. Use this option with caution.
- *
- * tglx: No idea why this depends on HOTPLUG_CPU !?!
  */
-#if !defined(CONFIG_SMP) || defined(CONFIG_HOTPLUG_CPU)
-void arch_cpu_idle(void)
+static inline void poll_idle(void)
 {
-	safe_halt();
+	int oldval;
+
+	local_irq_enable();
+
+	/*
+	 * Deal with another CPU just having chosen a thread to
+	 * run here:
+	 */
+	oldval = test_and_clear_thread_flag(TIF_NEED_RESCHED);
+
+	if (!oldval) {
+		set_thread_flag(TIF_POLLING_NRFLAG);
+		while (!need_resched())
+			cpu_relax();
+		clear_thread_flag(TIF_POLLING_NRFLAG);
+	} else {
+		set_need_resched();
+	}
 }
-#endif
+#endif /* !CONFIG_SMP || CONFIG_HOTPLUG_CPU */
+
+/*
+ * the idle thread
+ * - there's no useful work to be done, so just try to conserve power and have
+ *   a low exit latency (ie sit in a loop waiting for somebody to say that
+ *   they'd like to reschedule)
+ */
+void cpu_idle(void)
+{
+	/* endless idle loop with no priority at all */
+	for (;;) {
+		rcu_idle_enter();
+		while (!need_resched()) {
+			void (*idle)(void);
+
+			smp_rmb();
+			idle = pm_idle;
+			if (!idle) {
+#if defined(CONFIG_SMP) && !defined(CONFIG_HOTPLUG_CPU)
+				idle = poll_idle;
+#else  /* CONFIG_SMP && !CONFIG_HOTPLUG_CPU */
+				idle = default_idle;
+#endif /* CONFIG_SMP && !CONFIG_HOTPLUG_CPU */
+			}
+			idle();
+		}
+		rcu_idle_exit();
+
+		schedule_preempt_disabled();
+	}
+}
 
 void release_segments(struct mm_struct *mm)
 {
@@ -97,7 +162,6 @@ void machine_power_off(void)
 
 void show_regs(struct pt_regs *regs)
 {
-	show_regs_print_info(KERN_DEFAULT);
 }
 
 /*

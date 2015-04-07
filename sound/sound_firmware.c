@@ -1,7 +1,6 @@
 #include <linux/vmalloc.h>
 #include <linux/module.h>
 #include <linux/fs.h>
-#include <linux/file.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <asm/uaccess.h>
@@ -20,18 +19,18 @@ static int do_mod_firmware_load(const char *fn, char **fp)
 		printk(KERN_INFO "Unable to load '%s'.\n", fn);
 		return 0;
 	}
-	l = i_size_read(file_inode(filp));
+	l = i_size_read(filp->f_path.dentry->d_inode);
 	if (l <= 0 || l > 131072)
 	{
 		printk(KERN_INFO "Invalid firmware '%s'\n", fn);
-		fput(filp);
+		filp_close(filp, NULL);
 		return 0;
 	}
 	dp = vmalloc(l);
 	if (dp == NULL)
 	{
 		printk(KERN_INFO "Out of memory loading '%s'.\n", fn);
-		fput(filp);
+		filp_close(filp, NULL);
 		return 0;
 	}
 	pos = 0;
@@ -39,10 +38,10 @@ static int do_mod_firmware_load(const char *fn, char **fp)
 	{
 		printk(KERN_INFO "Failed to read '%s'.\n", fn);
 		vfree(dp);
-		fput(filp);
+		filp_close(filp, NULL);
 		return 0;
 	}
-	fput(filp);
+	filp_close(filp, NULL);
 	*fp = dp;
 	return (int) l;
 }

@@ -37,9 +37,6 @@
 
     Jeremy Fitzhardinge <jeremy@goop.org> 2006
  */
-
-#define pr_fmt(fmt) fmt
-
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -156,29 +153,32 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 
 	if (warning) {
 		/* this is a WARN_ON rather than BUG/BUG_ON */
-		pr_warn("------------[ cut here ]------------\n");
+		printk(KERN_WARNING "------------[ cut here ]------------\n");
 
 		if (file)
-			pr_warn("WARNING: at %s:%u\n", file, line);
+			printk(KERN_WARNING "WARNING: at %s:%u\n",
+			       file, line);
 		else
-			pr_warn("WARNING: at %p [verbose debug info unavailable]\n",
-				(void *)bugaddr);
+			printk(KERN_WARNING "WARNING: at %p "
+			       "[verbose debug info unavailable]\n",
+			       (void *)bugaddr);
 
 		print_modules();
 		show_regs(regs);
 		print_oops_end_marker();
-		/* Just a warning, don't kill lockdep. */
-		add_taint(BUG_GET_TAINT(bug), LOCKDEP_STILL_OK);
+		add_taint(BUG_GET_TAINT(bug));
 		return BUG_TRAP_TYPE_WARN;
 	}
 
 	printk(KERN_DEFAULT "------------[ cut here ]------------\n");
 
 	if (file)
-		pr_crit("kernel BUG at %s:%u!\n", file, line);
+		printk(KERN_CRIT "kernel BUG at %s:%u!\n",
+		       file, line);
 	else
-		pr_crit("Kernel BUG at %p [verbose debug info unavailable]\n",
-			(void *)bugaddr);
+		printk(KERN_CRIT "Kernel BUG at %p "
+		       "[verbose debug info unavailable]\n",
+		       (void *)bugaddr);
 
 	return BUG_TRAP_TYPE_BUG;
 }

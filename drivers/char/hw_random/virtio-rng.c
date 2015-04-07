@@ -25,112 +25,81 @@
 #include <linux/virtio_rng.h>
 #include <linux/module.h>
 
-static DEFINE_IDA(rng_index_ida);
-
-struct virtrng_info {
-	struct hwrng hwrng;
-	struct virtqueue *vq;
-	struct completion have_data;
-	char name[25];
-	unsigned int data_avail;
-	int index;
-	bool busy;
-	bool hwrng_register_done;
-	bool hwrng_removed;
-};
-
+static struct virtqueue *vq;
+static unsigned int data_avail;
+static DECLARE_COMPLETION(have_data);
+static bool busy;
 
 static void random_recv_done(struct virtqueue *vq)
 {
-	struct virtrng_info *vi = vq->vdev->priv;
-
 	/* We can get spurious callbacks, e.g. shared IRQs + virtio_pci. */
-	if (!virtqueue_get_buf(vi->vq, &vi->data_avail))
+	if (!virtqueue_get_buf(vq, &data_avail))
 		return;
 
-	complete(&vi->have_data);
+	complete(&have_data);
 }
 
 /* The host will fill any buffer we give it with sweet, sweet randomness. */
-static void register_buffer(struct virtrng_info *vi, u8 *buf, size_t size)
+static void register_buffer(u8 *buf, size_t size)
 {
 	struct scatterlist sg;
 
 	sg_init_one(&sg, buf, size);
 
 	/* There should always be room for one buffer. */
-	virtqueue_add_inbuf(vi->vq, &sg, 1, buf, GFP_KERNEL);
+	if (virtqueue_add_buf(vq, &sg, 0, 1, buf, GFP_KERNEL) < 0)
+		BUG();
 
-	virtqueue_kick(vi->vq);
+	virtqueue_kick(vq);
 }
 
 static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 {
 	int ret;
-	struct virtrng_info *vi = (struct virtrng_info *)rng->priv;
 
-	if (vi->hwrng_removed)
-		return -ENODEV;
-
-	if (!vi->busy) {
-		vi->busy = true;
-		init_completion(&vi->have_data);
-		register_buffer(vi, buf, size);
+	if (!busy) {
+		busy = true;
+		init_completion(&have_data);
+		register_buffer(buf, size);
 	}
 
 	if (!wait)
 		return 0;
 
-	ret = wait_for_completion_killable(&vi->have_data);
+	ret = wait_for_completion_killable(&have_data);
 	if (ret < 0)
 		return ret;
 
-	vi->busy = false;
+	busy = false;
 
-	return vi->data_avail;
+	return data_avail;
 }
 
 static void virtio_cleanup(struct hwrng *rng)
 {
-	struct virtrng_info *vi = (struct virtrng_info *)rng->priv;
-
-	if (vi->busy)
-		wait_for_completion(&vi->have_data);
+	if (busy)
+		wait_for_completion(&have_data);
 }
+
+
+static struct hwrng virtio_hwrng = {
+	.name		= "virtio",
+	.cleanup	= virtio_cleanup,
+	.read		= virtio_read,
+};
 
 static int probe_common(struct virtio_device *vdev)
 {
-	int err, index;
-	struct virtrng_info *vi = NULL;
-
-	vi = kzalloc(sizeof(struct virtrng_info), GFP_KERNEL);
-	if (!vi)
-		return -ENOMEM;
-
-	vi->index = index = ida_simple_get(&rng_index_ida, 0, 0, GFP_KERNEL);
-	if (index < 0) {
-		kfree(vi);
-		return index;
-	}
-	sprintf(vi->name, "virtio_rng.%d", index);
-	init_completion(&vi->have_data);
-
-	vi->hwrng = (struct hwrng) {
-		.read = virtio_read,
-		.cleanup = virtio_cleanup,
-		.priv = (unsigned long)vi,
-		.name = vi->name,
-		.quality = 1000,
-	};
-	vdev->priv = vi;
+	int err;
 
 	/* We expect a single virtqueue. */
-	vi->vq = virtio_find_single_vq(vdev, random_recv_done, "input");
-	if (IS_ERR(vi->vq)) {
-		err = PTR_ERR(vi->vq);
-		vi->vq = NULL;
-		kfree(vi);
-		ida_simple_remove(&rng_index_ida, index);
+	vq = virtio_find_single_vq(vdev, random_recv_done, "input");
+	if (IS_ERR(vq))
+		return PTR_ERR(vq);
+
+	err = hwrng_register(&virtio_hwrng);
+	if (err) {
+		vdev->config->del_vqs(vdev);
 		return err;
 	}
 
@@ -139,18 +108,10 @@ static int probe_common(struct virtio_device *vdev)
 
 static void remove_common(struct virtio_device *vdev)
 {
-	struct virtrng_info *vi = vdev->priv;
-
-	vi->hwrng_removed = true;
-	vi->data_avail = 0;
-	complete(&vi->have_data);
 	vdev->config->reset(vdev);
-	vi->busy = false;
-	if (vi->hwrng_register_done)
-		hwrng_unregister(&vi->hwrng);
+	busy = false;
+	hwrng_unregister(&virtio_hwrng);
 	vdev->config->del_vqs(vdev);
-	ida_simple_remove(&rng_index_ida, vi->index);
-	kfree(vi);
 }
 
 static int virtrng_probe(struct virtio_device *vdev)
@@ -163,17 +124,7 @@ static void virtrng_remove(struct virtio_device *vdev)
 	remove_common(vdev);
 }
 
-static void virtrng_scan(struct virtio_device *vdev)
-{
-	struct virtrng_info *vi = vdev->priv;
-	int err;
-
-	err = hwrng_register(&vi->hwrng);
-	if (!err)
-		vi->hwrng_register_done = true;
-}
-
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 static int virtrng_freeze(struct virtio_device *vdev)
 {
 	remove_common(vdev);
@@ -197,14 +148,24 @@ static struct virtio_driver virtio_rng_driver = {
 	.id_table =	id_table,
 	.probe =	virtrng_probe,
 	.remove =	virtrng_remove,
-	.scan =		virtrng_scan,
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 	.freeze =	virtrng_freeze,
 	.restore =	virtrng_restore,
 #endif
 };
 
-module_virtio_driver(virtio_rng_driver);
+static int __init init(void)
+{
+	return register_virtio_driver(&virtio_rng_driver);
+}
+
+static void __exit fini(void)
+{
+	unregister_virtio_driver(&virtio_rng_driver);
+}
+module_init(init);
+module_exit(fini);
+
 MODULE_DEVICE_TABLE(virtio, id_table);
 MODULE_DESCRIPTION("Virtio random number driver");
 MODULE_LICENSE("GPL");

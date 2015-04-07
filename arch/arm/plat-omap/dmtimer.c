@@ -52,13 +52,6 @@ static u32 omap_reserved_systimers;
 static LIST_HEAD(omap_timer_list);
 static DEFINE_SPINLOCK(dm_timer_lock);
 
-enum {
-	REQUEST_ANY = 0,
-	REQUEST_BY_ID,
-	REQUEST_BY_CAP,
-	REQUEST_BY_NODE,
-};
-
 /**
  * omap_dm_timer_read_reg - read timer registers in posted and non-posted mode
  * @timer:      timer pointer over which read operation to perform
@@ -103,7 +96,7 @@ static void omap_timer_restore_context(struct omap_dm_timer *timer)
 				timer->context.tmar);
 	omap_dm_timer_write_reg(timer, OMAP_TIMER_IF_CTRL_REG,
 				timer->context.tsicr);
-	writel_relaxed(timer->context.tier, timer->irq_ena);
+	__raw_writel(timer->context.tier, timer->irq_ena);
 	omap_dm_timer_write_reg(timer, OMAP_TIMER_CTRL_REG,
 				timer->context.tclr);
 }
@@ -147,7 +140,8 @@ static int omap_dm_timer_prepare(struct omap_dm_timer *timer)
 	 */
 	if (!(timer->capability & OMAP_TIMER_NEEDS_RESET)) {
 		timer->fclk = clk_get(&timer->pdev->dev, "fck");
-		if (WARN_ON_ONCE(IS_ERR(timer->fclk))) {
+		if (WARN_ON_ONCE(IS_ERR_OR_NULL(timer->fclk))) {
+			timer->fclk = NULL;
 			dev_err(&timer->pdev->dev, ": No fclk handle.\n");
 			return -EINVAL;
 		}
@@ -184,82 +178,29 @@ int omap_dm_timer_reserve_systimer(int id)
 	return 0;
 }
 
-static struct omap_dm_timer *_omap_dm_timer_request(int req_type, void *data)
+struct omap_dm_timer *omap_dm_timer_request(void)
 {
 	struct omap_dm_timer *timer = NULL, *t;
-	struct device_node *np = NULL;
 	unsigned long flags;
-	u32 cap = 0;
-	int id = 0;
-
-	switch (req_type) {
-	case REQUEST_BY_ID:
-		id = *(int *)data;
-		break;
-	case REQUEST_BY_CAP:
-		cap = *(u32 *)data;
-		break;
-	case REQUEST_BY_NODE:
-		np = (struct device_node *)data;
-		break;
-	default:
-		/* REQUEST_ANY */
-		break;
-	}
+	int ret = 0;
 
 	spin_lock_irqsave(&dm_timer_lock, flags);
 	list_for_each_entry(t, &omap_timer_list, node) {
 		if (t->reserved)
 			continue;
 
-		switch (req_type) {
-		case REQUEST_BY_ID:
-			if (id == t->pdev->id) {
-				timer = t;
-				timer->reserved = 1;
-				goto found;
-			}
-			break;
-		case REQUEST_BY_CAP:
-			if (cap == (t->capability & cap)) {
-				/*
-				 * If timer is not NULL, we have already found
-				 * one timer but it was not an exact match
-				 * because it had more capabilites that what
-				 * was required. Therefore, unreserve the last
-				 * timer found and see if this one is a better
-				 * match.
-				 */
-				if (timer)
-					timer->reserved = 0;
-				timer = t;
-				timer->reserved = 1;
-
-				/* Exit loop early if we find an exact match */
-				if (t->capability == cap)
-					goto found;
-			}
-			break;
-		case REQUEST_BY_NODE:
-			if (np == t->pdev->dev.of_node) {
-				timer = t;
-				timer->reserved = 1;
-				goto found;
-			}
-			break;
-		default:
-			/* REQUEST_ANY */
-			timer = t;
-			timer->reserved = 1;
-			goto found;
-		}
+		timer = t;
+		timer->reserved = 1;
+		break;
 	}
-found:
 	spin_unlock_irqrestore(&dm_timer_lock, flags);
 
-	if (timer && omap_dm_timer_prepare(timer)) {
-		timer->reserved = 0;
-		timer = NULL;
+	if (timer) {
+		ret = omap_dm_timer_prepare(timer);
+		if (ret) {
+			timer->reserved = 0;
+			timer = NULL;
+		}
 	}
 
 	if (!timer)
@@ -267,25 +208,44 @@ found:
 
 	return timer;
 }
-
-struct omap_dm_timer *omap_dm_timer_request(void)
-{
-	return _omap_dm_timer_request(REQUEST_ANY, NULL);
-}
 EXPORT_SYMBOL_GPL(omap_dm_timer_request);
 
 struct omap_dm_timer *omap_dm_timer_request_specific(int id)
 {
+	struct omap_dm_timer *timer = NULL, *t;
+	unsigned long flags;
+	int ret = 0;
+
 	/* Requesting timer by ID is not supported when device tree is used */
 	if (of_have_populated_dt()) {
-		pr_warn("%s: Please use omap_dm_timer_request_by_cap/node()\n",
+		pr_warn("%s: Please use omap_dm_timer_request_by_cap()\n",
 			__func__);
 		return NULL;
 	}
 
-	return _omap_dm_timer_request(REQUEST_BY_ID, &id);
+	spin_lock_irqsave(&dm_timer_lock, flags);
+	list_for_each_entry(t, &omap_timer_list, node) {
+		if (t->pdev->id == id && !t->reserved) {
+			timer = t;
+			timer->reserved = 1;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&dm_timer_lock, flags);
+
+	if (timer) {
+		ret = omap_dm_timer_prepare(timer);
+		if (ret) {
+			timer->reserved = 0;
+			timer = NULL;
+		}
+	}
+
+	if (!timer)
+		pr_debug("%s: timer%d request failed!\n", __func__, id);
+
+	return timer;
 }
-EXPORT_SYMBOL_GPL(omap_dm_timer_request_specific);
 
 /**
  * omap_dm_timer_request_by_cap - Request a timer by capability
@@ -298,25 +258,46 @@ EXPORT_SYMBOL_GPL(omap_dm_timer_request_specific);
  */
 struct omap_dm_timer *omap_dm_timer_request_by_cap(u32 cap)
 {
-	return _omap_dm_timer_request(REQUEST_BY_CAP, &cap);
-}
-EXPORT_SYMBOL_GPL(omap_dm_timer_request_by_cap);
+	struct omap_dm_timer *timer = NULL, *t;
+	unsigned long flags;
 
-/**
- * omap_dm_timer_request_by_node - Request a timer by device-tree node
- * @np:		Pointer to device-tree timer node
- *
- * Request a timer based upon a device node pointer. Returns pointer to
- * timer handle on success and a NULL pointer on failure.
- */
-struct omap_dm_timer *omap_dm_timer_request_by_node(struct device_node *np)
-{
-	if (!np)
+	if (!cap)
 		return NULL;
 
-	return _omap_dm_timer_request(REQUEST_BY_NODE, np);
+	spin_lock_irqsave(&dm_timer_lock, flags);
+	list_for_each_entry(t, &omap_timer_list, node) {
+		if ((!t->reserved) && ((t->capability & cap) == cap)) {
+			/*
+			 * If timer is not NULL, we have already found one timer
+			 * but it was not an exact match because it had more
+			 * capabilites that what was required. Therefore,
+			 * unreserve the last timer found and see if this one
+			 * is a better match.
+			 */
+			if (timer)
+				timer->reserved = 0;
+
+			timer = t;
+			timer->reserved = 1;
+
+			/* Exit loop early if we find an exact match */
+			if (t->capability == cap)
+				break;
+		}
+	}
+	spin_unlock_irqrestore(&dm_timer_lock, flags);
+
+	if (timer && omap_dm_timer_prepare(timer)) {
+		timer->reserved = 0;
+		timer = NULL;
+	}
+
+	if (!timer)
+		pr_debug("%s: timer request failed!\n", __func__);
+
+	return timer;
 }
-EXPORT_SYMBOL_GPL(omap_dm_timer_request_by_node);
+EXPORT_SYMBOL_GPL(omap_dm_timer_request_by_cap);
 
 int omap_dm_timer_free(struct omap_dm_timer *timer)
 {
@@ -333,21 +314,7 @@ EXPORT_SYMBOL_GPL(omap_dm_timer_free);
 
 void omap_dm_timer_enable(struct omap_dm_timer *timer)
 {
-	int c;
-
 	pm_runtime_get_sync(&timer->pdev->dev);
-
-	if (!(timer->capability & OMAP_TIMER_ALWON)) {
-		if (timer->get_context_loss_count) {
-			c = timer->get_context_loss_count(&timer->pdev->dev);
-			if (c != timer->ctx_loss_count) {
-				omap_timer_restore_context(timer);
-				timer->ctx_loss_count = c;
-			}
-		} else {
-			omap_timer_restore_context(timer);
-		}
-	}
 }
 EXPORT_SYMBOL_GPL(omap_dm_timer_enable);
 
@@ -364,6 +331,18 @@ int omap_dm_timer_get_irq(struct omap_dm_timer *timer)
 	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(omap_dm_timer_get_irq);
+
+#ifdef CONFIG_IPIPE
+unsigned long omap_dm_timer_get_phys_counter_addr(struct omap_dm_timer *timer)
+{
+	return timer->phys_base + (OMAP_TIMER_COUNTER_REG & 0xff);
+}
+
+unsigned long omap_dm_timer_get_virt_counter_addr(struct omap_dm_timer *timer)
+{
+	return (unsigned long)timer->io_base + (OMAP_TIMER_COUNTER_REG & 0xff);
+}
+#endif /* CONFIG_IPIPE */
 
 #if defined(CONFIG_ARCH_OMAP1)
 #include <mach/hardware.h>
@@ -405,7 +384,7 @@ EXPORT_SYMBOL_GPL(omap_dm_timer_modify_idlect_mask);
 
 struct clk *omap_dm_timer_get_fclk(struct omap_dm_timer *timer)
 {
-	if (timer && !IS_ERR(timer->fclk))
+	if (timer)
 		return timer->fclk;
 	return NULL;
 }
@@ -442,6 +421,13 @@ int omap_dm_timer_start(struct omap_dm_timer *timer)
 
 	omap_dm_timer_enable(timer);
 
+	if (!(timer->capability & OMAP_TIMER_ALWON)) {
+		if (timer->get_context_loss_count &&
+			timer->get_context_loss_count(&timer->pdev->dev) !=
+				timer->ctx_loss_count)
+			omap_timer_restore_context(timer);
+	}
+
 	l = omap_dm_timer_read_reg(timer, OMAP_TIMER_CTRL_REG);
 	if (!(l & OMAP_TIMER_CTRL_ST)) {
 		l |= OMAP_TIMER_CTRL_ST;
@@ -465,6 +451,12 @@ int omap_dm_timer_stop(struct omap_dm_timer *timer)
 		rate = clk_get_rate(timer->fclk);
 
 	__omap_dm_timer_stop(timer, timer->posted, rate);
+
+	if (!(timer->capability & OMAP_TIMER_ALWON)) {
+		if (timer->get_context_loss_count)
+			timer->ctx_loss_count =
+				timer->get_context_loss_count(&timer->pdev->dev);
+	}
 
 	/*
 	 * Since the register values are computed and written within
@@ -501,7 +493,7 @@ int omap_dm_timer_set_source(struct omap_dm_timer *timer, int source)
 	if (pdata && pdata->set_timer_src)
 		return pdata->set_timer_src(timer->pdev, source);
 
-	if (IS_ERR(timer->fclk))
+	if (!timer->fclk)
 		return -EINVAL;
 
 	switch (source) {
@@ -519,13 +511,13 @@ int omap_dm_timer_set_source(struct omap_dm_timer *timer, int source)
 	}
 
 	parent = clk_get(&timer->pdev->dev, parent_name);
-	if (IS_ERR(parent)) {
+	if (IS_ERR_OR_NULL(parent)) {
 		pr_err("%s: %s not found\n", __func__, parent_name);
 		return -EINVAL;
 	}
 
 	ret = clk_set_parent(timer->fclk, parent);
-	if (ret < 0)
+	if (IS_ERR_VALUE(ret))
 		pr_err("%s: failed to set %s as parent\n", __func__,
 			parent_name);
 
@@ -563,7 +555,7 @@ EXPORT_SYMBOL_GPL(omap_dm_timer_set_load);
 
 /* Optimized set_load which removes costly spin wait in timer_start */
 int omap_dm_timer_set_load_start(struct omap_dm_timer *timer, int autoreload,
-                            unsigned int load)
+			    unsigned int load)
 {
 	u32 l;
 
@@ -571,6 +563,13 @@ int omap_dm_timer_set_load_start(struct omap_dm_timer *timer, int autoreload,
 		return -EINVAL;
 
 	omap_dm_timer_enable(timer);
+
+	if (!(timer->capability & OMAP_TIMER_ALWON)) {
+		if (timer->get_context_loss_count &&
+			timer->get_context_loss_count(&timer->pdev->dev) !=
+				timer->ctx_loss_count)
+			omap_timer_restore_context(timer);
+	}
 
 	l = omap_dm_timer_read_reg(timer, OMAP_TIMER_CTRL_REG);
 	if (autoreload) {
@@ -699,9 +698,9 @@ int omap_dm_timer_set_int_disable(struct omap_dm_timer *timer, u32 mask)
 	omap_dm_timer_enable(timer);
 
 	if (timer->revision == 1)
-		l = readl_relaxed(timer->irq_ena) & ~mask;
+		l = __raw_readl(timer->irq_ena) & ~mask;
 
-	writel_relaxed(l, timer->irq_dis);
+	__raw_writel(l, timer->irq_dis);
 	l = omap_dm_timer_read_reg(timer, OMAP_TIMER_WAKEUP_EN_REG) & ~mask;
 	omap_dm_timer_write_reg(timer, OMAP_TIMER_WAKEUP_EN_REG, l);
 
@@ -722,7 +721,7 @@ unsigned int omap_dm_timer_read_status(struct omap_dm_timer *timer)
 		return 0;
 	}
 
-	l = readl_relaxed(timer->irq_stat);
+	l = __raw_readl(timer->irq_stat);
 
 	return l;
 }
@@ -782,8 +781,6 @@ int omap_dm_timers_active(void)
 }
 EXPORT_SYMBOL_GPL(omap_dm_timers_active);
 
-static const struct of_device_id omap_timer_match[];
-
 /**
  * omap_dm_timer_probe - probe function called for every registered device
  * @pdev:	pointer to current timer platform device
@@ -797,11 +794,7 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 	struct omap_dm_timer *timer;
 	struct resource *mem, *irq;
 	struct device *dev = &pdev->dev;
-	const struct of_device_id *match;
-	const struct dmtimer_platform_data *pdata;
-
-	match = of_match_device(of_match_ptr(omap_timer_match), dev);
-	pdata = match ? match->data : dev->platform_data;
+	struct dmtimer_platform_data *pdata = pdev->dev.platform_data;
 
 	if (!pdata && !dev->of_node) {
 		dev_err(dev, "%s: no platform data.\n", __func__);
@@ -826,10 +819,12 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		return  -ENOMEM;
 	}
 
-	timer->fclk = ERR_PTR(-ENODEV);
-	timer->io_base = devm_ioremap_resource(dev, mem);
-	if (IS_ERR(timer->io_base))
-		return PTR_ERR(timer->io_base);
+	timer->phys_base = mem->start;
+	timer->io_base = devm_request_and_ioremap(dev, mem);
+	if (!timer->io_base) {
+		dev_err(dev, "%s: region already claimed.\n", __func__);
+		return -ENOMEM;
+	}
 
 	if (dev->of_node) {
 		if (of_find_property(dev->of_node, "ti,timer-alwon", NULL))
@@ -842,13 +837,11 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 			timer->capability |= OMAP_TIMER_SECURE;
 	} else {
 		timer->id = pdev->id;
+		timer->errata = pdata->timer_errata;
 		timer->capability = pdata->timer_capability;
 		timer->reserved = omap_dm_timer_reserved_systimer(timer->id);
 		timer->get_context_loss_count = pdata->get_context_loss_count;
 	}
-
-	if (pdata)
-		timer->errata = pdata->timer_errata;
 
 	timer->irq = irq->start;
 	timer->pdev = pdev;
@@ -902,34 +895,8 @@ static int omap_dm_timer_remove(struct platform_device *pdev)
 	return ret;
 }
 
-static const struct dmtimer_platform_data omap3plus_pdata = {
-	.timer_errata = OMAP_TIMER_ERRATA_I103_I767,
-};
-
 static const struct of_device_id omap_timer_match[] = {
-	{
-		.compatible = "ti,omap2420-timer",
-	},
-	{
-		.compatible = "ti,omap3430-timer",
-		.data = &omap3plus_pdata,
-	},
-	{
-		.compatible = "ti,omap4430-timer",
-		.data = &omap3plus_pdata,
-	},
-	{
-		.compatible = "ti,omap5430-timer",
-		.data = &omap3plus_pdata,
-	},
-	{
-		.compatible = "ti,am335x-timer",
-		.data = &omap3plus_pdata,
-	},
-	{
-		.compatible = "ti,am335x-timer-1ms",
-		.data = &omap3plus_pdata,
-	},
+	{ .compatible = "ti,omap2-timer", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, omap_timer_match);

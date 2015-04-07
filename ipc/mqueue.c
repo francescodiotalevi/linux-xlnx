@@ -6,7 +6,7 @@
  *
  * Spinlocks:               Mohamed Abbas           (abbas.mohamed@intel.com)
  * Lockless receive & send, fd based notify:
- *			    Manfred Spraul	    (manfred@colorfullife.com)
+ * 			    Manfred Spraul	    (manfred@colorfullife.com)
  *
  * Audit:                   George Wilson           (ltcgcw@us.ibm.com)
  *
@@ -73,7 +73,7 @@ struct mqueue_inode_info {
 	struct mq_attr attr;
 
 	struct sigevent notify;
-	struct pid *notify_owner;
+	struct pid* notify_owner;
 	struct user_namespace *notify_user_ns;
 	struct user_struct *user;	/* user who created, for accounting */
 	struct sock *notify_sock;
@@ -92,7 +92,7 @@ static void remove_notification(struct mqueue_inode_info *info);
 
 static struct kmem_cache *mqueue_inode_cachep;
 
-static struct ctl_table_header *mq_sysctl_table;
+static struct ctl_table_header * mq_sysctl_table;
 
 static inline struct mqueue_inode_info *MQUEUE_I(struct inode *inode)
 {
@@ -330,16 +330,8 @@ static struct dentry *mqueue_mount(struct file_system_type *fs_type,
 			 int flags, const char *dev_name,
 			 void *data)
 {
-	if (!(flags & MS_KERNMOUNT)) {
-		struct ipc_namespace *ns = current->nsproxy->ipc_ns;
-		/* Don't allow mounting unless the caller has CAP_SYS_ADMIN
-		 * over the ipc namespace.
-		 */
-		if (!ns_capable(ns->user_ns, CAP_SYS_ADMIN))
-			return ERR_PTR(-EPERM);
-
-		data = ns;
-	}
+	if (!(flags & MS_KERNMOUNT))
+		data = current->nsproxy->ipc_ns;
 	return mount_ns(fs_type, flags, data, mqueue_fill_super);
 }
 
@@ -433,9 +425,9 @@ static int mqueue_create(struct inode *dir, struct dentry *dentry,
 		error = -EACCES;
 		goto out_unlock;
 	}
-
-	if (ipc_ns->mq_queues_count >= ipc_ns->mq_queues_max &&
-	    !capable(CAP_SYS_RESOURCE)) {
+	if (ipc_ns->mq_queues_count >= HARD_QUEUESMAX ||
+	    (ipc_ns->mq_queues_count >= ipc_ns->mq_queues_max &&
+	     !capable(CAP_SYS_RESOURCE))) {
 		error = -ENOSPC;
 		goto out_unlock;
 	}
@@ -466,13 +458,13 @@ out_unlock:
 
 static int mqueue_unlink(struct inode *dir, struct dentry *dentry)
 {
-	struct inode *inode = dentry->d_inode;
+  	struct inode *inode = dentry->d_inode;
 
 	dir->i_ctime = dir->i_mtime = dir->i_atime = CURRENT_TIME;
 	dir->i_size -= DIRENT_SIZE;
-	drop_nlink(inode);
-	dput(dentry);
-	return 0;
+  	drop_nlink(inode);
+  	dput(dentry);
+  	return 0;
 }
 
 /*
@@ -485,7 +477,7 @@ static int mqueue_unlink(struct inode *dir, struct dentry *dentry)
 static ssize_t mqueue_read_file(struct file *filp, char __user *u_data,
 				size_t count, loff_t *off)
 {
-	struct mqueue_inode_info *info = MQUEUE_I(file_inode(filp));
+	struct mqueue_inode_info *info = MQUEUE_I(filp->f_path.dentry->d_inode);
 	char buffer[FILENT_SIZE];
 	ssize_t ret;
 
@@ -506,13 +498,13 @@ static ssize_t mqueue_read_file(struct file *filp, char __user *u_data,
 	if (ret <= 0)
 		return ret;
 
-	file_inode(filp)->i_atime = file_inode(filp)->i_ctime = CURRENT_TIME;
+	filp->f_path.dentry->d_inode->i_atime = filp->f_path.dentry->d_inode->i_ctime = CURRENT_TIME;
 	return ret;
 }
 
 static int mqueue_flush_file(struct file *filp, fl_owner_t id)
 {
-	struct mqueue_inode_info *info = MQUEUE_I(file_inode(filp));
+	struct mqueue_inode_info *info = MQUEUE_I(filp->f_path.dentry->d_inode);
 
 	spin_lock(&info->lock);
 	if (task_tgid(current) == info->notify_owner)
@@ -524,7 +516,7 @@ static int mqueue_flush_file(struct file *filp, fl_owner_t id)
 
 static unsigned int mqueue_poll_file(struct file *filp, struct poll_table_struct *poll_tab)
 {
-	struct mqueue_inode_info *info = MQUEUE_I(file_inode(filp));
+	struct mqueue_inode_info *info = MQUEUE_I(filp->f_path.dentry->d_inode);
 	int retval = 0;
 
 	poll_wait(filp, &info->wait_q, poll_tab);
@@ -622,7 +614,7 @@ static struct ext_wait_queue *wq_get_first_waiter(
 
 static inline void set_cookie(struct sk_buff *skb, char code)
 {
-	((char *)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
+	((char*)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
 }
 
 /*
@@ -823,7 +815,6 @@ SYSCALL_DEFINE4(mq_open, const char __user *, u_name, int, oflag, umode_t, mode,
 				error = ro;
 				goto out;
 			}
-			audit_inode_parent_hidden(name, root);
 			filp = do_create(ipc_ns, root->d_inode,
 						&path, oflag, mode,
 						u_attr ? &attr : NULL);
@@ -849,8 +840,7 @@ out_putfd:
 		fd = error;
 	}
 	mutex_unlock(&root->d_inode->i_mutex);
-	if (!ro)
-		mnt_drop_write(mnt);
+	mnt_drop_write(mnt);
 out_putname:
 	putname(name);
 	return fd;
@@ -869,7 +859,6 @@ SYSCALL_DEFINE1(mq_unlink, const char __user *, u_name)
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
-	audit_inode_parent_hidden(name, mnt->mnt_root);
 	err = mnt_want_write(mnt);
 	if (err)
 		goto out_name;
@@ -886,7 +875,7 @@ SYSCALL_DEFINE1(mq_unlink, const char __user *, u_name)
 		err = -ENOENT;
 	} else {
 		ihold(inode);
-		err = vfs_unlink(dentry->d_parent->d_inode, dentry, NULL);
+		err = vfs_unlink(dentry->d_parent->d_inode, dentry);
 	}
 	dput(dentry);
 
@@ -984,7 +973,7 @@ SYSCALL_DEFINE5(mq_timedsend, mqd_t, mqdes, const char __user *, u_msg_ptr,
 		goto out;
 	}
 
-	inode = file_inode(f.file);
+	inode = f.file->f_path.dentry->d_inode;
 	if (unlikely(f.file->f_op != &mqueue_file_operations)) {
 		ret = -EBADF;
 		goto out_fput;
@@ -1100,7 +1089,7 @@ SYSCALL_DEFINE5(mq_timedreceive, mqd_t, mqdes, char __user *, u_msg_ptr,
 		goto out;
 	}
 
-	inode = file_inode(f.file);
+	inode = f.file->f_path.dentry->d_inode;
 	if (unlikely(f.file->f_op != &mqueue_file_operations)) {
 		ret = -EBADF;
 		goto out_fput;
@@ -1260,7 +1249,7 @@ retry:
 		goto out;
 	}
 
-	inode = file_inode(f.file);
+	inode = f.file->f_path.dentry->d_inode;
 	if (unlikely(f.file->f_op != &mqueue_file_operations)) {
 		ret = -EBADF;
 		goto out_fput;
@@ -1303,11 +1292,11 @@ retry:
 out_fput:
 	fdput(f);
 out:
-	if (sock)
+	if (sock) {
 		netlink_detachskb(sock, nc);
-	else if (nc)
+	} else if (nc) {
 		dev_kfree_skb(nc);
-
+	}
 	return ret;
 }
 
@@ -1334,7 +1323,7 @@ SYSCALL_DEFINE3(mq_getsetattr, mqd_t, mqdes,
 		goto out;
 	}
 
-	inode = file_inode(f.file);
+	inode = f.file->f_path.dentry->d_inode;
 	if (unlikely(f.file->f_op != &mqueue_file_operations)) {
 		ret = -EBADF;
 		goto out_fput;
@@ -1394,7 +1383,6 @@ static struct file_system_type mqueue_fs_type = {
 	.name = "mqueue",
 	.mount = mqueue_mount,
 	.kill_sb = kill_litter_super,
-	.fs_flags = FS_USERNS_MOUNT,
 };
 
 int mq_init_ns(struct ipc_namespace *ns)
@@ -1459,4 +1447,4 @@ out_sysctl:
 	return error;
 }
 
-device_initcall(init_mqueue_fs);
+__initcall(init_mqueue_fs);

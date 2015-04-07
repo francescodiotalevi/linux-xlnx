@@ -83,8 +83,10 @@ static int clkdm_dbg_show_counter(struct clockdomain *clkdm, void *user)
 		strncmp(clkdm->name, "dpll", 4) == 0)
 		return 0;
 
-	seq_printf(s, "%s->%s (%d)\n", clkdm->name, clkdm->pwrdm.ptr->name,
-		   clkdm->usecount);
+	seq_printf(s, "%s->%s (%d)", clkdm->name,
+			clkdm->pwrdm.ptr->name,
+			atomic_read(&clkdm->usecount));
+	seq_printf(s, "\n");
 
 	return 0;
 }
@@ -217,7 +219,7 @@ static int __init pwrdms_setup(struct powerdomain *pwrdm, void *dir)
 		return 0;
 
 	d = debugfs_create_dir(pwrdm->name, (struct dentry *)dir);
-	if (d)
+	if (!(IS_ERR_OR_NULL(d)))
 		(void) debugfs_create_file("suspend", S_IRUGO|S_IWUSR, d,
 			(void *)pwrdm, &pwrdm_suspend_fops);
 
@@ -261,8 +263,8 @@ static int __init pm_dbg_init(void)
 		return 0;
 
 	d = debugfs_create_dir("pm_debug", NULL);
-	if (!d)
-		return -EINVAL;
+	if (IS_ERR_OR_NULL(d))
+		return PTR_ERR(d);
 
 	(void) debugfs_create_file("count", S_IRUGO,
 		d, (void *)DEBUG_FILE_COUNTERS, &debug_fops);
@@ -277,6 +279,6 @@ static int __init pm_dbg_init(void)
 
 	return 0;
 }
-omap_arch_initcall(pm_dbg_init);
+arch_initcall(pm_dbg_init);
 
 #endif

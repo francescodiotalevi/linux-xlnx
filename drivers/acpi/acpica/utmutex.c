@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2012, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -81,7 +81,7 @@ acpi_status acpi_ut_mutex_initialize(void)
 		}
 	}
 
-	/* Create the spinlocks for use at interrupt level or for speed */
+	/* Create the spinlocks for use at interrupt level */
 
 	status = acpi_os_create_lock (&acpi_gbl_gpe_lock);
 	if (ACPI_FAILURE (status)) {
@@ -93,13 +93,7 @@ acpi_status acpi_ut_mutex_initialize(void)
 		return_ACPI_STATUS (status);
 	}
 
-	status = acpi_os_create_lock(&acpi_gbl_reference_count_lock);
-	if (ACPI_FAILURE(status)) {
-		return_ACPI_STATUS(status);
-	}
-
 	/* Mutex for _OSI support */
-
 	status = acpi_os_create_mutex(&acpi_gbl_osi_mutex);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
@@ -142,7 +136,6 @@ void acpi_ut_mutex_terminate(void)
 
 	acpi_os_delete_lock(acpi_gbl_gpe_lock);
 	acpi_os_delete_lock(acpi_gbl_hardware_lock);
-	acpi_os_delete_lock(acpi_gbl_reference_count_lock);
 
 	/* Delete the reader/writer lock */
 

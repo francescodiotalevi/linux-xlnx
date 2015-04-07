@@ -47,11 +47,14 @@
 /*---------------------  Export Functions  --------------------------*/
 
 void TKIPvMixKey(
-	unsigned char *pbyTKey,
-	unsigned char *pbyTA,
-	unsigned short wTSC15_0,
-	unsigned long dwTSC47_16,
-	unsigned char *pbyRC4Key
-);
+    unsigned char *pbyTKey,
+    unsigned char *pbyTA,
+    unsigned short wTSC15_0,
+    unsigned long dwTSC47_16,
+    unsigned char *pbyRC4Key
+    );
 
 #endif // __TKIP_H__
+
+
+

@@ -1107,33 +1107,8 @@ struct resource pxa_resource_gpio[] = {
 	},
 };
 
-struct platform_device pxa25x_device_gpio = {
-#ifdef CONFIG_CPU_PXA26x
-	.name		= "pxa26x-gpio",
-#else
-	.name		= "pxa25x-gpio",
-#endif
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(pxa_resource_gpio),
-	.resource	= pxa_resource_gpio,
-};
-
-struct platform_device pxa27x_device_gpio = {
-	.name		= "pxa27x-gpio",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(pxa_resource_gpio),
-	.resource	= pxa_resource_gpio,
-};
-
-struct platform_device pxa3xx_device_gpio = {
-	.name		= "pxa3xx-gpio",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(pxa_resource_gpio),
-	.resource	= pxa_resource_gpio,
-};
-
-struct platform_device pxa93x_device_gpio = {
-	.name		= "pxa93x-gpio",
+struct platform_device pxa_device_gpio = {
+	.name		= "pxa-gpio",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(pxa_resource_gpio),
 	.resource	= pxa_resource_gpio,

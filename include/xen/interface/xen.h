@@ -275,11 +275,17 @@ DEFINE_GUEST_HANDLE_STRUCT(mmu_update);
  * NB. The fields are natural register size for this architecture.
  */
 struct multicall_entry {
-    xen_ulong_t op;
-    xen_long_t result;
-    xen_ulong_t args[6];
+    unsigned long op;
+    long result;
+    unsigned long args[6];
 };
 DEFINE_GUEST_HANDLE_STRUCT(multicall_entry);
+
+/*
+ * Event channel endpoints per domain:
+ *  1024 if a long is 32 bits; 4096 if a long is 64 bits.
+ */
+#define NR_EVENT_CHANNELS (sizeof(unsigned long) * sizeof(unsigned long) * 64)
 
 struct vcpu_time_info {
 	/*
@@ -335,7 +341,7 @@ struct vcpu_info {
 	 */
 	uint8_t evtchn_upcall_pending;
 	uint8_t evtchn_upcall_mask;
-	xen_ulong_t evtchn_pending_sel;
+	unsigned long evtchn_pending_sel;
 	struct arch_vcpu_info arch;
 	struct pvclock_vcpu_time_info time;
 }; /* 64 bytes (x86) */
@@ -378,8 +384,8 @@ struct shared_info {
 	 * per-vcpu selector word to be set. Each bit in the selector covers a
 	 * 'C long' in the PENDING bitfield array.
 	 */
-	xen_ulong_t evtchn_pending[sizeof(xen_ulong_t) * 8];
-	xen_ulong_t evtchn_mask[sizeof(xen_ulong_t) * 8];
+	unsigned long evtchn_pending[sizeof(unsigned long) * 8];
+	unsigned long evtchn_mask[sizeof(unsigned long) * 8];
 
 	/*
 	 * Wallclock time: updated only by control software. Guests should base

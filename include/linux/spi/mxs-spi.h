@@ -24,7 +24,7 @@
 #ifndef __LINUX_SPI_MXS_SPI_H__
 #define __LINUX_SPI_MXS_SPI_H__
 
-#include <linux/dmaengine.h>
+#include <linux/fsl/mxs-dma.h>
 
 #define ssp_is_old(host)	((host)->devid == IMX23_SSP)
 
@@ -137,7 +137,9 @@ struct mxs_ssp {
 	unsigned int			clk_rate;
 	enum mxs_ssp_id			devid;
 
+	int				dma_channel;
 	struct dma_chan			*dmach;
+	struct mxs_dma_data		dma_data;
 	unsigned int			dma_dir;
 	enum dma_transfer_direction	slave_dirn;
 	u32				ssp_pio_words[SSP_PIO_NUM];

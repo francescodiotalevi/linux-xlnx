@@ -11,8 +11,6 @@
  * published by the Free Software Foundation.
 */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/rtc.h>
 #include <linux/sched.h>
@@ -464,7 +462,7 @@ void rtc_dev_prepare(struct rtc_device *rtc)
 		return;
 
 	if (rtc->id >= RTC_DEV_MAX) {
-		dev_dbg(&rtc->dev, "%s: too many RTC devices\n", rtc->name);
+		pr_debug("%s: too many RTC devices\n", rtc->name);
 		return;
 	}
 
@@ -482,10 +480,10 @@ void rtc_dev_prepare(struct rtc_device *rtc)
 void rtc_dev_add_device(struct rtc_device *rtc)
 {
 	if (cdev_add(&rtc->char_dev, rtc->dev.devt, 1))
-		dev_warn(&rtc->dev, "%s: failed to add char device %d:%d\n",
+		printk(KERN_WARNING "%s: failed to add char device %d:%d\n",
 			rtc->name, MAJOR(rtc_devt), rtc->id);
 	else
-		dev_dbg(&rtc->dev, "%s: dev (%d:%d)\n", rtc->name,
+		pr_debug("%s: dev (%d:%d)\n", rtc->name,
 			MAJOR(rtc_devt), rtc->id);
 }
 
@@ -501,7 +499,8 @@ void __init rtc_dev_init(void)
 
 	err = alloc_chrdev_region(&rtc_devt, 0, RTC_DEV_MAX, "rtc");
 	if (err < 0)
-		pr_err("failed to allocate char dev region\n");
+		printk(KERN_ERR "%s: failed to allocate char dev region\n",
+			__FILE__);
 }
 
 void __exit rtc_dev_exit(void)

@@ -1,6 +1,5 @@
 /* (C) 1999-2001 Paul `Rusty' Russell
  * (C) 2002-2004 Netfilter Core Team <coreteam@netfilter.org>
- * (C) 2006-2010 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -188,8 +187,8 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	icmph = skb_header_pointer(skb, ip_hdrlen(skb), sizeof(_ih), &_ih);
 	if (icmph == NULL) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL,
-				      NULL, "nf_ct_icmp: short packet ");
+			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
+				      "nf_ct_icmp: short packet ");
 		return -NF_ACCEPT;
 	}
 
@@ -197,7 +196,7 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	if (net->ct.sysctl_checksum && hooknum == NF_INET_PRE_ROUTING &&
 	    nf_ip_checksum(skb, hooknum, dataoff, 0)) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_icmp: bad HW ICMP checksum ");
 		return -NF_ACCEPT;
 	}
@@ -210,7 +209,7 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	 */
 	if (icmph->type > NR_ICMP_TYPES) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_icmp: invalid ICMP type ");
 		return -NF_ACCEPT;
 	}
@@ -226,7 +225,7 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	return icmp_error_message(net, tmpl, skb, ctinfo, hooknum);
 }
 
-#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
+#if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
 
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
@@ -408,7 +407,7 @@ struct nf_conntrack_l4proto nf_conntrack_l4proto_icmp __read_mostly =
 	.error			= icmp_error,
 	.destroy		= NULL,
 	.me			= NULL,
-#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
+#if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
 	.tuple_to_nlattr	= icmp_tuple_to_nlattr,
 	.nlattr_tuple_size	= icmp_nlattr_tuple_size,
 	.nlattr_to_tuple	= icmp_nlattr_to_tuple,

@@ -29,9 +29,11 @@
 #include <linux/sysrq.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
-#include <linux/serial_bcm63xx.h>
-#include <linux/io.h>
-#include <linux/of.h>
+
+#include <bcm63xx_clk.h>
+#include <bcm63xx_irq.h>
+#include <bcm63xx_regs.h>
+#include <bcm63xx_io.h>
 
 #define BCM63XX_NR_UARTS	2
 
@@ -80,13 +82,13 @@ static struct uart_port ports[BCM63XX_NR_UARTS];
 static inline unsigned int bcm_uart_readl(struct uart_port *port,
 					 unsigned int offset)
 {
-	return __raw_readl(port->membase + offset);
+	return bcm_readl(port->membase + offset);
 }
 
 static inline void bcm_uart_writel(struct uart_port *port,
 				  unsigned int value, unsigned int offset)
 {
-	__raw_writel(value, port->membase + offset);
+	bcm_writel(value, port->membase + offset);
 }
 
 /*
@@ -233,13 +235,14 @@ static const char *bcm_uart_type(struct uart_port *port)
  */
 static void bcm_uart_do_rx(struct uart_port *port)
 {
-	struct tty_port *tty_port = &port->state->port;
+	struct tty_struct *tty;
 	unsigned int max_count;
 
 	/* limit number of char read in interrupt, should not be
 	 * higher than fifo size anyway since we're much faster than
 	 * serial port */
 	max_count = 32;
+	tty = port->state->port.tty;
 	do {
 		unsigned int iestat, c, cstat;
 		char flag;
@@ -258,7 +261,7 @@ static void bcm_uart_do_rx(struct uart_port *port)
 			bcm_uart_writel(port, val, UART_CTL_REG);
 
 			port->icount.overrun++;
-			tty_insert_flip_char(tty_port, 0, TTY_OVERRUN);
+			tty_insert_flip_char(tty, 0, TTY_OVERRUN);
 		}
 
 		if (!(iestat & UART_IR_STAT(UART_IR_RXNOTEMPTY)))
@@ -297,13 +300,11 @@ static void bcm_uart_do_rx(struct uart_port *port)
 
 
 		if ((cstat & port->ignore_status_mask) == 0)
-			tty_insert_flip_char(tty_port, c, flag);
+			tty_insert_flip_char(tty, c, flag);
 
 	} while (--max_count);
 
-	spin_unlock(&port->lock);
-	tty_flip_buffer_push(tty_port);
-	spin_lock(&port->lock);
+	tty_flip_buffer_push(tty);
 }
 
 /*
@@ -567,7 +568,7 @@ static void bcm_uart_set_termios(struct uart_port *port,
 		port->read_status_mask |= UART_FIFO_FRAMEERR_MASK;
 		port->read_status_mask |= UART_FIFO_PARERR_MASK;
 	}
-	if (new->c_iflag & (IGNBRK | BRKINT))
+	if (new->c_iflag & (BRKINT))
 		port->read_status_mask |= UART_FIFO_BRKDET_MASK;
 
 	port->ignore_status_mask = 0;
@@ -590,7 +591,7 @@ static int bcm_uart_request_port(struct uart_port *port)
 {
 	unsigned int size;
 
-	size = UART_REG_SIZE;
+	size = RSET_UART_SIZE;
 	if (!request_mem_region(port->mapbase, size, "bcm63xx")) {
 		dev_err(port->dev, "Memory region busy\n");
 		return -EBUSY;
@@ -610,7 +611,7 @@ static int bcm_uart_request_port(struct uart_port *port)
  */
 static void bcm_uart_release_port(struct uart_port *port)
 {
-	release_mem_region(port->mapbase, UART_REG_SIZE);
+	release_mem_region(port->mapbase, RSET_UART_SIZE);
 	iounmap(port->membase);
 }
 
@@ -807,9 +808,6 @@ static int bcm_uart_probe(struct platform_device *pdev)
 	struct clk *clk;
 	int ret;
 
-	if (pdev->dev.of_node)
-		pdev->id = of_alias_get_id(pdev->dev.of_node, "uart");
-
 	if (pdev->id < 0 || pdev->id >= BCM63XX_NR_UARTS)
 		return -EINVAL;
 
@@ -856,16 +854,11 @@ static int bcm_uart_remove(struct platform_device *pdev)
 
 	port = platform_get_drvdata(pdev);
 	uart_remove_one_port(&bcm_uart_driver, port);
+	platform_set_drvdata(pdev, NULL);
 	/* mark port as free */
 	ports[pdev->id].membase = 0;
 	return 0;
 }
-
-static const struct of_device_id bcm63xx_of_match[] = {
-	{ .compatible = "brcm,bcm6345-uart" },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(of, bcm63xx_of_match);
 
 /*
  * platform driver stuff
@@ -876,7 +869,6 @@ static struct platform_driver bcm_uart_platform_driver = {
 	.driver	= {
 		.owner = THIS_MODULE,
 		.name  = "bcm63xx_uart",
-		.of_match_table = bcm63xx_of_match,
 	},
 };
 

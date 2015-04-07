@@ -31,7 +31,6 @@
 #include <linux/elfcore.h>
 #include <linux/sysrq.h>
 #include <linux/nmi.h>
-#include <linux/context_tracking.h>
 
 #include <asm/uaccess.h>
 #include <asm/page.h>
@@ -53,20 +52,20 @@
 
 #include "kstack.h"
 
-/* Idle loop support on sparc64. */
-void arch_cpu_idle(void)
+static void sparc64_yield(int cpu)
 {
 	if (tlb_type != hypervisor) {
 		touch_nmi_watchdog();
-		local_irq_enable();
-	} else {
+		return;
+	}
+
+	clear_thread_flag(TIF_POLLING_NRFLAG);
+	smp_mb__after_clear_bit();
+
+	while (!need_resched() && !cpu_is_offline(cpu)) {
 		unsigned long pstate;
 
-		local_irq_enable();
-
-                /* The sun4v sleeping code requires that we have PSTATE.IE cleared over
-                 * the cpu sleep hypervisor call.
-                 */
+		/* Disable interrupts. */
 		__asm__ __volatile__(
 			"rdpr %%pstate, %0\n\t"
 			"andn %0, %1, %0\n\t"
@@ -74,7 +73,7 @@ void arch_cpu_idle(void)
 			: "=&r" (pstate)
 			: "i" (PSTATE_IE));
 
-		if (!need_resched() && !cpu_is_offline(smp_processor_id()))
+		if (!need_resched() && !cpu_is_offline(cpu))
 			sun4v_cpu_yield();
 
 		/* Re-enable interrupts. */
@@ -85,15 +84,36 @@ void arch_cpu_idle(void)
 			: "=&r" (pstate)
 			: "i" (PSTATE_IE));
 	}
+
+	set_thread_flag(TIF_POLLING_NRFLAG);
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
-void arch_cpu_idle_dead(void)
+/* The idle loop on sparc64. */
+void cpu_idle(void)
 {
-	sched_preempt_enable_no_resched();
-	cpu_play_dead();
-}
+	int cpu = smp_processor_id();
+
+	set_thread_flag(TIF_POLLING_NRFLAG);
+
+	while(1) {
+		tick_nohz_idle_enter();
+		rcu_idle_enter();
+
+		while (!need_resched() && !cpu_is_offline(cpu))
+			sparc64_yield(cpu);
+
+		rcu_idle_exit();
+		tick_nohz_idle_exit();
+
+#ifdef CONFIG_HOTPLUG_CPU
+		if (cpu_is_offline(cpu)) {
+			sched_preempt_enable_no_resched();
+			cpu_play_dead();
+		}
 #endif
+		schedule_preempt_disabled();
+	}
+}
 
 #ifdef CONFIG_COMPAT
 static void show_regwindow32(struct pt_regs *regs)
@@ -166,8 +186,6 @@ static void show_regwindow(struct pt_regs *regs)
 
 void show_regs(struct pt_regs *regs)
 {
-	show_regs_print_info(KERN_DEFAULT);
-
 	printk("TSTATE: %016lx TPC: %016lx TNPC: %016lx Y: %08x    %s\n", regs->tstate,
 	       regs->tpc, regs->tnpc, regs->y, print_tainted());
 	printk("TPC: <%pS>\n", (void *) regs->tpc);
@@ -239,7 +257,7 @@ static void __global_reg_poll(struct global_reg_snapshot *gp)
 	}
 }
 
-void arch_trigger_all_cpu_backtrace(bool include_self)
+void arch_trigger_all_cpu_backtrace(void)
 {
 	struct thread_info *tp = current_thread_info();
 	struct pt_regs *regs = get_irq_regs();
@@ -251,22 +269,16 @@ void arch_trigger_all_cpu_backtrace(bool include_self)
 
 	spin_lock_irqsave(&global_cpu_snapshot_lock, flags);
 
-	this_cpu = raw_smp_processor_id();
-
 	memset(global_cpu_snapshot, 0, sizeof(global_cpu_snapshot));
 
-	if (include_self)
-		__global_reg_self(tp, regs, this_cpu);
+	this_cpu = raw_smp_processor_id();
+
+	__global_reg_self(tp, regs, this_cpu);
 
 	smp_fetch_global_regs();
 
 	for_each_online_cpu(cpu) {
-		struct global_reg_snapshot *gp;
-
-		if (!include_self && cpu == this_cpu)
-			continue;
-
-		gp = &global_cpu_snapshot[cpu].reg;
+		struct global_reg_snapshot *gp = &global_cpu_snapshot[cpu].reg;
 
 		__global_reg_poll(gp);
 
@@ -298,12 +310,12 @@ void arch_trigger_all_cpu_backtrace(bool include_self)
 
 static void sysrq_handle_globreg(int key)
 {
-	arch_trigger_all_cpu_backtrace(true);
+	arch_trigger_all_cpu_backtrace();
 }
 
 static struct sysrq_key_op sparc_globalreg_op = {
 	.handler	= sysrq_handle_globreg,
-	.help_msg	= "global-regs(y)",
+	.help_msg	= "global-regs(Y)",
 	.action_msg	= "Show Global CPU Regs",
 };
 
@@ -311,9 +323,6 @@ static void __global_pmu_self(int this_cpu)
 {
 	struct global_pmu_snapshot *pp;
 	int i, num;
-
-	if (!pcr_ops)
-		return;
 
 	pp = &global_cpu_snapshot[this_cpu].pmu;
 
@@ -376,7 +385,7 @@ static void sysrq_handle_globpmu(int key)
 
 static struct sysrq_key_op sparc_globalpmu_op = {
 	.handler	= sysrq_handle_globpmu,
-	.help_msg	= "global-pmu(x)",
+	.help_msg	= "global-pmu(X)",
 	.action_msg	= "Show Global PMU Regs",
 };
 
@@ -569,7 +578,6 @@ void fault_in_user_windows(void)
 
 barf:
 	set_thread_wsaved(window + 1);
-	user_exit();
 	do_exit(SIGILL);
 }
 

@@ -12,9 +12,27 @@
 #include <linux/perf_event.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
-#include <linux/circ_buf.h>
 
 #include "internal.h"
+
+static bool perf_output_space(struct ring_buffer *rb, unsigned long tail,
+			      unsigned long offset, unsigned long head)
+{
+	unsigned long mask;
+
+	if (!rb->writable)
+		return true;
+
+	mask = perf_data_size(rb) - 1;
+
+	offset = (offset - tail) & mask;
+	head   = (head   - tail) & mask;
+
+	if ((int)(head - offset) < 0)
+		return false;
+
+	return true;
+}
 
 static void perf_output_wakeup(struct perf_output_handle *handle)
 {
@@ -57,37 +75,15 @@ again:
 		goto out;
 
 	/*
-	 * Since the mmap() consumer (userspace) can run on a different CPU:
-	 *
-	 *   kernel				user
-	 *
-	 *   if (LOAD ->data_tail) {		LOAD ->data_head
-	 *			(A)		smp_rmb()	(C)
-	 *	STORE $data			LOAD $data
-	 *	smp_wmb()	(B)		smp_mb()	(D)
-	 *	STORE ->data_head		STORE ->data_tail
-	 *   }
-	 *
-	 * Where A pairs with D, and B pairs with C.
-	 *
-	 * In our case (A) is a control dependency that separates the load of
-	 * the ->data_tail and the stores of $data. In case ->data_tail
-	 * indicates there is no room in the buffer to store $data we do not.
-	 *
-	 * D needs to be a full barrier since it separates the data READ
-	 * from the tail WRITE.
-	 *
-	 * For B a WMB is sufficient since it separates two WRITEs, and for C
-	 * an RMB is sufficient since it separates two READs.
-	 *
-	 * See perf_output_begin().
+	 * Publish the known good head. Rely on the full barrier implied
+	 * by atomic_dec_and_test() order the rb->head read and this
+	 * write.
 	 */
-	smp_wmb(); /* B, matches C */
 	rb->user_page->data_head = head;
 
 	/*
-	 * Now check if we missed an update -- rely on previous implied
-	 * compiler barriers to force a re-read.
+	 * Now check if we missed an update, rely on the (compiler)
+	 * barrier in atomic_dec_and_test() to re-read rb->head.
 	 */
 	if (unlikely(head != local_read(&rb->head))) {
 		local_inc(&rb->nest);
@@ -106,7 +102,8 @@ int perf_output_begin(struct perf_output_handle *handle,
 {
 	struct ring_buffer *rb;
 	unsigned long tail, offset, head;
-	int have_lost, page_shift;
+	int have_lost;
+	struct perf_sample_data sample_data;
 	struct {
 		struct perf_event_header header;
 		u64			 id;
@@ -121,72 +118,55 @@ int perf_output_begin(struct perf_output_handle *handle,
 		event = event->parent;
 
 	rb = rcu_dereference(event->rb);
-	if (unlikely(!rb))
+	if (!rb)
 		goto out;
 
-	if (unlikely(!rb->nr_pages))
-		goto out;
+	handle->rb	= rb;
+	handle->event	= event;
 
-	handle->rb    = rb;
-	handle->event = event;
+	if (!rb->nr_pages)
+		goto out;
 
 	have_lost = local_read(&rb->lost);
-	if (unlikely(have_lost)) {
-		size += sizeof(lost_event);
-		if (event->attr.sample_id_all)
-			size += event->id_header_size;
+	if (have_lost) {
+		lost_event.header.size = sizeof(lost_event);
+		perf_event_header__init_id(&lost_event.header, &sample_data,
+					   event);
+		size += lost_event.header.size;
 	}
 
 	perf_output_get_handle(handle);
 
 	do {
-		tail = ACCESS_ONCE(rb->user_page->data_tail);
-		offset = head = local_read(&rb->head);
-		if (!rb->overwrite &&
-		    unlikely(CIRC_SPACE(head, tail, perf_data_size(rb)) < size))
-			goto fail;
-
 		/*
-		 * The above forms a control dependency barrier separating the
-		 * @tail load above from the data stores below. Since the @tail
-		 * load is required to compute the branch to fail below.
-		 *
-		 * A, matches D; the full memory barrier userspace SHOULD issue
-		 * after reading the data and before storing the new tail
-		 * position.
-		 *
-		 * See perf_output_put_handle().
+		 * Userspace could choose to issue a mb() before updating the
+		 * tail pointer. So that all reads will be completed before the
+		 * write is issued.
 		 */
-
+		tail = ACCESS_ONCE(rb->user_page->data_tail);
+		smp_rmb();
+		offset = head = local_read(&rb->head);
 		head += size;
+		if (unlikely(!perf_output_space(rb, tail, offset, head)))
+			goto fail;
 	} while (local_cmpxchg(&rb->head, offset, head) != offset);
 
-	/*
-	 * We rely on the implied barrier() by local_cmpxchg() to ensure
-	 * none of the data stores below can be lifted up by the compiler.
-	 */
-
-	if (unlikely(head - local_read(&rb->wakeup) > rb->watermark))
+	if (head - local_read(&rb->wakeup) > rb->watermark)
 		local_add(rb->watermark, &rb->wakeup);
 
-	page_shift = PAGE_SHIFT + page_order(rb);
+	handle->page = offset >> (PAGE_SHIFT + page_order(rb));
+	handle->page &= rb->nr_pages - 1;
+	handle->size = offset & ((PAGE_SIZE << page_order(rb)) - 1);
+	handle->addr = rb->data_pages[handle->page];
+	handle->addr += handle->size;
+	handle->size = (PAGE_SIZE << page_order(rb)) - handle->size;
 
-	handle->page = (offset >> page_shift) & (rb->nr_pages - 1);
-	offset &= (1UL << page_shift) - 1;
-	handle->addr = rb->data_pages[handle->page] + offset;
-	handle->size = (1UL << page_shift) - offset;
-
-	if (unlikely(have_lost)) {
-		struct perf_sample_data sample_data;
-
-		lost_event.header.size = sizeof(lost_event);
+	if (have_lost) {
 		lost_event.header.type = PERF_RECORD_LOST;
 		lost_event.header.misc = 0;
 		lost_event.id          = event->id;
 		lost_event.lost        = local_xchg(&rb->lost, 0);
 
-		perf_event_header__init_id(&lost_event.header,
-					   &sample_data, event);
 		perf_output_put(handle, lost_event);
 		perf_event__output_id_sample(event, handle, &sample_data);
 	}
@@ -232,9 +212,7 @@ ring_buffer_init(struct ring_buffer *rb, long watermark, int flags)
 		rb->watermark = max_size / 2;
 
 	if (flags & RING_BUFFER_WRITABLE)
-		rb->overwrite = 0;
-	else
-		rb->overwrite = 1;
+		rb->writable = 1;
 
 	atomic_set(&rb->refcount, 1);
 
@@ -334,16 +312,11 @@ void rb_free(struct ring_buffer *rb)
 }
 
 #else
-static int data_page_nr(struct ring_buffer *rb)
-{
-	return rb->nr_pages << page_order(rb);
-}
 
 struct page *
 perf_mmap_to_page(struct ring_buffer *rb, unsigned long pgoff)
 {
-	/* The '>' counts in the user page. */
-	if (pgoff > data_page_nr(rb))
+	if (pgoff > (1UL << page_order(rb)))
 		return NULL;
 
 	return vmalloc_to_page((void *)rb->user_page + pgoff * PAGE_SIZE);
@@ -363,11 +336,10 @@ static void rb_free_work(struct work_struct *work)
 	int i, nr;
 
 	rb = container_of(work, struct ring_buffer, work);
-	nr = data_page_nr(rb);
+	nr = 1 << page_order(rb);
 
 	base = rb->user_page;
-	/* The '<=' counts in the user page. */
-	for (i = 0; i <= nr; i++)
+	for (i = 0; i < nr + 1; i++)
 		perf_mmap_unmark_page(base + (i * PAGE_SIZE));
 
 	vfree(base);
@@ -401,7 +373,7 @@ struct ring_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
 	rb->user_page = all_buf;
 	rb->data_pages[0] = all_buf + PAGE_SIZE;
 	rb->page_order = ilog2(nr_pages);
-	rb->nr_pages = !!nr_pages;
+	rb->nr_pages = 1;
 
 	ring_buffer_init(rb, watermark, flags);
 

@@ -1,10 +1,10 @@
 /*
  * ALSA SoC Synopsys I2S Audio Layer
  *
- * sound/soc/dwc/designware_i2s.c
+ * sound/soc/spear/designware_i2s.c
  *
  * Copyright (C) 2010 ST Microelectronics
- * Rajeev Kumar <rajeevkumar.linux@gmail.com>
+ * Rajeev Kumar <rajeev-dlh.kumar@st.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -210,19 +210,15 @@ static int dw_i2s_hw_params(struct snd_pcm_substream *substream,
 	switch (config->chan_nr) {
 	case EIGHT_CHANNEL_SUPPORT:
 		ch_reg = 3;
-		break;
 	case SIX_CHANNEL_SUPPORT:
 		ch_reg = 2;
-		break;
 	case FOUR_CHANNEL_SUPPORT:
 		ch_reg = 1;
-		break;
 	case TWO_CHANNEL_SUPPORT:
 		ch_reg = 0;
 		break;
 	default:
 		dev_err(dev->dev, "channel not supported\n");
-		return -EINVAL;
 	}
 
 	i2s_disable_channels(dev, substream->stream);
@@ -295,10 +291,6 @@ static struct snd_soc_dai_ops dw_i2s_dai_ops = {
 	.shutdown	= dw_i2s_shutdown,
 	.hw_params	= dw_i2s_hw_params,
 	.trigger	= dw_i2s_trigger,
-};
-
-static const struct snd_soc_component_driver dw_i2s_component = {
-	.name		= "dw-i2s",
 };
 
 #ifdef CONFIG_PM
@@ -396,7 +388,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 	}
 
 	if (cap & DWC_I2S_PLAY) {
-		dev_dbg(&pdev->dev, " designware: play supported\n");
+		dev_dbg(&pdev->dev, " SPEAr: play supported\n");
 		dw_i2s_dai->playback.channels_min = MIN_CHANNEL_NUM;
 		dw_i2s_dai->playback.channels_max = pdata->channel;
 		dw_i2s_dai->playback.formats = pdata->snd_fmts;
@@ -404,7 +396,7 @@ static int dw_i2s_probe(struct platform_device *pdev)
 	}
 
 	if (cap & DWC_I2S_RECORD) {
-		dev_dbg(&pdev->dev, "designware: record supported\n");
+		dev_dbg(&pdev->dev, "SPEAr: record supported\n");
 		dw_i2s_dai->capture.channels_min = MIN_CHANNEL_NUM;
 		dw_i2s_dai->capture.channels_max = pdata->channel;
 		dw_i2s_dai->capture.formats = pdata->snd_fmts;
@@ -417,15 +409,16 @@ static int dw_i2s_probe(struct platform_device *pdev)
 
 	dev->dev = &pdev->dev;
 	dev_set_drvdata(&pdev->dev, dev);
-	ret = snd_soc_register_component(&pdev->dev, &dw_i2s_component,
-					 dw_i2s_dai, 1);
+	ret = snd_soc_register_dai(&pdev->dev, dw_i2s_dai);
 	if (ret != 0) {
 		dev_err(&pdev->dev, "not able to register dai\n");
-		goto err_clk_disable;
+		goto err_set_drvdata;
 	}
 
 	return 0;
 
+err_set_drvdata:
+	dev_set_drvdata(&pdev->dev, NULL);
 err_clk_disable:
 	clk_disable(dev->clk);
 err_clk_put:
@@ -437,7 +430,8 @@ static int dw_i2s_remove(struct platform_device *pdev)
 {
 	struct dw_i2s_dev *dev = dev_get_drvdata(&pdev->dev);
 
-	snd_soc_unregister_component(&pdev->dev);
+	snd_soc_unregister_dai(&pdev->dev);
+	dev_set_drvdata(&pdev->dev, NULL);
 
 	clk_put(dev->clk);
 
@@ -455,7 +449,7 @@ static struct platform_driver dw_i2s_driver = {
 
 module_platform_driver(dw_i2s_driver);
 
-MODULE_AUTHOR("Rajeev Kumar <rajeevkumar.linux@gmail.com>");
+MODULE_AUTHOR("Rajeev Kumar <rajeev-dlh.kumar@st.com>");
 MODULE_DESCRIPTION("DESIGNWARE I2S SoC Interface");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:designware_i2s");

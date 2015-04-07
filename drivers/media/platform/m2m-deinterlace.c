@@ -28,7 +28,7 @@ MODULE_AUTHOR("Javier Martin <javier.martin@vista-silicon.com");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.0.1");
 
-static bool debug;
+static bool debug = true;
 module_param(debug, bool, 0644);
 
 /* Flags that indicate a format can be used for capture/output */
@@ -207,12 +207,6 @@ static void dma_callback(void *data)
 	src_vb = v4l2_m2m_src_buf_remove(curr_ctx->m2m_ctx);
 	dst_vb = v4l2_m2m_dst_buf_remove(curr_ctx->m2m_ctx);
 
-	dst_vb->v4l2_buf.timestamp = src_vb->v4l2_buf.timestamp;
-	dst_vb->v4l2_buf.flags &= ~V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
-	dst_vb->v4l2_buf.flags |=
-		src_vb->v4l2_buf.flags & V4L2_BUF_FLAG_TSTAMP_SRC_MASK;
-	dst_vb->v4l2_buf.timecode = src_vb->v4l2_buf.timecode;
-
 	v4l2_m2m_buf_done(src_vb, VB2_BUF_STATE_DONE);
 	v4l2_m2m_buf_done(dst_vb, VB2_BUF_STATE_DONE);
 
@@ -344,7 +338,8 @@ static void deinterlace_issue_dma(struct deinterlace_ctx *ctx, int op,
 	ctx->xt->dir = DMA_MEM_TO_MEM;
 	ctx->xt->src_sgl = false;
 	ctx->xt->dst_sgl = true;
-	flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
+	flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT |
+		DMA_COMPL_SKIP_DEST_UNMAP | DMA_COMPL_SKIP_SRC_UNMAP;
 
 	tx = dmadev->device_prep_interleaved_dma(chan, ctx->xt, flags);
 	if (tx == NULL) {
@@ -871,7 +866,6 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 	src_vq->ops = &deinterlace_qops;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
-	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	q_data[V4L2_M2M_SRC].fmt = &formats[0];
 	q_data[V4L2_M2M_SRC].width = 640;
 	q_data[V4L2_M2M_SRC].height = 480;
@@ -888,7 +882,6 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 	dst_vq->ops = &deinterlace_qops;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
-	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	q_data[V4L2_M2M_DST].fmt = &formats[0];
 	q_data[V4L2_M2M_DST].width = 640;
 	q_data[V4L2_M2M_DST].height = 480;
@@ -921,11 +914,13 @@ static int deinterlace_open(struct file *file)
 		return ret;
 	}
 
-	ctx->xt = kzalloc(sizeof(struct dma_interleaved_template) +
+	ctx->xt = kzalloc(sizeof(struct dma_async_tx_descriptor) +
 				sizeof(struct data_chunk), GFP_KERNEL);
 	if (!ctx->xt) {
+		int ret = PTR_ERR(ctx->xt);
+
 		kfree(ctx);
-		return -ENOMEM;
+		return ret;
 	}
 
 	ctx->colorspace = V4L2_COLORSPACE_REC709;
@@ -1002,7 +997,7 @@ static int deinterlace_probe(struct platform_device *pdev)
 	dma_cap_mask_t mask;
 	int ret = 0;
 
-	pcdev = devm_kzalloc(&pdev->dev, sizeof(*pcdev), GFP_KERNEL);
+	pcdev = kzalloc(sizeof *pcdev, GFP_KERNEL);
 	if (!pcdev)
 		return -ENOMEM;
 
@@ -1012,7 +1007,7 @@ static int deinterlace_probe(struct platform_device *pdev)
 	dma_cap_set(DMA_INTERLEAVE, mask);
 	pcdev->dma_chan = dma_request_channel(mask, NULL, pcdev);
 	if (!pcdev->dma_chan)
-		return -ENODEV;
+		goto free_dev;
 
 	if (!dma_has_cap(DMA_INTERLEAVE, pcdev->dma_chan->device->cap_mask)) {
 		v4l2_err(&pcdev->v4l2_dev, "DMA does not support INTERLEAVE\n");
@@ -1035,7 +1030,6 @@ static int deinterlace_probe(struct platform_device *pdev)
 
 	*vfd = deinterlace_videodev;
 	vfd->lock = &pcdev->dev_mutex;
-	vfd->v4l2_dev = &pcdev->v4l2_dev;
 
 	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
 	if (ret) {
@@ -1078,13 +1072,16 @@ unreg_dev:
 	v4l2_device_unregister(&pcdev->v4l2_dev);
 rel_dma:
 	dma_release_channel(pcdev->dma_chan);
+free_dev:
+	kfree(pcdev);
 
 	return ret;
 }
 
 static int deinterlace_remove(struct platform_device *pdev)
 {
-	struct deinterlace_dev *pcdev = platform_get_drvdata(pdev);
+	struct deinterlace_dev *pcdev =
+		(struct deinterlace_dev *)platform_get_drvdata(pdev);
 
 	v4l2_info(&pcdev->v4l2_dev, "Removing " MEM2MEM_TEST_MODULE_NAME);
 	v4l2_m2m_release(pcdev->m2m_dev);
@@ -1092,6 +1089,7 @@ static int deinterlace_remove(struct platform_device *pdev)
 	v4l2_device_unregister(&pcdev->v4l2_dev);
 	vb2_dma_contig_cleanup_ctx(pcdev->alloc_ctx);
 	dma_release_channel(pcdev->dma_chan);
+	kfree(pcdev);
 
 	return 0;
 }

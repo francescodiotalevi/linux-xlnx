@@ -34,9 +34,8 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -74,7 +73,7 @@ static void usb_tx_callback(struct urb *urb);
 static int vfd_open(struct inode *inode, struct file *file);
 static long vfd_ioctl(struct file *file, unsigned cmd, unsigned long arg);
 static int vfd_close(struct inode *inode, struct file *file);
-static ssize_t vfd_write(struct file *file, const char __user *buf,
+static ssize_t vfd_write(struct file *file, const char *buf,
 				size_t n_bytes, loff_t *pos);
 
 /* LIRC driver function prototypes */
@@ -120,7 +119,7 @@ struct sasem_context {
 static const struct file_operations vfd_fops = {
 	.owner		= THIS_MODULE,
 	.open		= &vfd_open,
-	.write		= vfd_write,
+	.write		= &vfd_write,
 	.unlocked_ioctl	= &vfd_ioctl,
 	.release	= &vfd_close,
 	.llseek		= noop_llseek,
@@ -172,7 +171,7 @@ static void delete_context(struct sasem_context *context)
 	kfree(context);
 
 	if (debug)
-		pr_info("%s: context deleted\n", __func__);
+		printk(KERN_INFO "%s: context deleted\n", __func__);
 }
 
 static void deregister_from_lirc(struct sasem_context *context)
@@ -182,10 +181,11 @@ static void deregister_from_lirc(struct sasem_context *context)
 
 	retval = lirc_unregister_driver(minor);
 	if (retval)
-		pr_err("%s: unable to deregister from lirc (%d)\n",
-		       __func__, retval);
+		printk(KERN_ERR "%s: unable to deregister from lirc (%d)\n",
+			__func__, retval);
 	else
-		pr_info("Deregistered Sasem driver (minor:%d)\n", minor);
+		printk(KERN_INFO "Deregistered Sasem driver (minor:%d)\n",
+		       minor);
 
 }
 
@@ -206,7 +206,8 @@ static int vfd_open(struct inode *inode, struct file *file)
 	subminor = iminor(inode);
 	interface = usb_find_interface(&sasem_driver, subminor);
 	if (!interface) {
-		pr_err("%s: could not find interface for minor %d\n",
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: could not find interface for minor %d\n",
 		       __func__, subminor);
 		retval = -ENODEV;
 		goto exit;
@@ -251,7 +252,8 @@ static long vfd_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	context = (struct sasem_context *) file->private_data;
 
 	if (!context) {
-		pr_err("%s: no context for device\n", __func__);
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: no context for device\n", __func__);
 		return -ENODEV;
 	}
 
@@ -264,7 +266,7 @@ static long vfd_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		context->vfd_contrast = (unsigned int)arg;
 		break;
 	default:
-		pr_info("Unknown IOCTL command\n");
+		printk(KERN_INFO "Unknown IOCTL command\n");
 		mutex_unlock(&context->ctx_lock);
 		return -ENOIOCTLCMD;  /* not supported */
 	}
@@ -285,7 +287,8 @@ static int vfd_close(struct inode *inode, struct file *file)
 	context = (struct sasem_context *) file->private_data;
 
 	if (!context) {
-		pr_err("%s: no context for device\n", __func__);
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: no context for device\n", __func__);
 		return -ENODEV;
 	}
 
@@ -296,7 +299,7 @@ static int vfd_close(struct inode *inode, struct file *file)
 		retval = -EIO;
 	} else {
 		context->vfd_isopen = 0;
-		dev_info(&context->dev->dev, "VFD port closed\n");
+		printk(KERN_INFO "VFD port closed\n");
 		if (!context->dev_present && !context->ir_isopen) {
 
 			/* Device disconnected before close and IR port is
@@ -360,7 +363,7 @@ static int send_packet(struct sasem_context *context)
  * and requires data in 9 consecutive USB interrupt packets,
  * each packet carrying 8 bytes.
  */
-static ssize_t vfd_write(struct file *file, const char __user *buf,
+static ssize_t vfd_write(struct file *file, const char *buf,
 				size_t n_bytes, loff_t *pos)
 {
 	int i;
@@ -370,14 +373,16 @@ static ssize_t vfd_write(struct file *file, const char __user *buf,
 
 	context = (struct sasem_context *) file->private_data;
 	if (!context) {
-		pr_err("%s: no context for device\n", __func__);
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: no context for device\n", __func__);
 		return -ENODEV;
 	}
 
 	mutex_lock(&context->ctx_lock);
 
 	if (!context->dev_present) {
-		pr_err("%s: no Sasem device present\n", __func__);
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: no Sasem device present\n", __func__);
 		retval = -ENODEV;
 		goto exit;
 	}
@@ -389,7 +394,7 @@ static ssize_t vfd_write(struct file *file, const char __user *buf,
 		goto exit;
 	}
 
-	data_buf = memdup_user((void const __user *)buf, n_bytes);
+	data_buf = memdup_user(buf, n_bytes);
 	if (IS_ERR(data_buf)) {
 		retval = PTR_ERR(data_buf);
 		goto exit;
@@ -514,7 +519,7 @@ static int ir_open(void *data)
 			__func__, retval);
 	else {
 		context->ir_isopen = 1;
-		dev_info(&context->dev->dev, "IR port opened\n");
+		printk(KERN_INFO "IR port opened\n");
 	}
 
 exit:
@@ -533,7 +538,8 @@ static void ir_close(void *data)
 
 	context = (struct sasem_context *)data;
 	if (!context) {
-		pr_err("%s: no context for device\n", __func__);
+		printk(KERN_ERR KBUILD_MODNAME
+		       ": %s: no context for device\n", __func__);
 		return;
 	}
 
@@ -541,7 +547,7 @@ static void ir_close(void *data)
 
 	usb_kill_urb(context->rx_urb);
 	context->ir_isopen = 0;
-	pr_info("IR port closed\n");
+	printk(KERN_INFO "IR port closed\n");
 
 	if (!context->dev_present) {
 
@@ -578,9 +584,8 @@ static void incoming_packet(struct sasem_context *context,
 	int i;
 
 	if (len != 8) {
-		dev_warn(&context->dev->dev,
-			 "%s: invalid incoming packet size (%d)\n",
-			 __func__, len);
+		printk(KERN_WARNING "%s: invalid incoming packet size (%d)\n",
+		     __func__, len);
 		return;
 	}
 
@@ -658,7 +663,7 @@ static void usb_rx_callback(struct urb *urb)
 		break;
 
 	default:
-		dev_warn(&urb->dev->dev, "%s: status (%d): ignored",
+		printk(KERN_WARNING "%s: status (%d): ignored",
 			 __func__, urb->status);
 		break;
 	}
@@ -758,16 +763,22 @@ static int sasem_probe(struct usb_interface *interface,
 
 	context = kzalloc(sizeof(struct sasem_context), GFP_KERNEL);
 	if (!context) {
+		dev_err(&interface->dev,
+			"%s: kzalloc failed for context\n", __func__);
 		alloc_status = 1;
 		goto alloc_status_switch;
 	}
 	driver = kzalloc(sizeof(struct lirc_driver), GFP_KERNEL);
 	if (!driver) {
+		dev_err(&interface->dev,
+			"%s: kzalloc failed for lirc_driver\n", __func__);
 		alloc_status = 2;
 		goto alloc_status_switch;
 	}
 	rbuf = kmalloc(sizeof(struct lirc_buffer), GFP_KERNEL);
 	if (!rbuf) {
+		dev_err(&interface->dev,
+			"%s: kmalloc failed for lirc_buffer\n", __func__);
 		alloc_status = 3;
 		goto alloc_status_switch;
 	}
@@ -819,9 +830,8 @@ static int sasem_probe(struct usb_interface *interface,
 		retval = lirc_minor;
 		goto unlock;
 	} else
-		dev_info(&interface->dev,
-			 "%s: Registered Sasem driver (minor:%d)\n",
-			 __func__, lirc_minor);
+		printk(KERN_INFO "%s: Registered Sasem driver (minor:%d)\n",
+			__func__, lirc_minor);
 
 	/* Needed while unregistering! */
 	driver->minor = lirc_minor;
@@ -842,18 +852,15 @@ static int sasem_probe(struct usb_interface *interface,
 	if (vfd_ep_found) {
 
 		if (debug)
-			dev_info(&interface->dev,
-				 "Registering VFD with sysfs\n");
+			printk(KERN_INFO "Registering VFD with sysfs\n");
 		if (usb_register_dev(interface, &sasem_class))
 			/* Not a fatal error, so ignore */
-			dev_info(&interface->dev,
-				 "%s: could not get a minor number for VFD\n",
-				 __func__);
+			printk(KERN_INFO "%s: could not get a minor number "
+			       "for VFD\n", __func__);
 	}
 
-	dev_info(&interface->dev,
-		 "%s: Sasem device on usb<%d:%d> initialized\n",
-		 __func__, dev->bus->busnum, dev->devnum);
+	printk(KERN_INFO "%s: Sasem device on usb<%d:%d> initialized\n",
+			__func__, dev->bus->busnum, dev->devnum);
 unlock:
 	mutex_unlock(&context->ctx_lock);
 
@@ -865,20 +872,15 @@ alloc_status_switch:
 			usb_free_urb(tx_urb);
 	case 6:
 		usb_free_urb(rx_urb);
-		/* fall-through */
 	case 5:
 		lirc_buffer_free(rbuf);
-		/* fall-through */
 	case 4:
 		kfree(rbuf);
-		/* fall-through */
 	case 3:
 		kfree(driver);
-		/* fall-through */
 	case 2:
 		kfree(context);
 		context = NULL;
-		/* fall-through */
 	case 1:
 		if (retval == 0)
 			retval = -ENOMEM;
@@ -889,7 +891,7 @@ exit:
 }
 
 /**
- * Callback function for USB core API: disconnect
+ * Callback function for USB core API: disonnect
  */
 static void sasem_disconnect(struct usb_interface *interface)
 {
@@ -901,8 +903,7 @@ static void sasem_disconnect(struct usb_interface *interface)
 	context = usb_get_intfdata(interface);
 	mutex_lock(&context->ctx_lock);
 
-	dev_info(&interface->dev, "%s: Sasem device disconnected\n",
-		 __func__);
+	printk(KERN_INFO "%s: Sasem device disconnected\n", __func__);
 
 	usb_set_intfdata(interface, NULL);
 	context->dev_present = 0;

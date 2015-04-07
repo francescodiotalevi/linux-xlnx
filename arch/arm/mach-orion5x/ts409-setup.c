@@ -277,10 +277,8 @@ static void __init qnap_ts409_init(void)
 	/*
 	 * Configure peripherals.
 	 */
-	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
-				    ORION_MBUS_DEVBUS_BOOT_ATTR,
-				    QNAP_TS409_NOR_BOOT_BASE,
-				    QNAP_TS409_NOR_BOOT_SIZE);
+	orion5x_setup_dev_boot_win(QNAP_TS409_NOR_BOOT_BASE,
+				   QNAP_TS409_NOR_BOOT_SIZE);
 	platform_device_register(&qnap_ts409_nor_flash);
 
 	orion5x_ehci0_init();
@@ -317,7 +315,7 @@ MACHINE_START(TS409, "QNAP TS-409")
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,
 	.init_irq	= orion5x_init_irq,
-	.init_time	= orion5x_timer_init,
+	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32,
 	.restart	= orion5x_restart,
 MACHINE_END

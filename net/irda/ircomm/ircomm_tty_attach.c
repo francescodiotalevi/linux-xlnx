@@ -23,7 +23,9 @@
  *     GNU General Public License for more details.
  *
  *     You should have received a copy of the GNU General Public License
- *     along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *     along with this program; if not, write to the Free Software
+ *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+ *     MA 02111-1307 USA
  *
  ********************************************************************/
 
@@ -995,8 +997,12 @@ static int ircomm_tty_state_ready(struct ircomm_tty_cb *self,
 			self->settings.dce = IRCOMM_DELTA_CD;
 			ircomm_tty_check_modem_status(self);
 		} else {
+			struct tty_struct *tty = tty_port_tty_get(&self->port);
 			IRDA_DEBUG(0, "%s(), hanging up!\n", __func__ );
-			tty_port_tty_hangup(&self->port, false);
+			if (tty) {
+				tty_hangup(tty);
+				tty_kref_put(tty);
+			}
 		}
 		break;
 	default:

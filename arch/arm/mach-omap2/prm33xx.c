@@ -19,6 +19,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 
+#include "common.h"
 #include "powerdomain.h"
 #include "prm33xx.h"
 #include "prm-regbits-33xx.h"
@@ -26,13 +27,13 @@
 /* Read a register in a PRM instance */
 u32 am33xx_prm_read_reg(s16 inst, u16 idx)
 {
-	return readl_relaxed(prm_base + inst + idx);
+	return __raw_readl(prm_base + inst + idx);
 }
 
 /* Write into a register in a PRM instance */
 void am33xx_prm_write_reg(u32 val, s16 inst, u16 idx)
 {
-	writel_relaxed(val, prm_base + inst + idx);
+	__raw_writel(val, prm_base + inst + idx);
 }
 
 /* Read-modify-write a register in PRM. Caller must lock */
@@ -109,11 +110,11 @@ int am33xx_prm_assert_hardreset(u8 shift, s16 inst, u16 rstctrl_offs)
  * -EINVAL upon an argument error, -EEXIST if the submodule was already out
  * of reset, or -EBUSY if the submodule did not exit reset promptly.
  */
-int am33xx_prm_deassert_hardreset(u8 shift, u8 st_shift, s16 inst,
+int am33xx_prm_deassert_hardreset(u8 shift, s16 inst,
 		u16 rstctrl_offs, u16 rstst_offs)
 {
 	int c;
-	u32 mask = 1 << st_shift;
+	u32 mask = 1 << shift;
 
 	/* Check the current status to avoid  de-asserting the line twice */
 	if (am33xx_prm_is_hardreset_asserted(shift, inst, rstctrl_offs) == 0)
@@ -121,14 +122,11 @@ int am33xx_prm_deassert_hardreset(u8 shift, u8 st_shift, s16 inst,
 
 	/* Clear the reset status by writing 1 to the status bit */
 	am33xx_prm_rmw_reg_bits(0xffffffff, mask, inst, rstst_offs);
-
 	/* de-assert the reset control line */
-	mask = 1 << shift;
-
 	am33xx_prm_rmw_reg_bits(mask, 0, inst, rstctrl_offs);
-
 	/* wait the status to be set */
-	omap_test_timeout(am33xx_prm_is_hardreset_asserted(st_shift, inst,
+
+	omap_test_timeout(am33xx_prm_is_hardreset_asserted(shift, inst,
 							   rstst_offs),
 			  MAX_MODULE_HARDRESET_WAIT, c);
 
@@ -319,12 +317,6 @@ static int am33xx_pwrdm_wait_transition(struct powerdomain *pwrdm)
 	return 0;
 }
 
-static int am33xx_check_vcvp(void)
-{
-	/* No VC/VP on am33xx devices */
-	return 0;
-}
-
 struct pwrdm_ops am33xx_pwrdm_operations = {
 	.pwrdm_set_next_pwrst		= am33xx_pwrdm_set_next_pwrst,
 	.pwrdm_read_next_pwrst		= am33xx_pwrdm_read_next_pwrst,
@@ -340,5 +332,4 @@ struct pwrdm_ops am33xx_pwrdm_operations = {
 	.pwrdm_set_mem_onst		= am33xx_pwrdm_set_mem_onst,
 	.pwrdm_set_mem_retst		= am33xx_pwrdm_set_mem_retst,
 	.pwrdm_wait_transition		= am33xx_pwrdm_wait_transition,
-	.pwrdm_has_voltdm		= am33xx_check_vcvp,
 };

@@ -31,11 +31,9 @@
 #include <linux/mpage.h>
 #include <linux/fiemap.h>
 #include <linux/namei.h>
-#include <linux/aio.h>
 #include "ext2.h"
 #include "acl.h"
 #include "xip.h"
-#include "xattr.h"
 
 static int __ext2_write_inode(struct inode *inode, int do_sync);
 
@@ -58,7 +56,7 @@ static void ext2_write_failed(struct address_space *mapping, loff_t to)
 	struct inode *inode = mapping->host;
 
 	if (to > inode->i_size) {
-		truncate_pagecache(inode, inode->i_size);
+		truncate_pagecache(inode, to, inode->i_size);
 		ext2_truncate_blocks(inode, inode->i_size);
 	}
 }
@@ -78,7 +76,7 @@ void ext2_evict_inode(struct inode * inode)
 		dquot_drop(inode);
 	}
 
-	truncate_inode_pages_final(&inode->i_data);
+	truncate_inode_pages(&inode->i_data, 0);
 
 	if (want_delete) {
 		sb_start_intwrite(inode->i_sb);
@@ -90,7 +88,6 @@ void ext2_evict_inode(struct inode * inode)
 		inode->i_size = 0;
 		if (inode->i_blocks)
 			ext2_truncate_blocks(inode, 0);
-		ext2_xattr_delete_inode(inode);
 	}
 
 	invalidate_inode_buffers(inode);
@@ -498,10 +495,6 @@ static int ext2_alloc_branch(struct inode *inode,
 		 * parent to disk.
 		 */
 		bh = sb_getblk(inode->i_sb, new_blocks[n-1]);
-		if (unlikely(!bh)) {
-			err = -ENOMEM;
-			goto failed;
-		}
 		branch[n].bh = bh;
 		lock_buffer(bh);
 		memset(bh->b_data, 0, blocksize);
@@ -529,14 +522,6 @@ static int ext2_alloc_branch(struct inode *inode,
 			sync_dirty_buffer(bh);
 	}
 	*blks = num;
-	return err;
-
-failed:
-	for (i = 1; i < n; i++)
-		bforget(branch[i].bh);
-	for (i = 0; i < indirect_blks; i++)
-		ext2_free_blocks(inode, new_blocks[i], 1);
-	ext2_free_blocks(inode, new_blocks[i], num);
 	return err;
 }
 
@@ -631,8 +616,6 @@ static int ext2_get_blocks(struct inode *inode,
 	struct ext2_inode_info *ei = EXT2_I(inode);
 	int count = 0;
 	ext2_fsblk_t first_block = 0;
-
-	BUG_ON(maxblocks == 0);
 
 	depth = ext2_block_to_path(inode,iblock,offsets,&blocks_to_boundary);
 
@@ -850,18 +833,18 @@ static sector_t ext2_bmap(struct address_space *mapping, sector_t block)
 }
 
 static ssize_t
-ext2_direct_IO(int rw, struct kiocb *iocb, struct iov_iter *iter,
-			loff_t offset)
+ext2_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov,
+			loff_t offset, unsigned long nr_segs)
 {
 	struct file *file = iocb->ki_filp;
 	struct address_space *mapping = file->f_mapping;
 	struct inode *inode = mapping->host;
-	size_t count = iov_iter_count(iter);
 	ssize_t ret;
 
-	ret = blockdev_direct_IO(rw, iocb, inode, iter, offset, ext2_get_block);
+	ret = blockdev_direct_IO(rw, iocb, inode, iov, offset, nr_segs,
+				 ext2_get_block);
 	if (ret < 0 && (rw & WRITE))
-		ext2_write_failed(mapping, offset + count);
+		ext2_write_failed(mapping, offset + iov_length(iov, nr_segs));
 	return ret;
 }
 
@@ -1566,7 +1549,7 @@ int ext2_setattr(struct dentry *dentry, struct iattr *iattr)
 	}
 	setattr_copy(inode, iattr);
 	if (iattr->ia_valid & ATTR_MODE)
-		error = posix_acl_chmod(inode, inode->i_mode);
+		error = ext2_acl_chmod(inode);
 	mark_inode_dirty(inode);
 
 	return error;

@@ -20,6 +20,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -77,8 +78,10 @@ static int simtec_i2c_probe(struct platform_device *dev)
 	int ret;
 
 	pd = kzalloc(sizeof(struct simtec_i2c_data), GFP_KERNEL);
-	if (pd == NULL)
+	if (pd == NULL) {
+		dev_err(&dev->dev, "cannot allocate private data\n");
 		return -ENOMEM;
+	}
 
 	platform_set_drvdata(dev, pd);
 

@@ -5,7 +5,6 @@
 
 #include <linux/percpu.h>
 #include <linux/sched.h>
-#include <linux/syscalls.h>
 #include <asm/uaccess.h>
 #include <os.h>
 #include <skas.h>
@@ -275,7 +274,7 @@ clear:
 	goto out;
 }
 
-SYSCALL_DEFINE1(set_thread_area, struct user_desc __user *, user_desc)
+int sys_set_thread_area(struct user_desc __user *user_desc)
 {
 	struct user_desc info;
 	int idx, ret;
@@ -323,7 +322,7 @@ int ptrace_set_thread_area(struct task_struct *child, int idx,
 	return set_tls_entry(child, &info, idx, 0);
 }
 
-SYSCALL_DEFINE1(get_thread_area, struct user_desc __user *, user_desc)
+int sys_get_thread_area(struct user_desc __user *user_desc)
 {
 	struct user_desc info;
 	int idx, ret;

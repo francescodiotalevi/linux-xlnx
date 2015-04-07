@@ -6,7 +6,6 @@
 #include <qglobal.h>
 
 #if QT_VERSION < 0x040000
-#include <stddef.h>
 #include <qmainwindow.h>
 #include <qvbox.h>
 #include <qvaluelist.h>
@@ -67,11 +66,6 @@ static inline QString qgettext(const char* str)
 static inline QString qgettext(const QString& str)
 {
 	return QString::fromLocal8Bit(gettext(str.latin1()));
-}
-
-ConfigSettings::ConfigSettings()
-	: QSettings("kernel.org", "qconf")
-{
 }
 
 /**

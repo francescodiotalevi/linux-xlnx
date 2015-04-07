@@ -687,7 +687,6 @@ static int find_rsb_dir(struct dlm_ls *ls, char *name, int len,
 		log_error(ls, "find_rsb new from_other %d dir %d our %d %s",
 			  from_nodeid, dir_nodeid, our_nodeid, r->res_name);
 		dlm_free_rsb(r);
-		r = NULL;
 		error = -ENOTBLK;
 		goto out_unlock;
 	}
@@ -1133,7 +1132,6 @@ static void toss_rsb(struct kref *kref)
 	rb_erase(&r->res_hashnode, &ls->ls_rsbtbl[r->res_bucket].keep);
 	rsb_insert(r, &ls->ls_rsbtbl[r->res_bucket].toss);
 	r->res_toss_time = jiffies;
-	ls->ls_rsbtbl[r->res_bucket].flags |= DLM_RTF_SHRINK;
 	if (r->res_lvbptr) {
 		dlm_free_lvb(r->res_lvbptr);
 		r->res_lvbptr = NULL;
@@ -1184,7 +1182,7 @@ static void detach_lkb(struct dlm_lkb *lkb)
 static int create_lkb(struct dlm_ls *ls, struct dlm_lkb **lkb_ret)
 {
 	struct dlm_lkb *lkb;
-	int rv;
+	int rv, id;
 
 	lkb = dlm_allocate_lkb(ls);
 	if (!lkb)
@@ -1200,13 +1198,19 @@ static int create_lkb(struct dlm_ls *ls, struct dlm_lkb **lkb_ret)
 	mutex_init(&lkb->lkb_cb_mutex);
 	INIT_WORK(&lkb->lkb_cb_work, dlm_callback_work);
 
-	idr_preload(GFP_NOFS);
+ retry:
+	rv = idr_pre_get(&ls->ls_lkbidr, GFP_NOFS);
+	if (!rv)
+		return -ENOMEM;
+
 	spin_lock(&ls->ls_lkbidr_spin);
-	rv = idr_alloc(&ls->ls_lkbidr, lkb, 1, 0, GFP_NOWAIT);
-	if (rv >= 0)
-		lkb->lkb_id = rv;
+	rv = idr_get_new_above(&ls->ls_lkbidr, lkb, 1, &id);
+	if (!rv)
+		lkb->lkb_id = id;
 	spin_unlock(&ls->ls_lkbidr_spin);
-	idr_preload_end();
+
+	if (rv == -EAGAIN)
+		goto retry;
 
 	if (rv < 0) {
 		log_error(ls, "create_lkb idr error %d", rv);
@@ -1655,18 +1659,11 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 	char *name;
 	int our_nodeid = dlm_our_nodeid();
 	int remote_count = 0;
-	int need_shrink = 0;
 	int i, len, rv;
 
 	memset(&ls->ls_remove_lens, 0, sizeof(int) * DLM_REMOVE_NAMES_MAX);
 
 	spin_lock(&ls->ls_rsbtbl[b].lock);
-
-	if (!(ls->ls_rsbtbl[b].flags & DLM_RTF_SHRINK)) {
-		spin_unlock(&ls->ls_rsbtbl[b].lock);
-		return;
-	}
-
 	for (n = rb_first(&ls->ls_rsbtbl[b].toss); n; n = next) {
 		next = rb_next(n);
 		r = rb_entry(n, struct dlm_rsb, res_hashnode);
@@ -1681,8 +1678,6 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 		    (dlm_dir_nodeid(r) == our_nodeid)) {
 			continue;
 		}
-
-		need_shrink = 1;
 
 		if (!time_after_eq(jiffies, r->res_toss_time +
 				   dlm_config.ci_toss_secs * HZ)) {
@@ -1715,11 +1710,6 @@ static void shrink_bucket(struct dlm_ls *ls, int b)
 		rb_erase(&r->res_hashnode, &ls->ls_rsbtbl[b].toss);
 		dlm_free_rsb(r);
 	}
-
-	if (need_shrink)
-		ls->ls_rsbtbl[b].flags |= DLM_RTF_SHRINK;
-	else
-		ls->ls_rsbtbl[b].flags &= ~DLM_RTF_SHRINK;
 	spin_unlock(&ls->ls_rsbtbl[b].lock);
 
 	/*
@@ -2039,8 +2029,8 @@ static void set_lvb_lock_pc(struct dlm_rsb *r, struct dlm_lkb *lkb,
 	b = dlm_lvb_operations[lkb->lkb_grmode + 1][lkb->lkb_rqmode + 1];
 	if (b == 1) {
 		int len = receive_extralen(ms);
-		if (len > r->res_ls->ls_lvblen)
-			len = r->res_ls->ls_lvblen;
+		if (len > DLM_RESNAME_MAXLEN)
+			len = DLM_RESNAME_MAXLEN;
 		memcpy(lkb->lkb_lvbptr, ms->m_extra, len);
 		lkb->lkb_lvbseq = ms->m_lvbseq;
 	}
@@ -3894,8 +3884,8 @@ static int receive_lvb(struct dlm_ls *ls, struct dlm_lkb *lkb,
 		if (!lkb->lkb_lvbptr)
 			return -ENOMEM;
 		len = receive_extralen(ms);
-		if (len > ls->ls_lvblen)
-			len = ls->ls_lvblen;
+		if (len > DLM_RESNAME_MAXLEN)
+			len = DLM_RESNAME_MAXLEN;
 		memcpy(lkb->lkb_lvbptr, ms->m_extra, len);
 	}
 	return 0;
@@ -5463,7 +5453,7 @@ void dlm_recover_purge(struct dlm_ls *ls)
 	up_write(&ls->ls_root_sem);
 
 	if (lkb_count)
-		log_rinfo(ls, "dlm_recover_purge %u locks for %u nodes",
+		log_debug(ls, "dlm_recover_purge %u locks for %u nodes",
 			  lkb_count, nodes_count);
 }
 
@@ -5537,7 +5527,7 @@ void dlm_recover_grant(struct dlm_ls *ls)
 	}
 
 	if (lkb_count)
-		log_rinfo(ls, "dlm_recover_grant %u locks on %u resources",
+		log_debug(ls, "dlm_recover_grant %u locks on %u resources",
 			  lkb_count, rsb_count);
 }
 
@@ -5696,7 +5686,7 @@ int dlm_recover_master_copy(struct dlm_ls *ls, struct dlm_rcom *rc)
 	put_rsb(r);
  out:
 	if (error && error != -EEXIST)
-		log_rinfo(ls, "dlm_recover_master_copy remote %d %x error %d",
+		log_debug(ls, "dlm_recover_master_copy remote %d %x error %d",
 			  from_nodeid, remid, error);
 	rl->rl_result = cpu_to_le32(error);
 	return error;

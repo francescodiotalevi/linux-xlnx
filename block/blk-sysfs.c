@@ -7,11 +7,9 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/blktrace_api.h>
-#include <linux/blk-mq.h>
 
 #include "blk.h"
 #include "blk-cgroup.h"
-#include "blk-mq.h"
 
 struct queue_sysfs_entry {
 	struct attribute attr;
@@ -31,7 +29,7 @@ queue_var_store(unsigned long *var, const char *page, size_t count)
 	int err;
 	unsigned long v;
 
-	err = kstrtoul(page, 10, &v);
+	err = strict_strtoul(page, 10, &v);
 	if (err || v > UINT_MAX)
 		return -EINVAL;
 
@@ -48,10 +46,11 @@ static ssize_t queue_requests_show(struct request_queue *q, char *page)
 static ssize_t
 queue_requests_store(struct request_queue *q, const char *page, size_t count)
 {
+	struct request_list *rl;
 	unsigned long nr;
-	int ret, err;
+	int ret;
 
-	if (!q->request_fn && !q->mq_ops)
+	if (!q->request_fn)
 		return -EINVAL;
 
 	ret = queue_var_store(&nr, page, count);
@@ -61,14 +60,40 @@ queue_requests_store(struct request_queue *q, const char *page, size_t count)
 	if (nr < BLKDEV_MIN_RQ)
 		nr = BLKDEV_MIN_RQ;
 
-	if (q->request_fn)
-		err = blk_update_nr_requests(q, nr);
-	else
-		err = blk_mq_update_nr_requests(q, nr);
+	spin_lock_irq(q->queue_lock);
+	q->nr_requests = nr;
+	blk_queue_congestion_threshold(q);
 
-	if (err)
-		return err;
+	/* congestion isn't cgroup aware and follows root blkcg for now */
+	rl = &q->root_rl;
 
+	if (rl->count[BLK_RW_SYNC] >= queue_congestion_on_threshold(q))
+		blk_set_queue_congested(q, BLK_RW_SYNC);
+	else if (rl->count[BLK_RW_SYNC] < queue_congestion_off_threshold(q))
+		blk_clear_queue_congested(q, BLK_RW_SYNC);
+
+	if (rl->count[BLK_RW_ASYNC] >= queue_congestion_on_threshold(q))
+		blk_set_queue_congested(q, BLK_RW_ASYNC);
+	else if (rl->count[BLK_RW_ASYNC] < queue_congestion_off_threshold(q))
+		blk_clear_queue_congested(q, BLK_RW_ASYNC);
+
+	blk_queue_for_each_rl(rl, q) {
+		if (rl->count[BLK_RW_SYNC] >= q->nr_requests) {
+			blk_set_rl_full(rl, BLK_RW_SYNC);
+		} else {
+			blk_clear_rl_full(rl, BLK_RW_SYNC);
+			wake_up(&rl->wait[BLK_RW_SYNC]);
+		}
+
+		if (rl->count[BLK_RW_ASYNC] >= q->nr_requests) {
+			blk_set_rl_full(rl, BLK_RW_ASYNC);
+		} else {
+			blk_clear_rl_full(rl, BLK_RW_ASYNC);
+			wake_up(&rl->wait[BLK_RW_ASYNC]);
+		}
+	}
+
+	spin_unlock_irq(q->queue_lock);
 	return ret;
 }
 
@@ -204,8 +229,6 @@ queue_store_##name(struct request_queue *q, const char *page, size_t count) \
 	unsigned long val;						\
 	ssize_t ret;							\
 	ret = queue_var_store(&val, page, count);			\
-	if (ret < 0)							\
-		 return ret;						\
 	if (neg)							\
 		val = !val;						\
 									\
@@ -262,7 +285,7 @@ static ssize_t
 queue_rq_affinity_store(struct request_queue *q, const char *page, size_t count)
 {
 	ssize_t ret = -EINVAL;
-#ifdef CONFIG_SMP
+#if defined(CONFIG_USE_GENERIC_SMP_HELPERS)
 	unsigned long val;
 
 	ret = queue_var_store(&val, page, count);
@@ -474,13 +497,6 @@ queue_attr_store(struct kobject *kobj, struct attribute *attr,
 	return res;
 }
 
-static void blk_free_queue_rcu(struct rcu_head *rcu_head)
-{
-	struct request_queue *q = container_of(rcu_head, struct request_queue,
-					       rcu_head);
-	kmem_cache_free(blk_requestq_cachep, q);
-}
-
 /**
  * blk_release_queue: - release a &struct request_queue when it is no longer needed
  * @kobj:    the kobj belonging to the request queue to be released
@@ -517,17 +533,12 @@ static void blk_release_queue(struct kobject *kobj)
 	if (q->queue_tags)
 		__blk_queue_free_tags(q);
 
-	if (q->mq_ops)
-		blk_mq_free_queue(q);
-
-	kfree(q->flush_rq);
-
 	blk_trace_shutdown(q);
 
 	bdi_destroy(&q->backing_dev_info);
 
 	ida_simple_remove(&blk_queue_ida, q->id);
-	call_rcu(&q->rcu_head, blk_free_queue_rcu);
+	kmem_cache_free(blk_requestq_cachep, q);
 }
 
 static const struct sysfs_ops queue_sysfs_ops = {
@@ -554,10 +565,7 @@ int blk_register_queue(struct gendisk *disk)
 	 * Initialization must be complete by now.  Finish the initial
 	 * bypass from queue allocation.
 	 */
-	if (!blk_queue_init_done(q)) {
-		queue_flag_set_unlocked(QUEUE_FLAG_INIT_DONE, q);
-		blk_queue_bypass_end(q);
-	}
+	blk_queue_bypass_end(q);
 
 	ret = blk_trace_init_sysfs(dev);
 	if (ret)
@@ -570,9 +578,6 @@ int blk_register_queue(struct gendisk *disk)
 	}
 
 	kobject_uevent(&q->kobj, KOBJ_ADD);
-
-	if (q->mq_ops)
-		blk_mq_register_disk(disk);
 
 	if (!q->request_fn)
 		return 0;
@@ -595,9 +600,6 @@ void blk_unregister_queue(struct gendisk *disk)
 
 	if (WARN_ON(!q))
 		return;
-
-	if (q->mq_ops)
-		blk_mq_unregister_disk(disk);
 
 	if (q->request_fn)
 		elv_unregister_queue(q);

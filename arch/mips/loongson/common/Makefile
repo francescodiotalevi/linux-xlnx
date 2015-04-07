@@ -3,9 +3,8 @@
 #
 
 obj-y += setup.o init.o cmdline.o env.o time.o reset.o irq.o \
-    bonito-irq.o mem.o machtype.o platform.o
-obj-$(CONFIG_GPIOLIB) += gpio.o
-obj-$(CONFIG_PCI) += pci.o
+    pci.o bonito-irq.o mem.o machtype.o platform.o
+obj-$(CONFIG_GENERIC_GPIO) += gpio.o
 
 #
 # Serial port support
@@ -26,8 +25,3 @@ obj-$(CONFIG_CS5536) += cs5536/
 #
 
 obj-$(CONFIG_LOONGSON_SUSPEND) += pm.o
-
-#
-# Big Memory (SWIOTLB) Support
-#
-obj-$(CONFIG_SWIOTLB) += dma-swiotlb.o

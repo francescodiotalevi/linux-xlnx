@@ -182,30 +182,30 @@ static int pio2_match(struct vme_dev *vdev)
 
 	if (vdev->num >= bus_num) {
 		dev_err(&vdev->dev,
-			"The enumeration of the VMEbus to which the board is connected must be specified\n");
+			"The enumeration of the VMEbus to which the board is connected must be specified");
 		return 0;
 	}
 
 	if (vdev->num >= base_num) {
 		dev_err(&vdev->dev,
-			"The VME address for the cards registers must be specified\n");
+			"The VME address for the cards registers must be specified");
 		return 0;
 	}
 
 	if (vdev->num >= vector_num) {
 		dev_err(&vdev->dev,
-			"The IRQ vector used by the card must be specified\n");
+			"The IRQ vector used by the card must be specified");
 		return 0;
 	}
 
 	if (vdev->num >= level_num) {
 		dev_err(&vdev->dev,
-			"The IRQ level used by the card must be specified\n");
+			"The IRQ level used by the card must be specified");
 		return 0;
 	}
 
 	if (vdev->num >= variant_num) {
-		dev_err(&vdev->dev, "The variant of the card must be specified\n");
+		dev_err(&vdev->dev, "The variant of the card must be specified");
 		return 0;
 	}
 
@@ -222,6 +222,7 @@ static int pio2_probe(struct vme_dev *vdev)
 
 	card = kzalloc(sizeof(struct pio2_card), GFP_KERNEL);
 	if (card == NULL) {
+		dev_err(&vdev->dev, "Unable to allocate card structure\n");
 		retval = -ENOMEM;
 		goto err_struct;
 	}
@@ -324,7 +325,7 @@ static int pio2_probe(struct vme_dev *vdev)
 	retval = pio2_reset_card(card);
 	if (retval) {
 		dev_err(&card->vdev->dev,
-			"Failed to reset card, is location valid?\n");
+			"Failed to reset card, is location valid?");
 		retval = -ENODEV;
 		goto err_reset;
 	}

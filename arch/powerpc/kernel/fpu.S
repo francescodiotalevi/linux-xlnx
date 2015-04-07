@@ -50,97 +50,14 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX);					\
 #define REST_32FPVSRS(n,c,base) __REST_32FPVSRS(n,__REG_##c,__REG_##base)
 #define SAVE_32FPVSRS(n,c,base) __SAVE_32FPVSRS(n,__REG_##c,__REG_##base)
 
-#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
-/* void do_load_up_transact_fpu(struct thread_struct *thread)
- *
- * This is similar to load_up_fpu but for the transactional version of the FP
- * register set.  It doesn't mess with the task MSR or valid flags.
- * Furthermore, we don't do lazy FP with TM currently.
- */
-_GLOBAL(do_load_up_transact_fpu)
-	mfmsr	r6
-	ori	r5,r6,MSR_FP
-#ifdef CONFIG_VSX
-BEGIN_FTR_SECTION
-	oris	r5,r5,MSR_VSX@h
-END_FTR_SECTION_IFSET(CPU_FTR_VSX)
-#endif
-	SYNC
-	MTMSRD(r5)
-
-	addi	r7,r3,THREAD_TRANSACT_FPSTATE
-	lfd	fr0,FPSTATE_FPSCR(r7)
-	MTFSF_L(fr0)
-	REST_32FPVSRS(0, R4, R7)
-
-	/* FP/VSX off again */
-	MTMSRD(r6)
-	SYNC
-
-	blr
-#endif /* CONFIG_PPC_TRANSACTIONAL_MEM */
-
-/*
- * Enable use of the FPU, and VSX if possible, for the caller.
- */
-_GLOBAL(fp_enable)
-	mfmsr	r3
-	ori	r3,r3,MSR_FP
-#ifdef CONFIG_VSX
-BEGIN_FTR_SECTION
-	oris	r3,r3,MSR_VSX@h
-END_FTR_SECTION_IFSET(CPU_FTR_VSX)
-#endif
-	SYNC
-	MTMSRD(r3)
-	isync			/* (not necessary for arch 2.02 and later) */
-	blr
-
-/*
- * Load state from memory into FP registers including FPSCR.
- * Assumes the caller has enabled FP in the MSR.
- */
-_GLOBAL(load_fp_state)
-	lfd	fr0,FPSTATE_FPSCR(r3)
-	MTFSF_L(fr0)
-	REST_32FPVSRS(0, R4, R3)
-	blr
-
-/*
- * Store FP state into memory, including FPSCR
- * Assumes the caller has enabled FP in the MSR.
- */
-_GLOBAL(store_fp_state)
-	SAVE_32FPVSRS(0, R4, R3)
-	mffs	fr0
-	stfd	fr0,FPSTATE_FPSCR(r3)
-	blr
-
 /*
  * This task wants to use the FPU now.
  * On UP, disable FP for the task which had the FPU previously,
  * and save its floating-point registers in its thread_struct.
  * Load up this task's FP registers from its thread_struct,
  * enable the FPU for the current task and return to the task.
- * Note that on 32-bit this can only use registers that will be
- * restored by fast_exception_return, i.e. r3 - r6, r10 and r11.
  */
 _GLOBAL(load_up_fpu)
-#if defined(CONFIG_XILINX_VIRTEX_5_FXT) && defined(CONFIG_PPC_FPU)
-	li	r3,0
-	lis	r5,excep_state@h
-	ori	r5,r5,excep_state@l
-	stw	r3,0(r5)
-
-	mfspr   r5,SPRN_CCR0
-	/* set CCR0[9] to disable the load miss queue inside the ppc440 */
-	oris    r5,r5, (1<<6)
-	/* set CCR0[26] to ... */
-	ori	r5,r5, (1<<5)
-	mtspr   SPRN_CCR0,r5
-	isync
-#endif
-
 	mfmsr	r5
 	ori	r5,r5,MSR_FP
 #ifdef CONFIG_VSX
@@ -164,10 +81,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 	beq	1f
 	toreal(r4)
 	addi	r4,r4,THREAD		/* want last_task_used_math->thread */
-	addi	r10,r4,THREAD_FPSTATE
-	SAVE_32FPVSRS(0, R5, R10)
+	SAVE_32FPVSRS(0, R5, R4)
 	mffs	fr0
-	stfd	fr0,FPSTATE_FPSCR(r10)
+	stfd	fr0,THREAD_FPSCR(r4)
 	PPC_LL	r5,PT_REGS(r4)
 	toreal(r5)
 	PPC_LL	r4,_MSR-STACK_FRAME_OVERHEAD(r5)
@@ -178,7 +94,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 #endif /* CONFIG_SMP */
 	/* enable use of FP after return */
 #ifdef CONFIG_PPC32
-	mfspr	r5,SPRN_SPRG_THREAD	/* current task's THREAD (phys) */
+	mfspr	r5,SPRN_SPRG_THREAD		/* current task's THREAD (phys) */
 	lwz	r4,THREAD_FPEXC_MODE(r5)
 	ori	r9,r9,MSR_FP		/* enable FP for current */
 	or	r9,r9,r4
@@ -190,10 +106,9 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 	or	r12,r12,r4
 	std	r12,_MSR(r1)
 #endif
-	addi	r10,r5,THREAD_FPSTATE
-	lfd	fr0,FPSTATE_FPSCR(r10)
+	lfd	fr0,THREAD_FPSCR(r5)
 	MTFSF_L(fr0)
-	REST_32FPVSRS(0, R4, R10)
+	REST_32FPVSRS(0, R4, R5)
 #ifndef CONFIG_SMP
 	subi	r4,r5,THREAD
 	fromreal(r4)
@@ -210,16 +125,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
  * Enables the FPU for use in the kernel on return.
  */
 _GLOBAL(giveup_fpu)
-#if defined(CONFIG_XILINX_VIRTEX_5_FXT) && defined(CONFIG_PPC_FPU)
-	mfspr   r5,SPRN_CCR0
-	/* set CCR0[9] to disable the load miss queue inside the ppc440 */
-	oris    r5,r5, (1<<6)
-	/* set CCR0[26] to ... */
-	ori	r5,r5, (1<<5)
-	mtspr   SPRN_CCR0,r5
-	isync
-#endif
-
 	mfmsr	r5
 	ori	r5,r5,MSR_FP
 #ifdef CONFIG_VSX
@@ -235,15 +140,11 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 	PPC_LCMPI	0,r3,0
 	beqlr-				/* if no previous owner, done */
 	addi	r3,r3,THREAD	        /* want THREAD of task */
-	PPC_LL	r6,THREAD_FPSAVEAREA(r3)
 	PPC_LL	r5,PT_REGS(r3)
-	PPC_LCMPI	0,r6,0
-	bne	2f
-	addi	r6,r3,THREAD_FPSTATE
-2:	PPC_LCMPI	0,r5,0
-	SAVE_32FPVSRS(0, R4, R6)
+	PPC_LCMPI	0,r5,0
+	SAVE_32FPVSRS(0, R4 ,R3)
 	mffs	fr0
-	stfd	fr0,FPSTATE_FPSCR(r6)
+	stfd	fr0,THREAD_FPSCR(r3)
 	beq	1f
 	PPC_LL	r4,_MSR-STACK_FRAME_OVERHEAD(r5)
 	li	r3,MSR_FP|MSR_FE0|MSR_FE1

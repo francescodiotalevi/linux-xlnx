@@ -50,7 +50,6 @@ static int init_linuxrc(struct subprocess_info *info, struct cred *new)
 
 static void __init handle_initrd(void)
 {
-	struct subprocess_info *info;
 	static char *argv[] = { "linuxrc", NULL, };
 	extern char *envp_init[];
 	int error;
@@ -62,20 +61,14 @@ static void __init handle_initrd(void)
 	sys_mkdir("/old", 0700);
 	sys_chdir("/old");
 
-	/* try loading default modules from initrd */
-	load_default_modules();
-
 	/*
 	 * In case that a resume from disk is carried out by linuxrc or one of
 	 * its children, we need to tell the freezer not to wait for us.
 	 */
 	current->flags |= PF_FREEZER_SKIP;
 
-	info = call_usermodehelper_setup("/linuxrc", argv, envp_init,
-					 GFP_KERNEL, init_linuxrc, NULL, NULL);
-	if (!info)
-		return;
-	call_usermodehelper_exec(info, UMH_WAIT_PROC);
+	call_usermodehelper_fns("/linuxrc", argv, envp_init, UMH_WAIT_PROC,
+			init_linuxrc, NULL, NULL);
 
 	current->flags &= ~PF_FREEZER_SKIP;
 

@@ -25,7 +25,9 @@
 
 #include <linux/compiler.h>
 #include <linux/irqflags.h>
-#include <asm/barrier.h>
+
+#define smp_mb__before_clear_bit()	smp_mb()
+#define smp_mb__after_clear_bit()	smp_mb()
 
 /*
  * These functions are the basis of our bit ops.
@@ -39,9 +41,9 @@ static inline void ____atomic_set_bit(unsigned int bit, volatile unsigned long *
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	*p |= mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 }
 
 static inline void ____atomic_clear_bit(unsigned int bit, volatile unsigned long *p)
@@ -51,9 +53,9 @@ static inline void ____atomic_clear_bit(unsigned int bit, volatile unsigned long
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	*p &= ~mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 }
 
 static inline void ____atomic_change_bit(unsigned int bit, volatile unsigned long *p)
@@ -63,9 +65,9 @@ static inline void ____atomic_change_bit(unsigned int bit, volatile unsigned lon
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	*p ^= mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 }
 
 static inline int
@@ -77,10 +79,10 @@ ____atomic_test_and_set_bit(unsigned int bit, volatile unsigned long *p)
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	res = *p;
 	*p = res | mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 
 	return (res & mask) != 0;
 }
@@ -94,10 +96,10 @@ ____atomic_test_and_clear_bit(unsigned int bit, volatile unsigned long *p)
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	res = *p;
 	*p = res & ~mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 
 	return (res & mask) != 0;
 }
@@ -111,10 +113,10 @@ ____atomic_test_and_change_bit(unsigned int bit, volatile unsigned long *p)
 
 	p += bit >> 5;
 
-	raw_local_irq_save(flags);
+	flags = hard_local_irq_save();
 	res = *p;
 	*p = res ^ mask;
-	raw_local_irq_restore(flags);
+	hard_local_irq_restore(flags);
 
 	return (res & mask) != 0;
 }
@@ -252,59 +254,25 @@ static inline int constant_fls(int x)
 }
 
 /*
- * On ARMv5 and above those functions can be implemented around the
- * clz instruction for much better code efficiency.  __clz returns
- * the number of leading zeros, zero input will return 32, and
- * 0x80000000 will return 0.
+ * On ARMv5 and above those functions can be implemented around
+ * the clz instruction for much better code efficiency.
  */
-static inline unsigned int __clz(unsigned int x)
-{
-	unsigned int ret;
 
-	asm("clz\t%0, %1" : "=r" (ret) : "r" (x));
-
-	return ret;
-}
-
-/*
- * fls() returns zero if the input is zero, otherwise returns the bit
- * position of the last set bit, where the LSB is 1 and MSB is 32.
- */
 static inline int fls(int x)
 {
+	int ret;
+
 	if (__builtin_constant_p(x))
 	       return constant_fls(x);
 
-	return 32 - __clz(x);
+	asm("clz\t%0, %1" : "=r" (ret) : "r" (x));
+       	ret = 32 - ret;
+	return ret;
 }
 
-/*
- * __fls() returns the bit position of the last bit set, where the
- * LSB is 0 and MSB is 31.  Zero input is undefined.
- */
-static inline unsigned long __fls(unsigned long x)
-{
-	return fls(x) - 1;
-}
-
-/*
- * ffs() returns zero if the input was zero, otherwise returns the bit
- * position of the first set bit, where the LSB is 1 and MSB is 32.
- */
-static inline int ffs(int x)
-{
-	return fls(x & -x);
-}
-
-/*
- * __ffs() returns the bit position of the first bit set, where the
- * LSB is 0 and MSB is 31.  Zero input is undefined.
- */
-static inline unsigned long __ffs(unsigned long x)
-{
-	return ffs(x) - 1;
-}
-
+#define __fls(x) (fls(x) - 1)
+#define ffs(x) ({ unsigned long __t = (x); fls(__t & -__t); })
+#define __ffs(x) (ffs(x) - 1)
 #define ffz(x) __ffs( ~(x) )
 
 #endif

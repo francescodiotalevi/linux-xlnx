@@ -34,7 +34,6 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/jiffies.h>
-#include <linux/of.h>
 
 #include <linux/platform_data/ina2xx.h>
 
@@ -78,7 +77,7 @@ struct ina2xx_config {
 };
 
 struct ina2xx_data {
-	struct i2c_client *client;
+	struct device *hwmon_dev;
 	const struct ina2xx_config *config;
 
 	struct mutex update_lock;
@@ -112,8 +111,8 @@ static const struct ina2xx_config ina2xx_config[] = {
 
 static struct ina2xx_data *ina2xx_update_device(struct device *dev)
 {
-	struct ina2xx_data *data = dev_get_drvdata(dev);
-	struct i2c_client *client = data->client;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct ina2xx_data *data = i2c_get_clientdata(client);
 	struct ina2xx_data *ret = data;
 
 	mutex_lock(&data->update_lock);
@@ -148,8 +147,7 @@ static int ina2xx_get_value(struct ina2xx_data *data, u8 reg)
 
 	switch (reg) {
 	case INA2XX_SHUNT_VOLTAGE:
-		/* signed register */
-		val = DIV_ROUND_CLOSEST((s16)data->regs[reg],
+		val = DIV_ROUND_CLOSEST(data->regs[reg],
 					data->config->shunt_div);
 		break;
 	case INA2XX_BUS_VOLTAGE:
@@ -161,8 +159,8 @@ static int ina2xx_get_value(struct ina2xx_data *data, u8 reg)
 		val = data->regs[reg] * data->config->power_lsb;
 		break;
 	case INA2XX_CURRENT:
-		/* signed register, LSB=1mA (selected), in mA */
-		val = (s16)data->regs[reg];
+		/* LSB=1mA (selected). Is in mA */
+		val = data->regs[reg];
 		break;
 	default:
 		/* programmer goofed */
@@ -188,55 +186,54 @@ static ssize_t ina2xx_show_value(struct device *dev,
 }
 
 /* shunt voltage */
-static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, ina2xx_show_value, NULL,
-			  INA2XX_SHUNT_VOLTAGE);
+static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, \
+	ina2xx_show_value, NULL, INA2XX_SHUNT_VOLTAGE);
 
 /* bus voltage */
-static SENSOR_DEVICE_ATTR(in1_input, S_IRUGO, ina2xx_show_value, NULL,
-			  INA2XX_BUS_VOLTAGE);
+static SENSOR_DEVICE_ATTR(in1_input, S_IRUGO, \
+	ina2xx_show_value, NULL, INA2XX_BUS_VOLTAGE);
 
 /* calculated current */
-static SENSOR_DEVICE_ATTR(curr1_input, S_IRUGO, ina2xx_show_value, NULL,
-			  INA2XX_CURRENT);
+static SENSOR_DEVICE_ATTR(curr1_input, S_IRUGO, \
+	ina2xx_show_value, NULL, INA2XX_CURRENT);
 
 /* calculated power */
-static SENSOR_DEVICE_ATTR(power1_input, S_IRUGO, ina2xx_show_value, NULL,
-			  INA2XX_POWER);
+static SENSOR_DEVICE_ATTR(power1_input, S_IRUGO, \
+	ina2xx_show_value, NULL, INA2XX_POWER);
 
 /* pointers to created device attributes */
-static struct attribute *ina2xx_attrs[] = {
+static struct attribute *ina2xx_attributes[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
 	&sensor_dev_attr_in1_input.dev_attr.attr,
 	&sensor_dev_attr_curr1_input.dev_attr.attr,
 	&sensor_dev_attr_power1_input.dev_attr.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(ina2xx);
+
+static const struct attribute_group ina2xx_group = {
+	.attrs = ina2xx_attributes,
+};
 
 static int ina2xx_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = client->adapter;
-	struct ina2xx_platform_data *pdata;
-	struct device *dev = &client->dev;
 	struct ina2xx_data *data;
-	struct device *hwmon_dev;
+	struct ina2xx_platform_data *pdata;
+	int ret;
 	long shunt = 10000; /* default shunt value 10mOhms */
-	u32 val;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_WORD_DATA))
 		return -ENODEV;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	if (dev_get_platdata(dev)) {
-		pdata = dev_get_platdata(dev);
+	if (client->dev.platform_data) {
+		pdata =
+		  (struct ina2xx_platform_data *)client->dev.platform_data;
 		shunt = pdata->shunt_uohms;
-	} else if (!of_property_read_u32(dev->of_node,
-					 "shunt-resistor", &val)) {
-		shunt = val;
 	}
 
 	if (shunt <= 0)
@@ -254,16 +251,35 @@ static int ina2xx_probe(struct i2c_client *client,
 	i2c_smbus_write_word_swapped(client, INA2XX_CALIBRATION,
 				     data->config->calibration_factor / shunt);
 
-	data->client = client;
+	i2c_set_clientdata(client, data);
 	mutex_init(&data->update_lock);
 
-	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
-							   data, ina2xx_groups);
-	if (IS_ERR(hwmon_dev))
-		return PTR_ERR(hwmon_dev);
+	ret = sysfs_create_group(&client->dev.kobj, &ina2xx_group);
+	if (ret)
+		return ret;
 
-	dev_info(dev, "power monitor %s (Rshunt = %li uOhm)\n",
+	data->hwmon_dev = hwmon_device_register(&client->dev);
+	if (IS_ERR(data->hwmon_dev)) {
+		ret = PTR_ERR(data->hwmon_dev);
+		goto out_err_hwmon;
+	}
+
+	dev_info(&client->dev, "power monitor %s (Rshunt = %li uOhm)\n",
 		 id->name, shunt);
+
+	return 0;
+
+out_err_hwmon:
+	sysfs_remove_group(&client->dev.kobj, &ina2xx_group);
+	return ret;
+}
+
+static int ina2xx_remove(struct i2c_client *client)
+{
+	struct ina2xx_data *data = i2c_get_clientdata(client);
+
+	hwmon_device_unregister(data->hwmon_dev);
+	sysfs_remove_group(&client->dev.kobj, &ina2xx_group);
 
 	return 0;
 }
@@ -282,6 +298,7 @@ static struct i2c_driver ina2xx_driver = {
 		.name	= "ina2xx",
 	},
 	.probe		= ina2xx_probe,
+	.remove		= ina2xx_remove,
 	.id_table	= ina2xx_id,
 };
 

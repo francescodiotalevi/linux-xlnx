@@ -24,6 +24,9 @@
 
 #include "generic.h"
 
+
+#warning "include/asm/arch-sa1100/ide.h needs fixing for lart"
+
 static struct mcp_plat_data lart_mcp_data = {
 	.mccr0		= MCCR0_ADM,
 	.sclk_rate	= 11981000,
@@ -171,6 +174,6 @@ MACHINE_START(LART, "LART")
 	.init_irq	= sa1100_init_irq,
 	.init_machine	= lart_init,
 	.init_late	= sa11x0_init_late,
-	.init_time	= sa1100_timer_init,
+	.timer		= &sa1100_timer,
 	.restart	= sa11x0_restart,
 MACHINE_END

@@ -2698,7 +2698,7 @@ static u16 eeprom_read_u16(struct ipw_priv *priv, u8 addr)
 /* data's copy of the eeprom data                                 */
 static void eeprom_parse_mac(struct ipw_priv *priv, u8 * mac)
 {
-	memcpy(mac, &priv->eeprom[EEPROM_MAC_ADDRESS], ETH_ALEN);
+	memcpy(mac, &priv->eeprom[EEPROM_MAC_ADDRESS], 6);
 }
 
 static void ipw_read_eeprom(struct ipw_priv *priv)
@@ -3012,7 +3012,7 @@ static void ipw_remove_current_network(struct ipw_priv *priv)
 	spin_lock_irqsave(&priv->ieee->lock, flags);
 	list_for_each_safe(element, safe, &priv->ieee->network_list) {
 		network = list_entry(element, struct libipw_network, list);
-		if (ether_addr_equal(network->bssid, priv->bssid)) {
+		if (!memcmp(network->bssid, priv->bssid, ETH_ALEN)) {
 			list_del(element);
 			list_add_tail(&network->list,
 				      &priv->ieee->network_free_list);
@@ -3548,7 +3548,6 @@ static int ipw_load(struct ipw_priv *priv)
 		ipw_rx_queue_reset(priv, priv->rxq);
 	if (!priv->rxq) {
 		IPW_ERROR("Unable to initialize Rx queue\n");
-		rc = -ENOMEM;
 		goto error;
 	}
 
@@ -3921,7 +3920,7 @@ static u8 ipw_add_station(struct ipw_priv *priv, u8 * bssid)
 	int i;
 
 	for (i = 0; i < priv->num_stations; i++) {
-		if (ether_addr_equal(priv->stations[i], bssid)) {
+		if (!memcmp(priv->stations[i], bssid, ETH_ALEN)) {
 			/* Another node is active in network */
 			priv->missed_adhoc_beacons = 0;
 			if (!(priv->config & CFG_STATIC_CHANNEL))
@@ -3953,7 +3952,7 @@ static u8 ipw_find_station(struct ipw_priv *priv, u8 * bssid)
 	int i;
 
 	for (i = 0; i < priv->num_stations; i++)
-		if (ether_addr_equal(priv->stations[i], bssid))
+		if (!memcmp(priv->stations[i], bssid, ETH_ALEN))
 			return i;
 
 	return IPW_INVALID_STATION;
@@ -4481,11 +4480,18 @@ static void handle_scan_event(struct ipw_priv *priv)
 {
 	/* Only userspace-requested scan completion events go out immediately */
 	if (!priv->user_requested_scan) {
-		schedule_delayed_work(&priv->scan_event,
-				      round_jiffies_relative(msecs_to_jiffies(4000)));
+		if (!delayed_work_pending(&priv->scan_event))
+			schedule_delayed_work(&priv->scan_event,
+					      round_jiffies_relative(msecs_to_jiffies(4000)));
 	} else {
+		union iwreq_data wrqu;
+
 		priv->user_requested_scan = 0;
-		mod_delayed_work(system_wq, &priv->scan_event, 0);
+		cancel_delayed_work(&priv->scan_event);
+
+		wrqu.data.length = 0;
+		wrqu.data.flags = 0;
+		wireless_send_event(priv->net_dev, SIOCGIWSCAN, &wrqu, NULL);
 	}
 }
 
@@ -5622,7 +5628,7 @@ static int ipw_find_adhoc_network(struct ipw_priv *priv,
 		return 0;
 	}
 
-	if (ether_addr_equal(network->bssid, priv->bssid)) {
+	if (!memcmp(network->bssid, priv->bssid, ETH_ALEN)) {
 		IPW_DEBUG_MERGE("Network '%s (%pM)' excluded "
 				"because of the same BSSID match: %pM"
 				".\n", print_ssid(ssid, network->ssid,
@@ -5849,7 +5855,7 @@ static int ipw_best_network(struct ipw_priv *priv,
 	}
 
 	if ((priv->config & CFG_STATIC_BSSID) &&
-	    !ether_addr_equal(network->bssid, priv->bssid)) {
+	    memcmp(network->bssid, priv->bssid, ETH_ALEN)) {
 		IPW_DEBUG_ASSOC("Network '%s (%pM)' excluded "
 				"because of BSSID mismatch: %pM.\n",
 				print_ssid(ssid, network->ssid,
@@ -6988,7 +6994,7 @@ static int ipw_qos_handle_probe_response(struct ipw_priv *priv,
 	}
 	if ((priv->status & STATUS_ASSOCIATED) &&
 	    (priv->ieee->iw_mode == IW_MODE_ADHOC) && (active_network == 0)) {
-		if (!ether_addr_equal(network->bssid, priv->bssid))
+		if (memcmp(network->bssid, priv->bssid, ETH_ALEN))
 			if (network->capability & WLAN_CAPABILITY_IBSS)
 				if ((network->ssid_len ==
 				     priv->assoc_network->ssid_len) &&
@@ -8210,29 +8216,29 @@ static int is_network_packet(struct ipw_priv *priv,
 	switch (priv->ieee->iw_mode) {
 	case IW_MODE_ADHOC:	/* Header: Dest. | Source    | BSSID */
 		/* packets from our adapter are dropped (echo) */
-		if (ether_addr_equal(header->addr2, priv->net_dev->dev_addr))
+		if (!memcmp(header->addr2, priv->net_dev->dev_addr, ETH_ALEN))
 			return 0;
 
 		/* {broad,multi}cast packets to our BSSID go through */
 		if (is_multicast_ether_addr(header->addr1))
-			return ether_addr_equal(header->addr3, priv->bssid);
+			return !memcmp(header->addr3, priv->bssid, ETH_ALEN);
 
 		/* packets to our adapter go through */
-		return ether_addr_equal(header->addr1,
-					priv->net_dev->dev_addr);
+		return !memcmp(header->addr1, priv->net_dev->dev_addr,
+			       ETH_ALEN);
 
 	case IW_MODE_INFRA:	/* Header: Dest. | BSSID | Source */
 		/* packets from our adapter are dropped (echo) */
-		if (ether_addr_equal(header->addr3, priv->net_dev->dev_addr))
+		if (!memcmp(header->addr3, priv->net_dev->dev_addr, ETH_ALEN))
 			return 0;
 
 		/* {broad,multi}cast packets to our BSS go through */
 		if (is_multicast_ether_addr(header->addr1))
-			return ether_addr_equal(header->addr2, priv->bssid);
+			return !memcmp(header->addr2, priv->bssid, ETH_ALEN);
 
 		/* packets to our adapter go through */
-		return ether_addr_equal(header->addr1,
-					priv->net_dev->dev_addr);
+		return !memcmp(header->addr1, priv->net_dev->dev_addr,
+			       ETH_ALEN);
 	}
 
 	return 1;
@@ -8257,10 +8263,10 @@ static  int is_duplicate_packet(struct ipw_priv *priv,
 			u8 *mac = header->addr2;
 			int index = mac[5] % IPW_IBSS_MAC_HASH_SIZE;
 
-			list_for_each(p, &priv->ibss_mac_hash[index]) {
+			__list_for_each(p, &priv->ibss_mac_hash[index]) {
 				entry =
 				    list_entry(p, struct ipw_ibss_seq, list);
-				if (ether_addr_equal(entry->mac, mac))
+				if (!memcmp(entry->mac, mac, ETH_ALEN))
 					break;
 			}
 			if (p == &priv->ibss_mac_hash[index]) {
@@ -8329,7 +8335,7 @@ static void ipw_handle_mgmt_packet(struct ipw_priv *priv,
 	      IEEE80211_STYPE_PROBE_RESP) ||
 	     (WLAN_FC_GET_STYPE(le16_to_cpu(header->frame_ctl)) ==
 	      IEEE80211_STYPE_BEACON))) {
-		if (ether_addr_equal(header->addr3, priv->bssid))
+		if (!memcmp(header->addr3, priv->bssid, ETH_ALEN))
 			ipw_add_station(priv, header->addr2);
 	}
 
@@ -9045,7 +9051,7 @@ static int ipw_wx_set_wap(struct net_device *dev,
 	}
 
 	priv->config |= CFG_STATIC_BSSID;
-	if (ether_addr_equal(priv->bssid, wrqu->ap_addr.sa_data)) {
+	if (!memcmp(priv->bssid, wrqu->ap_addr.sa_data, ETH_ALEN)) {
 		IPW_DEBUG_WX("BSSID set to current BSSID.\n");
 		mutex_unlock(&priv->mutex);
 		return 0;
@@ -9169,7 +9175,7 @@ static int ipw_wx_set_nick(struct net_device *dev,
 	if (wrqu->data.length > IW_ESSID_MAX_SIZE)
 		return -E2BIG;
 	mutex_lock(&priv->mutex);
-	wrqu->data.length = min_t(size_t, wrqu->data.length, sizeof(priv->nick));
+	wrqu->data.length = min((size_t) wrqu->data.length, sizeof(priv->nick));
 	memset(priv->nick, 0, sizeof(priv->nick));
 	memcpy(priv->nick, extra, wrqu->data.length);
 	IPW_DEBUG_TRACE("<<\n");
@@ -9853,7 +9859,6 @@ static int ipw_wx_get_wireless_mode(struct net_device *dev,
 		strncpy(extra, "unknown", MAX_WX_STRING);
 		break;
 	}
-	extra[MAX_WX_STRING - 1] = '\0';
 
 	IPW_DEBUG_WX("PRIV GET MODE: %s\n", extra);
 
@@ -11322,6 +11327,7 @@ static int ipw_up(struct ipw_priv *priv)
 		if (!(priv->config & CFG_CUSTOM_MAC))
 			eeprom_parse_mac(priv, priv->mac_addr);
 		memcpy(priv->net_dev->dev_addr, priv->mac_addr, ETH_ALEN);
+		memcpy(priv->net_dev->perm_addr, priv->mac_addr, ETH_ALEN);
 
 		ipw_set_geo(priv);
 
@@ -11473,10 +11479,10 @@ static int ipw_wdev_init(struct net_device *dev)
 			bg_band->channels[i].max_power = geo->bg[i].max_power;
 			if (geo->bg[i].flags & LIBIPW_CH_PASSIVE_ONLY)
 				bg_band->channels[i].flags |=
-					IEEE80211_CHAN_NO_IR;
+					IEEE80211_CHAN_PASSIVE_SCAN;
 			if (geo->bg[i].flags & LIBIPW_CH_NO_IBSS)
 				bg_band->channels[i].flags |=
-					IEEE80211_CHAN_NO_IR;
+					IEEE80211_CHAN_NO_IBSS;
 			if (geo->bg[i].flags & LIBIPW_CH_RADAR_DETECT)
 				bg_band->channels[i].flags |=
 					IEEE80211_CHAN_RADAR;
@@ -11512,10 +11518,10 @@ static int ipw_wdev_init(struct net_device *dev)
 			a_band->channels[i].max_power = geo->a[i].max_power;
 			if (geo->a[i].flags & LIBIPW_CH_PASSIVE_ONLY)
 				a_band->channels[i].flags |=
-					IEEE80211_CHAN_NO_IR;
+					IEEE80211_CHAN_PASSIVE_SCAN;
 			if (geo->a[i].flags & LIBIPW_CH_NO_IBSS)
 				a_band->channels[i].flags |=
-					IEEE80211_CHAN_NO_IR;
+					IEEE80211_CHAN_NO_IBSS;
 			if (geo->a[i].flags & LIBIPW_CH_RADAR_DETECT)
 				a_band->channels[i].flags |=
 					IEEE80211_CHAN_RADAR;
@@ -11543,7 +11549,7 @@ out:
 }
 
 /* PCI driver stuff */
-static const struct pci_device_id card_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(card_ids) = {
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2701, 0, 0, 0},
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2702, 0, 0, 0},
 	{PCI_VENDOR_ID_INTEL, 0x1043, 0x8086, 0x2711, 0, 0, 0},
@@ -11886,6 +11892,7 @@ static int ipw_pci_probe(struct pci_dev *pdev,
 	pci_release_regions(pdev);
       out_pci_disable_device:
 	pci_disable_device(pdev);
+	pci_set_drvdata(pdev, NULL);
       out_free_libipw:
 	free_libipw(priv->net_dev, 0);
       out:
@@ -11966,6 +11973,7 @@ static void ipw_pci_remove(struct pci_dev *pdev)
 	iounmap(priv->hw_base);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
+	pci_set_drvdata(pdev, NULL);
 	/* wiphy_unregister needs to be here, before free_libipw */
 	wiphy_unregister(priv->ieee->wdev.wiphy);
 	kfree(priv->ieee->a_band.channels);

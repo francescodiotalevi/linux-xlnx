@@ -313,7 +313,10 @@ out:
 
 static void recent_table_free(void *addr)
 {
-	kvfree(addr);
+	if (is_vmalloc_addr(addr))
+		vfree(addr);
+	else
+		kfree(addr);
 }
 
 static int recent_mt_check(const struct xt_mtchk_param *par,
@@ -398,7 +401,8 @@ static int recent_mt_check(const struct xt_mtchk_param *par,
 		ret = -ENOMEM;
 		goto out;
 	}
-	proc_set_user(pde, uid, gid);
+	pde->uid = uid;
+	pde->gid = gid;
 #endif
 	spin_lock_bh(&recent_lock);
 	list_add_tail(&t->list, &recent_net->tables);
@@ -521,13 +525,14 @@ static const struct seq_operations recent_seq_ops = {
 
 static int recent_seq_open(struct inode *inode, struct file *file)
 {
+	struct proc_dir_entry *pde = PDE(inode);
 	struct recent_iter_state *st;
 
 	st = __seq_open_private(file, &recent_seq_ops, sizeof(*st));
 	if (st == NULL)
 		return -ENOMEM;
 
-	st->table    = PDE_DATA(inode);
+	st->table    = pde->data;
 	return 0;
 }
 
@@ -535,7 +540,8 @@ static ssize_t
 recent_mt_proc_write(struct file *file, const char __user *input,
 		     size_t size, loff_t *loff)
 {
-	struct recent_table *t = PDE_DATA(file_inode(file));
+	const struct proc_dir_entry *pde = PDE(file->f_path.dentry->d_inode);
+	struct recent_table *t = pde->data;
 	struct recent_entry *e;
 	char buf[sizeof("+b335:1d35:1e55:dead:c0de:1715:5afe:c0de")];
 	const char *c = buf;
@@ -637,7 +643,7 @@ static void __net_exit recent_proc_net_exit(struct net *net)
 	recent_net->xt_recent = NULL;
 	spin_unlock_bh(&recent_lock);
 
-	remove_proc_entry("xt_recent", net->proc_net);
+	proc_net_remove(net, "xt_recent");
 }
 #else
 static inline int recent_proc_net_init(struct net *net)

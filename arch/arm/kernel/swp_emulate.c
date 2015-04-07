@@ -21,13 +21,11 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <linux/sched.h>
 #include <linux/syscalls.h>
 #include <linux/perf_event.h>
 
 #include <asm/opcodes.h>
-#include <asm/system_info.h>
 #include <asm/traps.h>
 #include <asm/uaccess.h>
 
@@ -81,27 +79,27 @@ static unsigned long abtcounter;
 static pid_t         previous_pid;
 
 #ifdef CONFIG_PROC_FS
-static int proc_status_show(struct seq_file *m, void *v)
+static int proc_read_status(char *page, char **start, off_t off, int count,
+			    int *eof, void *data)
 {
-	seq_printf(m, "Emulated SWP:\t\t%lu\n", swpcounter);
-	seq_printf(m, "Emulated SWPB:\t\t%lu\n", swpbcounter);
-	seq_printf(m, "Aborted SWP{B}:\t\t%lu\n", abtcounter);
+	char *p = page;
+	int len;
+
+	p += sprintf(p, "Emulated SWP:\t\t%lu\n", swpcounter);
+	p += sprintf(p, "Emulated SWPB:\t\t%lu\n", swpbcounter);
+	p += sprintf(p, "Aborted SWP{B}:\t\t%lu\n", abtcounter);
 	if (previous_pid != 0)
-		seq_printf(m, "Last process:\t\t%d\n", previous_pid);
-	return 0;
-}
+		p += sprintf(p, "Last process:\t\t%d\n", previous_pid);
 
-static int proc_status_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, proc_status_show, PDE_DATA(inode));
-}
+	len = (p - page) - off;
+	if (len < 0)
+		len = 0;
 
-static const struct file_operations proc_status_fops = {
-	.open		= proc_status_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+	*eof = (len <= count) ? 1 : 0;
+	*start = page + off;
+
+	return len;
+}
 #endif
 
 /*
@@ -142,6 +140,14 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 	while (1) {
 		unsigned long temp;
 
+		/*
+		 * Barrier required between accessing protected resource and
+		 * releasing a lock for it. Legacy code might not have done
+		 * this, and we cannot determine that this is not the case
+		 * being emulated, so insert always.
+		 */
+		smp_mb();
+
 		if (type == TYPE_SWPB)
 			__user_swpb_asm(*data, address, res, temp);
 		else
@@ -154,6 +160,13 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 	}
 
 	if (res == 0) {
+		/*
+		 * Barrier also required between acquiring a lock for a
+		 * protected resource and accessing the resource. Inserted for
+		 * same reason as above.
+		 */
+		smp_mb();
+
 		if (type == TYPE_SWPB)
 			swpbcounter++;
 		else
@@ -252,12 +265,15 @@ static struct undef_hook swp_hook = {
  */
 static int __init swp_emulation_init(void)
 {
-	if (cpu_architecture() < CPU_ARCH_ARMv7)
-		return 0;
-
 #ifdef CONFIG_PROC_FS
-	if (!proc_create("cpu/swp_emulation", S_IRUGO, NULL, &proc_status_fops))
+	struct proc_dir_entry *res;
+
+	res = create_proc_entry("cpu/swp_emulation", S_IRUGO, NULL);
+
+	if (!res)
 		return -ENOMEM;
+
+	res->read_proc = proc_read_status;
 #endif /* CONFIG_PROC_FS */
 
 	printk(KERN_NOTICE "Registering SWP/SWPB emulation handler\n");

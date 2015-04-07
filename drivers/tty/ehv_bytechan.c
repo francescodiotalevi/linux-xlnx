@@ -32,7 +32,6 @@
 #include <linux/poll.h>
 #include <asm/epapr_hcalls.h>
 #include <linux/of.h>
-#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/cdev.h>
 #include <linux/console.h>
@@ -108,23 +107,55 @@ static void disable_tx_interrupt(struct ehv_bc_data *bc)
  *
  * The byte channel to be used for the console is specified via a "stdout"
  * property in the /chosen node.
+ *
+ * For compatible with legacy device trees, we also look for a "stdout" alias.
  */
 static int find_console_handle(void)
 {
-	struct device_node *np = of_stdout;
+	struct device_node *np, *np2;
 	const char *sprop = NULL;
 	const uint32_t *iprop;
 
+	np = of_find_node_by_path("/chosen");
+	if (np)
+		sprop = of_get_property(np, "stdout-path", NULL);
+
+	if (!np || !sprop) {
+		of_node_put(np);
+		np = of_find_node_by_name(NULL, "aliases");
+		if (np)
+			sprop = of_get_property(np, "stdout", NULL);
+	}
+
+	if (!sprop) {
+		of_node_put(np);
+		return 0;
+	}
+
 	/* We don't care what the aliased node is actually called.  We only
 	 * care if it's compatible with "epapr,hv-byte-channel", because that
-	 * indicates that it's a byte channel node.
+	 * indicates that it's a byte channel node.  We use a temporary
+	 * variable, 'np2', because we can't release 'np' until we're done with
+	 * 'sprop'.
 	 */
-	if (!np || !of_device_is_compatible(np, "epapr,hv-byte-channel"))
+	np2 = of_find_node_by_path(sprop);
+	of_node_put(np);
+	np = np2;
+	if (!np) {
+		pr_warning("ehv-bc: stdout node '%s' does not exist\n", sprop);
 		return 0;
+	}
+
+	/* Is it a byte channel? */
+	if (!of_device_is_compatible(np, "epapr,hv-byte-channel")) {
+		of_node_put(np);
+		return 0;
+	}
 
 	stdout_irq = irq_of_parse_and_map(np, 0);
 	if (stdout_irq == NO_IRQ) {
-		pr_err("ehv-bc: no 'interrupts' property in %s node\n", np->full_name);
+		pr_err("ehv-bc: no 'interrupts' property in %s node\n", sprop);
+		of_node_put(np);
 		return 0;
 	}
 
@@ -135,9 +166,12 @@ static int find_console_handle(void)
 	if (!iprop) {
 		pr_err("ehv-bc: no 'hv-handle' property in %s node\n",
 		       np->name);
+		of_node_put(np);
 		return 0;
 	}
 	stdout_bc = be32_to_cpu(*iprop);
+
+	of_node_put(np);
 	return 1;
 }
 
@@ -337,17 +371,22 @@ console_initcall(ehv_bc_console_init);
 static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 {
 	struct ehv_bc_data *bc = data;
+	struct tty_struct *ttys = tty_port_tty_get(&bc->port);
 	unsigned int rx_count, tx_count, len;
 	int count;
 	char buffer[EV_BYTE_CHANNEL_MAX_BYTES];
 	int ret;
+
+	/* ttys could be NULL during a hangup */
+	if (!ttys)
+		return IRQ_HANDLED;
 
 	/* Find out how much data needs to be read, and then ask the TTY layer
 	 * if it can handle that much.  We want to ensure that every byte we
 	 * read from the byte channel will be accepted by the TTY layer.
 	 */
 	ev_byte_channel_poll(bc->handle, &rx_count, &tx_count);
-	count = tty_buffer_request_room(&bc->port, rx_count);
+	count = tty_buffer_request_room(ttys, rx_count);
 
 	/* 'count' is the maximum amount of data the TTY layer can accept at
 	 * this time.  However, during testing, I was never able to get 'count'
@@ -368,7 +407,7 @@ static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 		 */
 
 		/* Pass the received data to the tty layer. */
-		ret = tty_insert_flip_string(&bc->port, buffer, len);
+		ret = tty_insert_flip_string(ttys, buffer, len);
 
 		/* 'ret' is the number of bytes that the TTY layer accepted.
 		 * If it's not equal to 'len', then it means the buffer is
@@ -383,7 +422,9 @@ static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 	}
 
 	/* Tell the tty layer that we're done. */
-	tty_flip_buffer_push(&bc->port);
+	tty_flip_buffer_push(ttys);
+
+	tty_kref_put(ttys);
 
 	return IRQ_HANDLED;
 }
@@ -438,9 +479,13 @@ static void ehv_bc_tx_dequeue(struct ehv_bc_data *bc)
 static irqreturn_t ehv_bc_tty_tx_isr(int irq, void *data)
 {
 	struct ehv_bc_data *bc = data;
+	struct tty_struct *ttys = tty_port_tty_get(&bc->port);
 
 	ehv_bc_tx_dequeue(bc);
-	tty_port_tty_wakeup(&bc->port);
+	if (ttys) {
+		tty_wakeup(ttys);
+		tty_kref_put(ttys);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -825,7 +870,6 @@ error:
  */
 static void __exit ehv_bc_exit(void)
 {
-	platform_driver_unregister(&ehv_bc_tty_driver);
 	tty_unregister_driver(ehv_bc_driver);
 	put_tty_driver(ehv_bc_driver);
 	kfree(bcs);

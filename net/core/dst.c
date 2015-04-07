@@ -142,12 +142,12 @@ loop:
 	mutex_unlock(&dst_gc_mutex);
 }
 
-int dst_discard_sk(struct sock *sk, struct sk_buff *skb)
+int dst_discard(struct sk_buff *skb)
 {
 	kfree_skb(skb);
 	return 0;
 }
-EXPORT_SYMBOL(dst_discard_sk);
+EXPORT_SYMBOL(dst_discard);
 
 const u32 dst_default_metrics[RTAX_MAX + 1] = {
 	/* This initializer is needed to force linker to place this variable
@@ -179,12 +179,11 @@ void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
 	dst_init_metrics(dst, dst_default_metrics, true);
 	dst->expires = 0UL;
 	dst->path = dst;
-	dst->from = NULL;
 #ifdef CONFIG_XFRM
 	dst->xfrm = NULL;
 #endif
 	dst->input = dst_discard;
-	dst->output = dst_discard_sk;
+	dst->output = dst_discard;
 	dst->error = 0;
 	dst->obsolete = initial_obsolete;
 	dst->header_len = 0;
@@ -209,10 +208,8 @@ static void ___dst_free(struct dst_entry *dst)
 	/* The first case (dev==NULL) is required, when
 	   protocol module is unloaded.
 	 */
-	if (dst->dev == NULL || !(dst->dev->flags&IFF_UP)) {
-		dst->input = dst_discard;
-		dst->output = dst_discard_sk;
-	}
+	if (dst->dev == NULL || !(dst->dev->flags&IFF_UP))
+		dst->input = dst->output = dst_discard;
 	dst->obsolete = DST_OBSOLETE_DEAD;
 }
 
@@ -269,15 +266,6 @@ again:
 }
 EXPORT_SYMBOL(dst_destroy);
 
-static void dst_destroy_rcu(struct rcu_head *head)
-{
-	struct dst_entry *dst = container_of(head, struct dst_entry, rcu_head);
-
-	dst = dst_destroy(dst);
-	if (dst)
-		__dst_free(dst);
-}
-
 void dst_release(struct dst_entry *dst)
 {
 	if (dst) {
@@ -285,8 +273,11 @@ void dst_release(struct dst_entry *dst)
 
 		newrefcnt = atomic_dec_return(&dst->__refcnt);
 		WARN_ON(newrefcnt < 0);
-		if (unlikely(dst->flags & DST_NOCACHE) && !newrefcnt)
-			call_rcu(&dst->rcu_head, dst_destroy_rcu);
+		if (unlikely(dst->flags & DST_NOCACHE) && !newrefcnt) {
+			dst = dst_destroy(dst);
+			if (dst)
+				__dst_free(dst);
+		}
 	}
 }
 EXPORT_SYMBOL(dst_release);
@@ -328,28 +319,27 @@ void __dst_destroy_metrics_generic(struct dst_entry *dst, unsigned long old)
 EXPORT_SYMBOL(__dst_destroy_metrics_generic);
 
 /**
- * __skb_dst_set_noref - sets skb dst, without a reference
+ * skb_dst_set_noref - sets skb dst, without a reference
  * @skb: buffer
  * @dst: dst entry
- * @force: if force is set, use noref version even for DST_NOCACHE entries
  *
  * Sets skb dst, assuming a reference was not taken on dst
  * skb_dst_drop() should not dst_release() this dst
  */
-void __skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst, bool force)
+void skb_dst_set_noref(struct sk_buff *skb, struct dst_entry *dst)
 {
 	WARN_ON(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	/* If dst not in cache, we must take a reference, because
 	 * dst_release() will destroy dst as soon as its refcount becomes zero
 	 */
-	if (unlikely((dst->flags & DST_NOCACHE) && !force)) {
+	if (unlikely(dst->flags & DST_NOCACHE)) {
 		dst_hold(dst);
 		skb_dst_set(skb, dst);
 	} else {
 		skb->_skb_refdst = (unsigned long)dst | SKB_DST_NOREF;
 	}
 }
-EXPORT_SYMBOL(__skb_dst_set_noref);
+EXPORT_SYMBOL(skb_dst_set_noref);
 
 /* Dirty hack. We did it in 2.2 (in __dst_free),
  * we have _very_ good reasons not to repeat
@@ -369,8 +359,7 @@ static void dst_ifdown(struct dst_entry *dst, struct net_device *dev,
 		return;
 
 	if (!unregister) {
-		dst->input = dst_discard;
-		dst->output = dst_discard_sk;
+		dst->input = dst->output = dst_discard;
 	} else {
 		dst->dev = dev_net(dst->dev)->loopback_dev;
 		dev_hold(dst->dev);
@@ -381,7 +370,7 @@ static void dst_ifdown(struct dst_entry *dst, struct net_device *dev,
 static int dst_dev_event(struct notifier_block *this, unsigned long event,
 			 void *ptr)
 {
-	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct net_device *dev = ptr;
 	struct dst_entry *dst, *last = NULL;
 
 	switch (event) {

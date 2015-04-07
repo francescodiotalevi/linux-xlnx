@@ -59,18 +59,23 @@
 
 #define BRCM_2GHZ_2412_2462	REG_RULE(2412-10, 2462+10, 40, 0, 19, 0)
 #define BRCM_2GHZ_2467_2472	REG_RULE(2467-10, 2472+10, 20, 0, 19, \
-					 NL80211_RRF_NO_IR)
+					 NL80211_RRF_PASSIVE_SCAN | \
+					 NL80211_RRF_NO_IBSS)
 
 #define BRCM_5GHZ_5180_5240	REG_RULE(5180-10, 5240+10, 40, 0, 21, \
-					 NL80211_RRF_NO_IR)
+					 NL80211_RRF_PASSIVE_SCAN | \
+					 NL80211_RRF_NO_IBSS)
 #define BRCM_5GHZ_5260_5320	REG_RULE(5260-10, 5320+10, 40, 0, 21, \
+					 NL80211_RRF_PASSIVE_SCAN | \
 					 NL80211_RRF_DFS | \
-					 NL80211_RRF_NO_IR)
+					 NL80211_RRF_NO_IBSS)
 #define BRCM_5GHZ_5500_5700	REG_RULE(5500-10, 5700+10, 40, 0, 21, \
+					 NL80211_RRF_PASSIVE_SCAN | \
 					 NL80211_RRF_DFS | \
-					 NL80211_RRF_NO_IR)
+					 NL80211_RRF_NO_IBSS)
 #define BRCM_5GHZ_5745_5825	REG_RULE(5745-10, 5825+10, 40, 0, 21, \
-					 NL80211_RRF_NO_IR)
+					 NL80211_RRF_PASSIVE_SCAN | \
+					 NL80211_RRF_NO_IBSS)
 
 static const struct ieee80211_regdomain brcms_regdom_x2 = {
 	.n_reg_rules = 6,
@@ -178,7 +183,8 @@ static bool brcms_c_country_valid(const char *ccode)
 	 * chars.
 	 */
 	if (!((0x80 & ccode[0]) == 0 && ccode[0] >= 0x41 && ccode[0] <= 0x5A &&
-	      (0x80 & ccode[1]) == 0 && ccode[1] >= 0x41 && ccode[1] <= 0x5A))
+	      (0x80 & ccode[1]) == 0 && ccode[1] >= 0x41 && ccode[1] <= 0x5A &&
+	      ccode[2] == '\0'))
 		return false;
 
 	/*
@@ -374,7 +380,7 @@ brcms_c_channel_set_chanspec(struct brcms_cm_info *wlc_cm, u16 chanspec,
 			 u8 local_constraint_qdbm)
 {
 	struct brcms_c_info *wlc = wlc_cm->wlc;
-	struct ieee80211_channel *ch = wlc->pub->ieee_hw->conf.chandef.chan;
+	struct ieee80211_channel *ch = wlc->pub->ieee_hw->conf.channel;
 	struct txpwr_limits txpwr;
 
 	brcms_c_channel_reg_limits(wlc_cm, chanspec, &txpwr);
@@ -390,7 +396,7 @@ brcms_c_channel_set_chanspec(struct brcms_cm_info *wlc_cm, u16 chanspec,
 		brcms_c_set_gmode(wlc, wlc->protection->gmode_user, false);
 
 	brcms_b_set_chanspec(wlc->hw, chanspec,
-			      !!(ch->flags & IEEE80211_CHAN_NO_IR),
+			      !!(ch->flags & IEEE80211_CHAN_PASSIVE_SCAN),
 			      &txpwr);
 }
 
@@ -399,7 +405,7 @@ brcms_c_channel_reg_limits(struct brcms_cm_info *wlc_cm, u16 chanspec,
 		       struct txpwr_limits *txpwr)
 {
 	struct brcms_c_info *wlc = wlc_cm->wlc;
-	struct ieee80211_channel *ch = wlc->pub->ieee_hw->conf.chandef.chan;
+	struct ieee80211_channel *ch = wlc->pub->ieee_hw->conf.channel;
 	uint i;
 	uint chan;
 	int maxpwr;
@@ -652,8 +658,8 @@ static void brcms_reg_apply_radar_flags(struct wiphy *wiphy)
 		 */
 		if (!(ch->flags & IEEE80211_CHAN_DISABLED))
 			ch->flags |= IEEE80211_CHAN_RADAR |
-				     IEEE80211_CHAN_NO_IR |
-				     IEEE80211_CHAN_NO_IR;
+				     IEEE80211_CHAN_NO_IBSS |
+				     IEEE80211_CHAN_PASSIVE_SCAN;
 	}
 }
 
@@ -664,7 +670,7 @@ brcms_reg_apply_beaconing_flags(struct wiphy *wiphy,
 	struct ieee80211_supported_band *sband;
 	struct ieee80211_channel *ch;
 	const struct ieee80211_reg_rule *rule;
-	int band, i;
+	int band, i, ret;
 
 	for (band = 0; band < IEEE80211_NUM_BANDS; band++) {
 		sband = wiphy->bands[band];
@@ -679,22 +685,26 @@ brcms_reg_apply_beaconing_flags(struct wiphy *wiphy,
 				continue;
 
 			if (initiator == NL80211_REGDOM_SET_BY_COUNTRY_IE) {
-				rule = freq_reg_info(wiphy,
-						     MHZ_TO_KHZ(ch->center_freq));
-				if (IS_ERR(rule))
+				ret = freq_reg_info(wiphy, ch->center_freq,
+						    0, &rule);
+				if (ret)
 					continue;
 
-				if (!(rule->flags & NL80211_RRF_NO_IR))
-					ch->flags &= ~IEEE80211_CHAN_NO_IR;
+				if (!(rule->flags & NL80211_RRF_NO_IBSS))
+					ch->flags &= ~IEEE80211_CHAN_NO_IBSS;
+				if (!(rule->flags & NL80211_RRF_PASSIVE_SCAN))
+					ch->flags &=
+						~IEEE80211_CHAN_PASSIVE_SCAN;
 			} else if (ch->beacon_found) {
-				ch->flags &= ~IEEE80211_CHAN_NO_IR;
+				ch->flags &= ~(IEEE80211_CHAN_NO_IBSS |
+					       IEEE80211_CHAN_PASSIVE_SCAN);
 			}
 		}
 	}
 }
 
-static void brcms_reg_notifier(struct wiphy *wiphy,
-			       struct regulatory_request *request)
+static int brcms_reg_notifier(struct wiphy *wiphy,
+			      struct regulatory_request *request)
 {
 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
 	struct brcms_info *wl = hw->priv;
@@ -735,6 +745,8 @@ static void brcms_reg_notifier(struct wiphy *wiphy,
 	if (wlc->pub->_nbands > 1 || wlc->band->bandtype == BRCM_BAND_2G)
 		wlc_phy_chanspec_ch14_widefilter_set(wlc->band->pi,
 					brcms_c_japan_ccode(request->alpha2));
+
+	return 0;
 }
 
 void brcms_c_regd_init(struct brcms_c_info *wlc)
@@ -767,8 +779,8 @@ void brcms_c_regd_init(struct brcms_c_info *wlc)
 	}
 
 	wlc->wiphy->reg_notifier = brcms_reg_notifier;
-	wlc->wiphy->regulatory_flags |= REGULATORY_CUSTOM_REG |
-					REGULATORY_STRICT_REG;
+	wlc->wiphy->flags |= WIPHY_FLAG_CUSTOM_REGULATORY |
+			     WIPHY_FLAG_STRICT_REGULATORY;
 	wiphy_apply_custom_regulatory(wlc->wiphy, regd->regdomain);
 	brcms_reg_apply_beaconing_flags(wiphy, NL80211_REGDOM_SET_BY_DRIVER);
 }

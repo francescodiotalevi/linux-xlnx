@@ -43,7 +43,7 @@ config CPU_ARM740T
 	depends on !MMU
 	select CPU_32v4T
 	select CPU_ABRT_LV4T
-	select CPU_CACHE_V4
+	select CPU_CACHE_V3	# although the core is v4t
 	select CPU_CP15_MPU
 	select CPU_PABRT_LEGACY
 	help
@@ -264,7 +264,7 @@ config CPU_ARM1026
 
 # SA110
 config CPU_SA110
-	bool
+	bool "Support StrongARM(R) SA-110 processor" if ARCH_RPC
 	select CPU_32v3 if ARCH_RPC
 	select CPU_32v4 if !ARCH_RPC
 	select CPU_ABRT_EV4
@@ -392,27 +392,10 @@ config CPU_V7
 	select CPU_CACHE_V7
 	select CPU_CACHE_VIPT
 	select CPU_COPY_V6 if MMU
-	select CPU_CP15_MMU if MMU
-	select CPU_CP15_MPU if !MMU
+	select CPU_CP15_MMU
 	select CPU_HAS_ASID if MMU
 	select CPU_PABRT_V7
 	select CPU_TLB_V7 if MMU
-
-# ARMv7M
-config CPU_V7M
-	bool
-	select CPU_32v7M
-	select CPU_ABRT_NOMMU
-	select CPU_CACHE_NOP
-	select CPU_PABRT_LEGACY
-	select CPU_THUMBONLY
-
-config CPU_THUMBONLY
-	bool
-	# There are no CPUs available with MMU that don't implement an ARM ISA:
-	depends on !MMU
-	help
-	  Select this if your CPU doesn't support the 32 bit ARM instructions.
 
 # Figure out what processor architecture version we should be using.
 # This defines the compiler instruction set which depends on the machine type.
@@ -420,41 +403,35 @@ config CPU_32v3
 	bool
 	select CPU_USE_DOMAINS if MMU
 	select NEEDS_SYSCALL_FOR_CMPXCHG if SMP
-	select NEED_KUSER_HELPERS
 	select TLS_REG_EMUL if SMP || !MMU
 
 config CPU_32v4
 	bool
 	select CPU_USE_DOMAINS if MMU
 	select NEEDS_SYSCALL_FOR_CMPXCHG if SMP
-	select NEED_KUSER_HELPERS
 	select TLS_REG_EMUL if SMP || !MMU
 
 config CPU_32v4T
 	bool
 	select CPU_USE_DOMAINS if MMU
 	select NEEDS_SYSCALL_FOR_CMPXCHG if SMP
-	select NEED_KUSER_HELPERS
 	select TLS_REG_EMUL if SMP || !MMU
 
 config CPU_32v5
 	bool
 	select CPU_USE_DOMAINS if MMU
 	select NEEDS_SYSCALL_FOR_CMPXCHG if SMP
-	select NEED_KUSER_HELPERS
 	select TLS_REG_EMUL if SMP || !MMU
 
 config CPU_32v6
 	bool
+	select CPU_USE_DOMAINS if CPU_V6 && MMU
 	select TLS_REG_EMUL if !CPU_32v6K && !MMU
 
 config CPU_32v6K
 	bool
 
 config CPU_32v7
-	bool
-
-config CPU_32v7M
 	bool
 
 # The abort model
@@ -492,6 +469,9 @@ config CPU_PABRT_V7
 	bool
 
 # The cache model
+config CPU_CACHE_V3
+	bool
+
 config CPU_CACHE_V4
 	bool
 
@@ -505,9 +485,6 @@ config CPU_CACHE_V6
 	bool
 
 config CPU_CACHE_V7
-	bool
-
-config CPU_CACHE_NOP
 	bool
 
 config CPU_CACHE_VIVT
@@ -631,12 +608,8 @@ config ARCH_DMA_ADDR_T_64BIT
 	bool
 
 config ARM_THUMB
-	bool "Support Thumb user binaries" if !CPU_THUMBONLY
-	depends on CPU_ARM720T || CPU_ARM740T || CPU_ARM920T || CPU_ARM922T || \
-		CPU_ARM925T || CPU_ARM926T || CPU_ARM940T || CPU_ARM946E || \
-		CPU_ARM1020 || CPU_ARM1020E || CPU_ARM1022 || CPU_ARM1026 || \
-		CPU_XSCALE || CPU_XSC3 || CPU_MOHAWK || CPU_V6 || CPU_V6K || \
-		CPU_V7 || CPU_FEROCEON || CPU_V7M
+	bool "Support Thumb user binaries"
+	depends on CPU_ARM720T || CPU_ARM740T || CPU_ARM920T || CPU_ARM922T || CPU_ARM925T || CPU_ARM926T || CPU_ARM940T || CPU_ARM946E || CPU_ARM1020 || CPU_ARM1020E || CPU_ARM1022 || CPU_ARM1026 || CPU_XSCALE || CPU_XSC3 || CPU_MOHAWK || CPU_V6 || CPU_V6K || CPU_V7 || CPU_FEROCEON
 	default y
 	help
 	  Say Y if you want to include kernel support for running user space
@@ -656,9 +629,8 @@ config ARM_THUMBEE
 	  make use of it. Say N for code that can run on CPUs without ThumbEE.
 
 config ARM_VIRT_EXT
-	bool
-	depends on MMU
-	default y if CPU_V7
+	bool "Native support for the ARM Virtualization Extensions"
+	depends on MMU && CPU_V7
 	help
 	  Enable the kernel to make use of the ARM Virtualization
 	  Extensions to install hypervisors without run-time firmware
@@ -668,9 +640,14 @@ config ARM_VIRT_EXT
 	  use of this feature.  Refer to Documentation/arm/Booting for
 	  details.
 
+	  It is safe to enable this option even if the kernel may not be
+	  booted in HYP mode, may not have support for the
+	  virtualization extensions, or may be booted with a
+	  non-compliant bootloader.
+
 config SWP_EMULATE
-	bool "Emulate SWP/SWPB instructions" if !SMP
-	depends on CPU_V7
+	bool "Emulate SWP/SWPB instructions"
+	depends on !CPU_USE_DOMAINS && CPU_V7
 	default y if SMP
 	select HAVE_PROC_CPU if PROC_FS
 	help
@@ -779,7 +756,6 @@ config CPU_BPREDICT_DISABLE
 
 config TLS_REG_EMUL
 	bool
-	select NEED_KUSER_HELPERS
 	help
 	  An SMP system using a pre-ARMv6 processor (there are apparently
 	  a few prototypes like that in existence) and therefore access to
@@ -787,42 +763,10 @@ config TLS_REG_EMUL
 
 config NEEDS_SYSCALL_FOR_CMPXCHG
 	bool
-	select NEED_KUSER_HELPERS
 	help
 	  SMP on a pre-ARMv6 processor?  Well OK then.
 	  Forget about fast user space cmpxchg support.
 	  It is just not possible.
-
-config NEED_KUSER_HELPERS
-	bool
-
-config KUSER_HELPERS
-	bool "Enable kuser helpers in vector page" if !NEED_KUSER_HELPERS
-	default y
-	help
-	  Warning: disabling this option may break user programs.
-
-	  Provide kuser helpers in the vector page.  The kernel provides
-	  helper code to userspace in read only form at a fixed location
-	  in the high vector page to allow userspace to be independent of
-	  the CPU type fitted to the system.  This permits binaries to be
-	  run on ARMv4 through to ARMv7 without modification.
-
-	  See Documentation/arm/kernel_user_helpers.txt for details.
-
-	  However, the fixed address nature of these helpers can be used
-	  by ROP (return orientated programming) authors when creating
-	  exploits.
-
-	  If all of the binaries and libraries which run on your platform
-	  are built specifically for your platform, and make no use of
-	  these helpers, then you can turn this option off to hinder
-	  such exploits. However, in that case, if a binary or library
-	  relying on those helpers is run, it will receive a SIGILL signal,
-	  which will terminate the program.
-
-	  Say N here only if you are absolutely certain that you do not
-	  need these helpers; otherwise, the safe option is to say Y.
 
 config DMA_CACHE_RWFO
 	bool "Enable read/write for ownership DMA cache maintenance"
@@ -854,7 +798,7 @@ config OUTER_CACHE_SYNC
 
 config CACHE_FEROCEON_L2
 	bool "Enable the Feroceon L2 cache controller"
-	depends on ARCH_MV78XX0 || ARCH_MVEBU
+	depends on ARCH_KIRKWOOD || ARCH_MV78XX0
 	default y
 	select OUTER_CACHE
 	help
@@ -889,64 +833,13 @@ config CACHE_L2X0
 	help
 	  This option enables the L2x0 PrimeCell.
 
-if CACHE_L2X0
-
 config CACHE_PL310
 	bool
+	depends on CACHE_L2X0
 	default y if CPU_V7 && !(CPU_V6 || CPU_V6K)
 	help
 	  This option enables optimisations for the PL310 cache
 	  controller.
-
-config PL310_ERRATA_588369
-	bool "PL310 errata: Clean & Invalidate maintenance operations do not invalidate clean lines"
-	help
-	   The PL310 L2 cache controller implements three types of Clean &
-	   Invalidate maintenance operations: by Physical Address
-	   (offset 0x7F0), by Index/Way (0x7F8) and by Way (0x7FC).
-	   They are architecturally defined to behave as the execution of a
-	   clean operation followed immediately by an invalidate operation,
-	   both performing to the same memory location. This functionality
-	   is not correctly implemented in PL310 prior to r2p0 (fixed in r2p0)
-	   as clean lines are not invalidated as a result of these operations.
-
-config PL310_ERRATA_727915
-	bool "PL310 errata: Background Clean & Invalidate by Way operation can cause data corruption"
-	help
-	  PL310 implements the Clean & Invalidate by Way L2 cache maintenance
-	  operation (offset 0x7FC). This operation runs in background so that
-	  PL310 can handle normal accesses while it is in progress. Under very
-	  rare circumstances, due to this erratum, write data can be lost when
-	  PL310 treats a cacheable write transaction during a Clean &
-	  Invalidate by Way operation.  Revisions prior to r3p1 are affected by
-	  this errata (fixed in r3p1).
-
-config PL310_ERRATA_753970
-	bool "PL310 errata: cache sync operation may be faulty"
-	help
-	  This option enables the workaround for the 753970 PL310 (r3p0) erratum.
-
-	  Under some condition the effect of cache sync operation on
-	  the store buffer still remains when the operation completes.
-	  This means that the store buffer is always asked to drain and
-	  this prevents it from merging any further writes. The workaround
-	  is to replace the normal offset of cache sync operation (0x730)
-	  by another offset targeting an unmapped PL310 register 0x740.
-	  This has the same effect as the cache sync operation: store buffer
-	  drain and waiting for all buffers empty.
-
-config PL310_ERRATA_769419
-	bool "PL310 errata: no automatic Store Buffer drain"
-	help
-	  On revisions of the PL310 prior to r3p2, the Store Buffer does
-	  not automatically drain. This can cause normal, non-cacheable
-	  writes to be retained when the memory system is idle, leading
-	  to suboptimal I/O performance for drivers using coherent DMA.
-	  This option adds a write barrier to the cpu_idle loop so that,
-	  on systems with an outer cache, the store buffer is drained
-	  explicitly.
-
-endif
 
 config CACHE_TAUROS2
 	bool "Enable the Tauros2 L2 cache controller"
@@ -1003,8 +896,75 @@ config ARCH_HAS_BARRIERS
 	  This option allows the use of custom mandatory barriers
 	  included via the mach/barriers.h file.
 
-config ARCH_SUPPORTS_BIG_ENDIAN
-	bool
+config ARM_FCSE
+	bool "Fast Context Switch Extension (EXPERIMENTAL)"
+	depends on EXPERIMENTAL && !SMP && (CPU_32v4 || CPU_32v4T || CPU_32v5)
 	help
-	  This option specifies the architecture can support big endian
-	  operation.
+	  The Fast Context Switch Extension (FCSE for short) is an extension of
+	  some ARM processors which allows to switch contexts between processes
+	  without flushing cache and saves a few tens of microseconds in the
+	  worst case.
+
+	  Enabling this option makes linux use the FCSE.
+
+	  We propose two modes:
+	  - the guaranteed mode: we guarantee that there will never be any cache
+	    flush when switching context, but this means that there can not be
+	    more than 95 running processes in the system, each with a virtual
+	    memory space smaller than 32MB, and that the shared memory
+	    mappings do not use cache;
+	  - the best effort mode: we allow some cache flushes to happen from
+	    time to time, but do not limit the number of processes or the
+	    virtual memory space available for each process, and the shared
+	    memory mappings use cache.
+
+if ARM_FCSE
+
+choice
+	prompt "FCSE mode"
+	default ARM_FCSE_BEST_EFFORT
+	help
+	  This option allow setting which FCSE mode will be used.
+
+config ARM_FCSE_GUARANTEED
+	bool "guaranteed"
+	help
+	  Select guaranteed mode.
+
+config ARM_FCSE_BEST_EFFORT
+	bool "best effort"
+	help
+	  Select best-effort mode.
+
+endchoice
+
+config ARM_FCSE_PREEMPT_FLUSH
+	bool "Preemptible cache flushes"
+	default ARM_FCSE_GUARANTEED
+	help
+	  When FCSE is enabled, some cache flushes happen with preemption
+	  disabled by default, this allows avoiding more cache
+	  flushes, but increases the latency. This option allows making
+	  them preemptible. It probably only make sense in guaranteed mode.
+
+config ARM_FCSE_MESSAGES
+	bool "help messages"
+	default ARM_FCSE_BEST_EFFORT
+	help
+	  When FCSE is enabled in best-effort mode, due to the VM space
+	  reduction, a too large stack size limit may result in processes
+	  exceeding the 32MB limit too easily. A too small stack size may result
+	  in stack overflows. Enabling this option will print messages in these
+	  situations to assist you in tuning the stack size limit.
+
+	  In guaranteed mode, this option will cause message to be printed if
+	  one of the hard limits (95 proceses, 32 MB VM space) is exceeded.
+
+config ARM_FCSE_DEBUG
+       bool "FCSE debug"
+       select ARM_FCSE_MESSAGES
+       help
+	  This option enables some internal debug checks. It has a high
+	  overhead, and is only useful for debugging the FCSE code.
+
+endif

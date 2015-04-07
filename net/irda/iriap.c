@@ -303,8 +303,7 @@ static void iriap_disconnect_indication(void *instance, void *sap,
 {
 	struct iriap_cb *self;
 
-	IRDA_DEBUG(4, "%s(), reason=%s [%d]\n", __func__,
-		   irlmp_reason_str(reason), reason);
+	IRDA_DEBUG(4, "%s(), reason=%s\n", __func__, irlmp_reasons[reason]);
 
 	self = instance;
 
@@ -496,11 +495,8 @@ static void iriap_getvaluebyclass_confirm(struct iriap_cb *self,
 /*		case CS_ISO_8859_9: */
 /*		case CS_UNICODE: */
 		default:
-			IRDA_DEBUG(0, "%s(), charset [%d] %s, not supported\n",
-				   __func__, charset,
-				   charset < ARRAY_SIZE(ias_charset_types) ?
-					ias_charset_types[charset] :
-					"(unknown)");
+			IRDA_DEBUG(0, "%s(), charset %s, not supported\n",
+				   __func__, ias_charset_types[charset]);
 
 			/* Aborting, close connection! */
 			iriap_disconnect_request(self);

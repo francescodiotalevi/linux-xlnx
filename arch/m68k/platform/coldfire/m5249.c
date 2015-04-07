@@ -26,7 +26,6 @@ DEFINE_CLK(mcftmr0, "mcftmr.0", MCF_BUSCLK);
 DEFINE_CLK(mcftmr1, "mcftmr.1", MCF_BUSCLK);
 DEFINE_CLK(mcfuart0, "mcfuart.0", MCF_BUSCLK);
 DEFINE_CLK(mcfuart1, "mcfuart.1", MCF_BUSCLK);
-DEFINE_CLK(mcfqspi0, "mcfqspi.0", MCF_BUSCLK);
 
 struct clk *mcf_clks[] = {
 	&clk_pll,
@@ -35,7 +34,6 @@ struct clk *mcf_clks[] = {
 	&clk_mcftmr1,
 	&clk_mcfuart0,
 	&clk_mcfuart1,
-	&clk_mcfqspi0,
 	NULL
 };
 
@@ -73,15 +71,17 @@ static struct platform_device *m5249_devices[] __initdata = {
 
 /***************************************************************************/
 
+#if IS_ENABLED(CONFIG_SPI_COLDFIRE_QSPI)
+
 static void __init m5249_qspi_init(void)
 {
-#if IS_ENABLED(CONFIG_SPI_COLDFIRE_QSPI)
 	/* QSPI irq setup */
 	writeb(MCFSIM_ICR_AUTOVEC | MCFSIM_ICR_LEVEL4 | MCFSIM_ICR_PRI0,
 	       MCFSIM_QSPIICR);
 	mcf_mapirq2imr(MCF_IRQ_QSPI, MCFINTC_QSPI);
-#endif /* IS_ENABLED(CONFIG_SPI_COLDFIRE_QSPI) */
 }
+
+#endif /* IS_ENABLED(CONFIG_SPI_COLDFIRE_QSPI) */
 
 /***************************************************************************/
 
@@ -110,7 +110,9 @@ void __init config_BSP(char *commandp, int size)
 #ifdef CONFIG_M5249C3
 	m5249_smc91x_init();
 #endif
+#if IS_ENABLED(CONFIG_SPI_COLDFIRE_QSPI)
 	m5249_qspi_init();
+#endif
 }
 
 /***************************************************************************/

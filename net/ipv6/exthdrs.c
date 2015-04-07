@@ -162,6 +162,12 @@ static bool ip6_parse_tlv(const struct tlvtype_proc *procs, struct sk_buff *skb)
 		off += optlen;
 		len -= optlen;
 	}
+	/* This case will not be caught by above check since its padding
+	 * length is smaller than 7:
+	 * 1 byte NH + 1 byte Length + 6 bytes Padding
+	 */
+	if ((padlen == 6) && ((off - skb_network_header_len(skb)) == 8))
+		goto bad;
 
 	if (len == 0)
 		return true;
@@ -547,8 +553,7 @@ static bool ipv6_hop_ra(struct sk_buff *skb, int optoff)
 	const unsigned char *nh = skb_network_header(skb);
 
 	if (nh[optoff + 1] == 2) {
-		IP6CB(skb)->flags |= IP6SKB_ROUTERALERT;
-		memcpy(&IP6CB(skb)->ra, nh + optoff + 2, sizeof(IP6CB(skb)->ra));
+		IP6CB(skb)->ra = optoff;
 		return true;
 	}
 	LIMIT_NETDEBUG(KERN_DEBUG "ipv6_hop_ra: wrong RA length %d\n",

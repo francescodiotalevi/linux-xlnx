@@ -18,26 +18,22 @@
 
 #include <mach/dma.h>
 
-#if defined(CONFIG_PL330_DMA)
-#define dma_filter pl330_filter
-#elif defined(CONFIG_S3C64XX_PL080)
-#define dma_filter pl08x_filter_id
-#endif
-
 static unsigned samsung_dmadev_request(enum dma_ch dma_ch,
-				struct samsung_dma_req *param,
-				struct device *dev, char *ch_name)
+				struct samsung_dma_req *param)
 {
 	dma_cap_mask_t mask;
+	void *filter_param;
 
 	dma_cap_zero(mask);
 	dma_cap_set(param->cap, mask);
 
-	if (dev->of_node)
-		return (unsigned)dma_request_slave_channel(dev, ch_name);
-	else
-		return (unsigned)dma_request_channel(mask, dma_filter,
-							(void *)dma_ch);
+	/*
+	 * If a dma channel property of a device node from device tree is
+	 * specified, use that as the fliter parameter.
+	 */
+	filter_param = (dma_ch == DMACH_DT_PROP) ?
+		(void *)param->dt_dmach_prop : (void *)dma_ch;
+	return (unsigned)dma_request_channel(mask, pl330_filter, filter_param);
 }
 
 static int samsung_dmadev_release(unsigned ch, void *param)

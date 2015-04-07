@@ -874,13 +874,13 @@ void libipw_rx_any(struct libipw_device *ieee,
 	switch (ieee->iw_mode) {
 	case IW_MODE_ADHOC:
 		/* our BSS and not from/to DS */
-		if (ether_addr_equal(hdr->addr3, ieee->bssid))
+		if (memcmp(hdr->addr3, ieee->bssid, ETH_ALEN) == 0)
 		if ((fc & (IEEE80211_FCTL_TODS+IEEE80211_FCTL_FROMDS)) == 0) {
 			/* promisc: get all */
 			if (ieee->dev->flags & IFF_PROMISC)
 				is_packet_for_us = 1;
 			/* to us */
-			else if (ether_addr_equal(hdr->addr1, ieee->dev->dev_addr))
+			else if (memcmp(hdr->addr1, ieee->dev->dev_addr, ETH_ALEN) == 0)
 				is_packet_for_us = 1;
 			/* mcast */
 			else if (is_multicast_ether_addr(hdr->addr1))
@@ -889,18 +889,18 @@ void libipw_rx_any(struct libipw_device *ieee,
 		break;
 	case IW_MODE_INFRA:
 		/* our BSS (== from our AP) and from DS */
-		if (ether_addr_equal(hdr->addr2, ieee->bssid))
+		if (memcmp(hdr->addr2, ieee->bssid, ETH_ALEN) == 0)
 		if ((fc & (IEEE80211_FCTL_TODS+IEEE80211_FCTL_FROMDS)) == IEEE80211_FCTL_FROMDS) {
 			/* promisc: get all */
 			if (ieee->dev->flags & IFF_PROMISC)
 				is_packet_for_us = 1;
 			/* to us */
-			else if (ether_addr_equal(hdr->addr1, ieee->dev->dev_addr))
+			else if (memcmp(hdr->addr1, ieee->dev->dev_addr, ETH_ALEN) == 0)
 				is_packet_for_us = 1;
 			/* mcast */
 			else if (is_multicast_ether_addr(hdr->addr1)) {
 				/* not our own packet bcasted from AP */
-				if (!ether_addr_equal(hdr->addr3, ieee->dev->dev_addr))
+				if (memcmp(hdr->addr3, ieee->dev->dev_addr, ETH_ALEN))
 					is_packet_for_us = 1;
 			}
 		}
@@ -1195,7 +1195,7 @@ static int libipw_parse_info_param(struct libipw_info_element
 #ifdef CONFIG_LIBIPW_DEBUG
 				p += snprintf(p, sizeof(rates_str) -
 					      (p - rates_str), "%02X ",
-					      network->rates_ex[i]);
+					      network->rates[i]);
 #endif
 				if (libipw_is_ofdm_rate
 				    (info_element->data[i])) {
@@ -1468,7 +1468,7 @@ static inline int is_same_network(struct libipw_network *src,
 	 * as one network */
 	return ((src->ssid_len == dst->ssid_len) &&
 		(src->channel == dst->channel) &&
-		ether_addr_equal_64bits(src->bssid, dst->bssid) &&
+		ether_addr_equal(src->bssid, dst->bssid) &&
 		!memcmp(src->ssid, dst->ssid, src->ssid_len));
 }
 

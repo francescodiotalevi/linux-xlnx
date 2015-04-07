@@ -33,10 +33,6 @@
 #include "mxl5007t.h"
 #include "tda18271.h"
 
-static int preallocate_big_buffers;
-module_param_named(preallocate_big_buffers, preallocate_big_buffers, int, 0644);
-MODULE_PARM_DESC(preallocate_big_buffers, "Preallocate the larger transfer buffers at module load time");
-
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 
 #define _AU0828_BULKPIPE 0x83
@@ -114,20 +110,16 @@ static void urb_completion(struct urb *purb)
 	int ptype = usb_pipetype(purb->pipe);
 	unsigned char *ptr;
 
-	dprintk(2, "%s: %d\n", __func__, purb->actual_length);
+	dprintk(2, "%s()\n", __func__);
 
-	if (!dev) {
-		dprintk(2, "%s: no dev!\n", __func__);
+	if (!dev)
 		return;
-	}
 
-	if (dev->urb_streaming == 0) {
-		dprintk(2, "%s: not streaming!\n", __func__);
+	if (dev->urb_streaming == 0)
 		return;
-	}
 
 	if (ptype != PIPE_BULK) {
-		printk(KERN_ERR "%s: Unsupported URB type %d\n",
+		printk(KERN_ERR "%s() Unsupported URB type %d\n",
 		       __func__, ptype);
 		return;
 	}
@@ -161,13 +153,9 @@ static int stop_urb_transfer(struct au0828_dev *dev)
 
 	dev->urb_streaming = 0;
 	for (i = 0; i < URB_COUNT; i++) {
-		if (dev->urbs[i]) {
-			usb_kill_urb(dev->urbs[i]);
-			if (!preallocate_big_buffers)
-				kfree(dev->urbs[i]->transfer_buffer);
-
-			usb_free_urb(dev->urbs[i]);
-		}
+		usb_kill_urb(dev->urbs[i]);
+		kfree(dev->urbs[i]->transfer_buffer);
+		usb_free_urb(dev->urbs[i]);
 	}
 
 	return 0;
@@ -193,18 +181,10 @@ static int start_urb_transfer(struct au0828_dev *dev)
 
 		purb = dev->urbs[i];
 
-		if (preallocate_big_buffers)
-			purb->transfer_buffer = dev->dig_transfer_buffer[i];
-		else
-			purb->transfer_buffer = kzalloc(URB_BUFSIZE,
-					GFP_KERNEL);
-
+		purb->transfer_buffer = kzalloc(URB_BUFSIZE, GFP_KERNEL);
 		if (!purb->transfer_buffer) {
 			usb_free_urb(purb);
 			dev->urbs[i] = NULL;
-			printk(KERN_ERR
-			       "%s: failed big buffer allocation, err = %d\n",
-			       __func__, ret);
 			goto err;
 		}
 
@@ -237,25 +217,6 @@ err:
 	return ret;
 }
 
-static void au0828_start_transport(struct au0828_dev *dev)
-{
-	au0828_write(dev, 0x608, 0x90);
-	au0828_write(dev, 0x609, 0x72);
-	au0828_write(dev, 0x60a, 0x71);
-	au0828_write(dev, 0x60b, 0x01);
-
-}
-
-static void au0828_stop_transport(struct au0828_dev *dev, int full_stop)
-{
-	if (full_stop) {
-		au0828_write(dev, 0x608, 0x00);
-		au0828_write(dev, 0x609, 0x00);
-		au0828_write(dev, 0x60a, 0x00);
-	}
-	au0828_write(dev, 0x60b, 0x00);
-}
-
 static int au0828_dvb_start_feed(struct dvb_demux_feed *feed)
 {
 	struct dvb_demux *demux = feed->demux;
@@ -270,17 +231,13 @@ static int au0828_dvb_start_feed(struct dvb_demux_feed *feed)
 
 	if (dvb) {
 		mutex_lock(&dvb->lock);
-		dvb->start_count++;
-		dprintk(1, "%s(), start_count: %d, stop_count: %d\n", __func__,
-			dvb->start_count, dvb->stop_count);
 		if (dvb->feeding++ == 0) {
 			/* Start transport */
-			au0828_start_transport(dev);
+			au0828_write(dev, 0x608, 0x90);
+			au0828_write(dev, 0x609, 0x72);
+			au0828_write(dev, 0x60a, 0x71);
+			au0828_write(dev, 0x60b, 0x01);
 			ret = start_urb_transfer(dev);
-			if (ret < 0) {
-				au0828_stop_transport(dev, 0);
-				dvb->feeding--;	/* We ran out of memory... */
-			}
 		}
 		mutex_unlock(&dvb->lock);
 	}
@@ -298,19 +255,11 @@ static int au0828_dvb_stop_feed(struct dvb_demux_feed *feed)
 	dprintk(1, "%s()\n", __func__);
 
 	if (dvb) {
-		cancel_work_sync(&dev->restart_streaming);
-
 		mutex_lock(&dvb->lock);
-		dvb->stop_count++;
-		dprintk(1, "%s(), start_count: %d, stop_count: %d\n", __func__,
-			dvb->start_count, dvb->stop_count);
-		if (dvb->feeding > 0) {
-			dvb->feeding--;
-			if (dvb->feeding == 0) {
-				/* Stop transport */
-				ret = stop_urb_transfer(dev);
-				au0828_stop_transport(dev, 0);
-			}
+		if (--dvb->feeding == 0) {
+			/* Stop transport */
+			ret = stop_urb_transfer(dev);
+			au0828_write(dev, 0x60b, 0x00);
 		}
 		mutex_unlock(&dvb->lock);
 	}
@@ -333,48 +282,19 @@ static void au0828_restart_dvb_streaming(struct work_struct *work)
 
 	/* Stop transport */
 	stop_urb_transfer(dev);
-	au0828_stop_transport(dev, 1);
+	au0828_write(dev, 0x608, 0x00);
+	au0828_write(dev, 0x609, 0x00);
+	au0828_write(dev, 0x60a, 0x00);
+	au0828_write(dev, 0x60b, 0x00);
 
 	/* Start transport */
-	au0828_start_transport(dev);
+	au0828_write(dev, 0x608, 0x90);
+	au0828_write(dev, 0x609, 0x72);
+	au0828_write(dev, 0x60a, 0x71);
+	au0828_write(dev, 0x60b, 0x01);
 	start_urb_transfer(dev);
 
 	mutex_unlock(&dvb->lock);
-}
-
-static int au0828_set_frontend(struct dvb_frontend *fe)
-{
-	struct au0828_dev *dev = fe->dvb->priv;
-	struct au0828_dvb *dvb = &dev->dvb;
-	int ret, was_streaming;
-
-	mutex_lock(&dvb->lock);
-	was_streaming = dev->urb_streaming;
-	if (was_streaming) {
-		au0828_stop_transport(dev, 1);
-
-		/*
-		 * We can't hold a mutex here, as the restart_streaming
-		 * kthread may also hold it.
-		 */
-		mutex_unlock(&dvb->lock);
-		cancel_work_sync(&dev->restart_streaming);
-		mutex_lock(&dvb->lock);
-
-		stop_urb_transfer(dev);
-	}
-	mutex_unlock(&dvb->lock);
-
-	ret = dvb->set_frontend(fe);
-
-	if (was_streaming) {
-		mutex_lock(&dvb->lock);
-		au0828_start_transport(dev);
-		start_urb_transfer(dev);
-		mutex_unlock(&dvb->lock);
-	}
-
-	return ret;
 }
 
 static int dvb_register(struct au0828_dev *dev)
@@ -383,23 +303,6 @@ static int dvb_register(struct au0828_dev *dev)
 	int result;
 
 	dprintk(1, "%s()\n", __func__);
-
-	if (preallocate_big_buffers) {
-		int i;
-		for (i = 0; i < URB_COUNT; i++) {
-			dev->dig_transfer_buffer[i] = kzalloc(URB_BUFSIZE,
-					GFP_KERNEL);
-
-			if (!dev->dig_transfer_buffer[i]) {
-				result = -ENOMEM;
-
-				printk(KERN_ERR
-				       "%s: failed buffer allocation (errno = %d)\n",
-				       DRIVER_NAME, result);
-				goto fail_adapter;
-			}
-		}
-	}
 
 	INIT_WORK(&dev->restart_streaming, au0828_restart_dvb_streaming);
 
@@ -420,10 +323,6 @@ static int dvb_register(struct au0828_dev *dev)
 		       "(errno = %d)\n", DRIVER_NAME, result);
 		goto fail_frontend;
 	}
-
-	/* Hook dvb frontend */
-	dvb->set_frontend = dvb->frontend->ops.set_frontend;
-	dvb->frontend->ops.set_frontend = au0828_set_frontend;
 
 	/* register demux stuff */
 	dvb->demux.dmx.capabilities =
@@ -476,9 +375,6 @@ static int dvb_register(struct au0828_dev *dev)
 
 	/* register network adapter */
 	dvb_net_init(&dvb->adapter, &dvb->net, &dvb->demux.dmx);
-
-	dvb->start_count = 0;
-	dvb->stop_count = 0;
 	return 0;
 
 fail_fe_conn:
@@ -495,13 +391,6 @@ fail_frontend:
 	dvb_frontend_detach(dvb->frontend);
 	dvb_unregister_adapter(&dvb->adapter);
 fail_adapter:
-
-	if (preallocate_big_buffers) {
-		int i;
-		for (i = 0; i < URB_COUNT; i++)
-			kfree(dev->dig_transfer_buffer[i]);
-	}
-
 	return result;
 }
 
@@ -514,8 +403,6 @@ void au0828_dvb_unregister(struct au0828_dev *dev)
 	if (dvb->frontend == NULL)
 		return;
 
-	cancel_work_sync(&dev->restart_streaming);
-
 	dvb_net_release(&dvb->net);
 	dvb->demux.dmx.remove_frontend(&dvb->demux.dmx, &dvb->fe_mem);
 	dvb->demux.dmx.remove_frontend(&dvb->demux.dmx, &dvb->fe_hw);
@@ -524,14 +411,6 @@ void au0828_dvb_unregister(struct au0828_dev *dev)
 	dvb_unregister_frontend(dvb->frontend);
 	dvb_frontend_detach(dvb->frontend);
 	dvb_unregister_adapter(&dvb->adapter);
-
-	if (preallocate_big_buffers) {
-		int i;
-		for (i = 0; i < URB_COUNT; i++)
-			kfree(dev->dig_transfer_buffer[i]);
-	}
-
-
 }
 
 /* All the DVB attach calls go here, this function get's modified

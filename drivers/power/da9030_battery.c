@@ -22,7 +22,6 @@
 
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
-#include <linux/notifier.h>
 
 #define DA9030_FAULT_LOG		0x0a
 #define DA9030_FAULT_LOG_OVER_TEMP	(1 << 7)
@@ -505,7 +504,7 @@ static int da9030_battery_probe(struct platform_device *pdev)
 	    pdata->charge_millivolt > 4350)
 		return -EINVAL;
 
-	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
+	charger = kzalloc(sizeof(*charger), GFP_KERNEL);
 	if (charger == NULL)
 		return -ENOMEM;
 
@@ -557,6 +556,8 @@ err_notifier:
 	cancel_delayed_work(&charger->work);
 
 err_charger_init:
+	kfree(charger);
+
 	return ret;
 }
 
@@ -572,6 +573,8 @@ static int da9030_battery_remove(struct platform_device *dev)
 	cancel_delayed_work_sync(&charger->work);
 	da9030_set_charge(charger, 0);
 	power_supply_unregister(&charger->psy);
+
+	kfree(charger);
 
 	return 0;
 }

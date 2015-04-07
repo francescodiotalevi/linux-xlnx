@@ -20,6 +20,7 @@
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
+#include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -30,9 +31,7 @@
 #include <linux/bitops.h>
 #include <linux/fs.h>
 #include <linux/platform_device.h>
-#include <linux/of_address.h>
 #include <linux/of_device.h>
-#include <linux/of_irq.h>
 #include <linux/gfp.h>
 
 #include <asm/irq.h>
@@ -41,6 +40,7 @@
 #ifdef CONFIG_8xx
 #include <asm/8xx_immap.h>
 #include <asm/pgtable.h>
+#include <asm/mpc8xx.h>
 #include <asm/cpm1.h>
 #endif
 
@@ -98,7 +98,7 @@ static int do_pd_setup(struct fs_enet_private *fep)
 {
 	struct platform_device *ofdev = to_platform_device(fep->dev);
 
-	fep->interrupt = irq_of_parse_and_map(ofdev->dev.of_node, 0);
+	fep->interrupt = of_irq_to_resource(ofdev->dev.of_node, 0, NULL);
 	if (fep->interrupt == NO_IRQ)
 		return -EINVAL;
 
