@@ -1,0 +1,75 @@
+iMPACT Version: 14.4
+
+iMPACT log file Started on Mon May  5 16:14:56 2014
+
+Welcome to iMPACT
+iMPACT Version: 14.4
+Project:/home/diotalev/WORK/Xilinx/LinuxOS/XenomaiFromMFornero/linux-xlnx-14.5/auto_project.ipf created.
+// *** BATCH CMD : setMode -bs
+GUI --- Auto connect to cable...
+// *** BATCH CMD : setCable -port auto
+INFO:iMPACT - Digilent Plugin: Plugin Version: 2.4.4
+INFO:iMPACT - Digilent Plugin: found 1 device(s).
+INFO:iMPACT - Digilent Plugin: opening device: "Zed", SN:210248445710
+INFO:iMPACT - Digilent Plugin: User Name: Zed
+INFO:iMPACT - Digilent Plugin: Product Name: Digilent Zed
+INFO:iMPACT - Digilent Plugin: Serial Number: 210248445710
+INFO:iMPACT - Digilent Plugin: Product ID: 00E00153
+INFO:iMPACT - Digilent Plugin: Firmware Version: 0108
+INFO:iMPACT - Digilent Plugin: JTAG Port Number: 0
+INFO:iMPACT - Digilent Plugin: JTAG Clock Frequency: 10000000 Hz
+Attempting to identify devices in the boundary-scan chain configuration...
+INFO:iMPACT - Current time: 5/5/14 4:14 PM
+// *** BATCH CMD : Identify -inferir 
+PROGRESS_START - Starting Operation.
+Identifying chain contents...'0': : Manufacturer's ID = Xilinx xc7z020, Version : 0
+INFO:iMPACT:1777 - 
+   Reading /opt/Xilinx/14.4/ISE_DS/ISE/zynq/data/xc7z020.bsd...
+INFO:iMPACT - Using CseAdapterBSDevice
+INFO:iMPACT:501 - '1': Added Device xc7z020 successfully.
+----------------------------------------------------------------------
+'1': : Manufacturer's ID = Xilinx zynq7000_arm_dap, Version : 4
+INFO:iMPACT:501 - '1': Added Device UNKNOWN successfully.
+----------------------------------------------------------------------
+INFO:iMPACT:1777 - 
+   Reading /opt/Xilinx/14.4/ISE_DS/ISE/zynq/data/zynq7000_arm_dap.bsd...
+----------------------------------------------------------------------
+done.
+PROGRESS_END - End Operation.
+Elapsed time =      1 sec.
+// *** BATCH CMD : identifyMPM 
+Attempting to identify devices in the boundary-scan chain configuration...
+INFO:iMPACT - Current time: 5/5/14 4:16 PM
+// *** BATCH CMD : Identify -inferir 
+PROGRESS_START - Starting Operation.
+----------------------------------------------------------------------
+Identifying chain contents...'0': : Manufacturer's ID = Xilinx xc7z020, Version : 0
+INFO:iMPACT:1777 - 
+   Reading /opt/Xilinx/14.4/ISE_DS/ISE/zynq/data/xc7z020.bsd...
+INFO:iMPACT - Using CseAdapterBSDevice
+INFO:iMPACT:501 - '1': Added Device xc7z020 successfully.
+----------------------------------------------------------------------
+'1': : Manufacturer's ID = Xilinx zynq7000_arm_dap, Version : 4
+INFO:iMPACT:501 - '1': Added Device UNKNOWN successfully.
+----------------------------------------------------------------------
+INFO:iMPACT:1777 - 
+   Reading /opt/Xilinx/14.4/ISE_DS/ISE/zynq/data/zynq7000_arm_dap.bsd...
+----------------------------------------------------------------------
+done.
+PROGRESS_END - End Operation.
+Elapsed time =      0 sec.
+// *** BATCH CMD : identifyMPM 
+Project:'/home/diotalev/WORK/Xilinx/LinuxOS/XenomaiFromMFornero/linux-xlnx-14.5/auto_project.ipf' created.
+// *** BATCH CMD : setMode -bs
+// *** BATCH CMD : setMode -ss
+// *** BATCH CMD : setMode -sm
+// *** BATCH CMD : setMode -hw140
+// *** BATCH CMD : setMode -spi
+// *** BATCH CMD : setMode -acecf
+// *** BATCH CMD : setMode -acempm
+// *** BATCH CMD : setMode -pff
+// *** BATCH CMD : setMode -bs
+// *** BATCH CMD : saveProjectFile -file"/home/diotalev/WORK/Xilinx/LinuxOS/XenomaiFromMFornero/linux-xlnx-14.5/auto_project.ipf"
+INFO:iMPACT - User_EnvOsname: 'Ubuntu'
+INFO:iMPACT - User_EnvOsrelease: 'Ubuntu 12.04.4 LTS'
+// *** BATCH CMD : setMode -bs

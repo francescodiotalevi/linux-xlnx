@@ -1,0 +1,1 @@
+/home/cl/kernel/3.8/xenomai-2.6.3/ksrc/drivers/analogy/national_instruments/mite.c
