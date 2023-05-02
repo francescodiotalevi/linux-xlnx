@@ -83,6 +83,15 @@
 	};
 };
 
+
+&can0 {
+	status = "okay";
+};
+
+&can1 {
+	status = "okay";
+};
+
 /* DP/USB 3.0 */
 &psgtr {
 	status = "okay";
@@ -329,3 +338,4 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_uart1_default>;
 };
+
