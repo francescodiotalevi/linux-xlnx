@@ -543,6 +543,14 @@ config TMR_INJECT
 
 	  Say N here unless you know what you are doing.
 
+config IIT_DATE
+        tristate "IIT DATE for FPGA bitstream"
+        help
+          IIT Date driver for info about bitstream creation date
+
+          To compile this driver as a module, choose M here: the module
+          will be called iit_date.
+
 source "drivers/misc/jesd204b/Kconfig"
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
