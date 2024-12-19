@@ -6,7 +6,7 @@
 /dts-v1/;
 #include "zynq-7000.dtsi"
 
-/include/ "zynq-zed-refdes.dtsi"
+#include "zynq-zed-refdes.dtsi"
 
 / {
 	model = "Avnet ZedBoard board";

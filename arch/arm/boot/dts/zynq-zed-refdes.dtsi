@@ -2,6 +2,9 @@
  * This is the ZedBoard reference design
  */
 
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/gpio/gpio.h>
+
 &amba {
 	axi_iic_adv7511: i2c@41600000 {
                 #address-cells = <1>;
@@ -46,7 +49,7 @@
 		};
 	};
 
-        hdmi_dma: dma@43C00000 { 
+        hdmi_dma: dma@43C00000 {
                 compatible = "adi,axi-dmac-1.00.a";
                 reg = <0x43C00000 0x10000>;
                 #dma-cells = <1>;
@@ -93,6 +96,120 @@
                 clocks = <&clkc 15>;
                 compatible = "iit,date-1.0";
                 reg = <0x43c20000 0x10000>;
+        };
+
+        leds {
+                compatible = "gpio-leds";
+                led0 {
+                        label = "led0";
+                        gpios = <&gpio0 102 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led1 {
+                        label = "led1";
+                        gpios = <&gpio0 103 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led2 {
+                        label = "led2";
+                        gpios = <&gpio0 104 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led3 {
+                        label = "led3";
+                        gpios = <&gpio0 105 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led4 {
+                        label = "led4";
+                        gpios = <&gpio0 106 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led5 {
+                        label = "led5";
+                        gpios = <&gpio0 107 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led6 {
+                        label = "led6";
+                        gpios = <&gpio0 108 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+                led7 {
+                        label = "led7";
+                        gpios = <&gpio0 109 GPIO_ACTIVE_HIGH>;
+                        linux,default-trigger = "none";
+                };
+        };
+
+        gpio-keys {
+                compatible = "gpio-keys";
+
+                sw0 {
+                        label = "sw0";
+                        gpios = <&gpio0 110 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_Q>;
+                };
+                sw1 {
+                        label = "sw1";
+                        gpios = <&gpio0 111 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_W>;
+                };
+                sw2 {
+                        label = "sw2";
+                        gpios = <&gpio0 112 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_E>;
+                };
+                sw3 {
+                        label = "sw3";
+                        gpios = <&gpio0 113 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_R>;
+                };
+                sw4 {
+                        label = "sw4";
+                        gpios = <&gpio0 114 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_T>;
+                };
+                sw5 {
+                        label = "sw5";
+                        gpios = <&gpio0 115 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_Y>;
+                };
+                sw6 {
+                        label = "sw6";
+                        gpios = <&gpio0 116 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_U>;
+                };
+                sw7 {
+                        label = "sw7";
+                        gpios = <&gpio0 117 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_I>;
+                };
+                btnup {
+                        label = "btnup";
+                        gpios = <&gpio0 97 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_SEMICOLON>;
+                };
+                btndown {
+                        label = "btndown";
+                        gpios = <&gpio0 98 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_APOSTROPHE>;
+                };
+                btnleft {
+                        label = "btnleft";
+                        gpios = <&gpio0 99 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_GRAVE>;
+                };
+                btnrigth {
+                        label = "btnrigth";
+                        gpios = <&gpio0 100 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_LEFTSHIFT>;
+                };
+                btncenter {
+                        label = "btncenter";
+                        gpios = <&gpio0 101 GPIO_ACTIVE_HIGH>;
+                        linux,code = <KEY_BACKSLASH>;
+                };
         };
 };
 
